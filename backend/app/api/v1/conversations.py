@@ -11,6 +11,7 @@ from app.schemas.conversation import (
     ConversationCreate,
     ConversationRead,
     ConversationUpdate,
+    MessageExchangeRead,
     MessageCreate,
     MessageRead,
 )
@@ -97,14 +98,14 @@ async def list_messages(
     )
 
 
-@router.post("/{conversation_id}/messages", response_model=MessageRead, status_code=201)
+@router.post("/{conversation_id}/messages", response_model=MessageExchangeRead, status_code=201)
 async def create_user_message(
     conversation_id: UUID,
     payload: MessageCreate,
     current_user: Annotated[User, Depends(get_current_user)],
     session: Annotated[AsyncSession, Depends(get_db_session)],
-) -> MessageRead:
-    # 当前只写入用户消息；assistant 占位和模型调用会在下一步接入。
+) -> MessageExchangeRead:
+    # 写入用户消息后立即调用模型，并返回本轮 user/assistant 两条消息。
     return await ConversationService(session).create_user_message(
         user_id=current_user.id,
         conversation_id=conversation_id,

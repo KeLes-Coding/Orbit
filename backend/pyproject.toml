@@ -8,6 +8,7 @@ dependencies = [
     "asyncpg",
     "email-validator",
     "fastapi",
+    "httpx",
     "PyJWT",
     "pydantic-settings",
     "sqlalchemy",

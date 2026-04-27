@@ -61,3 +61,9 @@ class MessageRead(BaseModel):
     token_usage: dict
     response_metadata: dict
     created_at: datetime
+
+
+class MessageExchangeRead(BaseModel):
+    # 发送消息接口返回本轮写入的 user 消息和 assistant 生成结果。
+    user_message: MessageRead
+    assistant_message: MessageRead

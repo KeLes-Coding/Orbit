@@ -10,8 +10,10 @@ from app.schemas.conversation import (
     ConversationCreate,
     ConversationRead,
     ConversationUpdate,
+    MessageExchangeRead,
     MessageRead,
 )
+from app.services.llm_client import LLMClient, LLMClientError
 
 
 class ConversationService:
@@ -21,6 +23,7 @@ class ConversationService:
         self.conversations = ConversationRepository(session)
         self.messages = MessageRepository(session)
         self.llm_configs = LLMConfigRepository(session)
+        self.llm_client = LLMClient()
 
     async def list_conversations(self, user_id: UUID) -> list[ConversationRead]:
         # 会话列表只返回未归档会话，并按 updated_at 倒序排列。
@@ -111,17 +114,71 @@ class ConversationService:
         user_id: UUID,
         conversation_id: UUID,
         content: str,
-    ) -> MessageRead:
-        # 当前阶段只写入 user 消息；assistant 占位和模型调用会在下一步补上。
-        await self._get_owned_conversation(user_id=user_id, conversation_id=conversation_id)
-        message = await self.messages.create_user_message(
+    ) -> MessageExchangeRead:
+        # 本接口完成“一问一答”：写入用户消息、创建 assistant 占位、调用模型并落库结果。
+        conversation = await self._get_owned_conversation(
+            user_id=user_id,
+            conversation_id=conversation_id,
+        )
+        llm_config_id = conversation.llm_config_id or await self._get_default_llm_config_id(user_id)
+        if llm_config_id is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="请先创建并启用一个默认模型配置",
+            )
+
+        llm_config = await self.llm_configs.get_active(user_id=user_id, config_id=llm_config_id)
+        if llm_config is None or not llm_config.is_enabled:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="当前会话的模型配置不可用",
+            )
+
+        user_message = await self.messages.create_user_message(
             conversation_id=conversation_id,
             content=content,
         )
-        # 新消息会影响会话列表排序，因此同步刷新会话 updated_at。
+        history_messages = await self.messages.list_by_conversation(conversation_id)
+        assistant_message = await self.messages.create_assistant_placeholder(
+            conversation_id=conversation_id,
+            llm_config_id=llm_config.id,
+            provider=llm_config.provider,
+            model=llm_config.model,
+        )
+        # 先提交占位消息，长时间模型调用时数据库里也能看到 streaming 状态。
         await self.conversations.touch(conversation_id)
         await self.session.commit()
-        return MessageRead.model_validate(message)
+
+        try:
+            completion = await self.llm_client.generate(
+                config=llm_config,
+                messages=history_messages,
+                summary=conversation.summary,
+            )
+        except LLMClientError as exc:
+            assistant_message = await self.messages.fail_assistant_message(
+                message=assistant_message,
+                error=str(exc),
+            )
+            await self.conversations.touch(conversation_id)
+            await self.session.commit()
+            return MessageExchangeRead(
+                user_message=MessageRead.model_validate(user_message),
+                assistant_message=MessageRead.model_validate(assistant_message),
+            )
+
+        assistant_message = await self.messages.complete_assistant_message(
+            message=assistant_message,
+            content=completion.content,
+            token_usage=completion.token_usage,
+            response_metadata=completion.response_metadata,
+        )
+        await self.conversations.touch(conversation_id)
+        await self.session.commit()
+        return MessageExchangeRead(
+            user_message=MessageRead.model_validate(user_message),
+            assistant_message=MessageRead.model_validate(assistant_message),
+        )
 
     async def _get_owned_conversation(
         self,

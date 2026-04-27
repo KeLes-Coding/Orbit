@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+from typing import Any
 from uuid import UUID
 
 from sqlalchemy import func, select, update
@@ -102,6 +103,56 @@ class MessageRepository:
             status="completed",
         )
         self.session.add(message)
+        await self.session.flush()
+        await self.session.refresh(message)
+        return message
+
+    async def create_assistant_placeholder(
+        self,
+        *,
+        conversation_id: UUID,
+        llm_config_id: UUID,
+        provider: str,
+        model: str,
+    ) -> Message:
+        # 先写入 streaming 占位，后续无论成功或失败都有一条可追踪的 assistant 消息。
+        sequence_no = await self.next_sequence_no(conversation_id)
+        message = Message(
+            conversation_id=conversation_id,
+            sequence_no=sequence_no,
+            role="assistant",
+            content="",
+            status="streaming",
+            llm_config_id=llm_config_id,
+            provider=provider,
+            model=model,
+        )
+        self.session.add(message)
+        await self.session.flush()
+        await self.session.refresh(message)
+        return message
+
+    async def complete_assistant_message(
+        self,
+        *,
+        message: Message,
+        content: str,
+        token_usage: dict[str, Any],
+        response_metadata: dict[str, Any],
+    ) -> Message:
+        # 模型调用成功后，把占位消息推进到 completed，并保存用量和供应商元信息。
+        message.content = content
+        message.status = "completed"
+        message.token_usage = token_usage
+        message.response_metadata = response_metadata
+        await self.session.flush()
+        await self.session.refresh(message)
+        return message
+
+    async def fail_assistant_message(self, *, message: Message, error: str) -> Message:
+        # 调用失败也保留 assistant 消息，前端可以根据 failed 状态展示重试入口。
+        message.status = "failed"
+        message.response_metadata = {"error": error}
         await self.session.flush()
         await self.session.refresh(message)
         return message
