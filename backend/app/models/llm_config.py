@@ -29,7 +29,9 @@ class LLMConfig(Base):
     is_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=expression.true())
     archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
 
     user = relationship("User", back_populates="llm_configs")
     conversations = relationship("Conversation", back_populates="llm_config")

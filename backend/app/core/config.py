@@ -12,6 +12,9 @@ class Settings(BaseSettings):
     env: str = "local"
     api_prefix: str = "/api/v1"
     database_url: str = "postgresql+asyncpg://postgres:postgres@127.0.0.1:5432/orbit"
+    auth_secret_key: str = "orbit-local-dev-secret-change-me-32-bytes-min"
+    encryption_secret_key: str = "orbit-local-encryption-secret"
+    access_token_expire_minutes: int = 60 * 24 * 7
     cors_origins: list[str] = Field(
         default_factory=lambda: ["http://localhost:5173", "http://127.0.0.1:5173"]
     )

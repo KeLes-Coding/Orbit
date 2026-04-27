@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from app.core.config import settings
 from app.db.base import Base
+from app import models  # noqa: F401
 
 config = context.config
 # Alembic 使用同一份应用配置读取数据库地址，避免迁移配置和运行时配置漂移。
