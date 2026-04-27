@@ -1,0 +1,60 @@
+# OS files
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Editor and IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Logs
+*.log
+logs/
+
+# Environment and local config
+.env
+.env.*
+!.env.example
+!.env.sample
+
+# Dependencies
+node_modules/
+vendor/
+
+# Build outputs
+dist/
+build/
+out/
+target/
+bin/
+obj/
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+/Orbit/
+
+# Go
+*.test
+coverage.out
+
+# Java / JVM
+*.class
+*.jar
+*.war
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+*.bak
+
+doc/

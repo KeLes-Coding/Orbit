@@ -1,0 +1,19 @@
+[project]
+name = "orbit-backend"
+version = "0.1.0"
+description = "Orbit MVP backend"
+requires-python = ">=3.10"
+dependencies = [
+    "alembic",
+    "asyncpg",
+    "email-validator",
+    "fastapi",
+    "pydantic-settings",
+    "sqlalchemy",
+    "uvicorn",
+]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+
