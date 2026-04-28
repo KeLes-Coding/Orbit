@@ -58,3 +58,4 @@ temp/
 *.bak
 
 .codex
+doc/

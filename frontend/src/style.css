@@ -361,6 +361,7 @@ textarea:disabled {
 
 .account-button {
   display: flex;
+  width: calc(100% - 32px);
   align-items: center;
   gap: 12px;
   margin: auto 16px 16px;

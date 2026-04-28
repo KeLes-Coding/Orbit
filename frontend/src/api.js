@@ -81,10 +81,24 @@ export const conversationApi = {
   list() {
     return apiRequest('/conversations')
   },
+  get(conversationId) {
+    return apiRequest(`/conversations/${conversationId}`)
+  },
   create(payload = {}) {
     return apiRequest('/conversations', {
       method: 'POST',
       body: JSON.stringify(payload),
+    })
+  },
+  update(conversationId, payload) {
+    return apiRequest(`/conversations/${conversationId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    })
+  },
+  archive(conversationId) {
+    return apiRequest(`/conversations/${conversationId}`, {
+      method: 'DELETE',
     })
   },
   messages(conversationId) {
@@ -98,8 +112,39 @@ export const conversationApi = {
   },
 }
 
+export const healthApi = {
+  check() {
+    return apiRequest('/health')
+  },
+}
+
 export const llmConfigApi = {
   list() {
     return apiRequest('/llm-configs')
+  },
+  get(configId) {
+    return apiRequest(`/llm-configs/${configId}`)
+  },
+  create(payload) {
+    return apiRequest('/llm-configs', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    })
+  },
+  update(configId, payload) {
+    return apiRequest(`/llm-configs/${configId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    })
+  },
+  setDefault(configId) {
+    return apiRequest(`/llm-configs/${configId}/default`, {
+      method: 'POST',
+    })
+  },
+  archive(configId) {
+    return apiRequest(`/llm-configs/${configId}`, {
+      method: 'DELETE',
+    })
   },
 }
