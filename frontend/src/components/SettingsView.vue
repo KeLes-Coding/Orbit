@@ -1,5 +1,6 @@
 <script setup>
-import { ref, computed } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
+import { llmConfigApi } from '../api'
 import { useOrbit } from '../composables/useOrbit'
 
 const {
@@ -13,16 +14,70 @@ const {
   setDefaultLlmConfig,
 } = useOrbit()
 
-const DEFAULT_PROVIDERS = [
-  'openai',
-  'openai_compatible',
-  'anthropic',
-  'google_genai',
-  'ollama',
+const FALLBACK_PROVIDERS = [
+  {
+    id: 'openai',
+    name: 'OpenAI',
+    requires_api_key: true,
+    supports_custom_base_url: true,
+    supports_model_list: true,
+    default_base_url: 'https://api.openai.com/v1',
+  },
+  {
+    id: 'openai_compatible',
+    name: 'OpenAI Compatible',
+    requires_api_key: true,
+    supports_custom_base_url: true,
+    supports_model_list: true,
+  },
+  {
+    id: 'anthropic',
+    name: 'Claude / Anthropic',
+    requires_api_key: true,
+    supports_custom_base_url: true,
+    supports_model_list: true,
+  },
+  {
+    id: 'gemini',
+    name: 'Gemini',
+    requires_api_key: true,
+    supports_custom_base_url: false,
+    supports_model_list: true,
+  },
+  {
+    id: 'ollama',
+    name: 'Ollama',
+    requires_api_key: false,
+    supports_custom_base_url: true,
+    supports_model_list: true,
+    default_base_url: 'http://127.0.0.1:11434',
+  },
+  {
+    id: 'deepseek',
+    name: 'DeepSeek',
+    requires_api_key: true,
+    supports_custom_base_url: true,
+    supports_model_list: true,
+    default_base_url: 'https://api.deepseek.com',
+  },
+  {
+    id: 'qwen',
+    name: 'Qwen',
+    requires_api_key: true,
+    supports_custom_base_url: true,
+    supports_model_list: true,
+    default_base_url: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+  },
 ]
 
 const showForm = ref(false)
 const editingConfigId = ref(null)
+const formError = ref('')
+const providerList = ref([])
+const modelOptions = ref([])
+const modelStatus = ref('')
+const isLoadingProviders = ref(false)
+const isLoadingModels = ref(false)
 const configForm = ref({
   name: '',
   provider: '',
@@ -30,6 +85,7 @@ const configForm = ref({
   base_url: '',
   api_key: '',
   provider_options: '',
+  is_default: false,
 })
 
 const isEditing = computed(() => editingConfigId.value !== null)
@@ -37,6 +93,21 @@ const isEditing = computed(() => editingConfigId.value !== null)
 const editingConfig = computed(() =>
   editingConfigId.value ? llmConfigs.value.find((c) => c.id === editingConfigId.value) : null,
 )
+
+const providers = computed(() => (providerList.value.length > 0 ? providerList.value : FALLBACK_PROVIDERS))
+
+const selectedProvider = computed(() =>
+  providers.value.find((provider) => provider.id === configForm.value.provider),
+)
+
+const modelOptionIds = computed(() => modelOptions.value.map((model) => model.id).filter(Boolean))
+
+const canFetchModels = computed(() => {
+  if (!selectedProvider.value?.supports_model_list || isLoadingModels.value) return false
+  if (isEditing.value && editingConfig.value?.has_api_key && !configForm.value.api_key.trim()) return true
+  if (selectedProvider.value?.requires_api_key === false) return true
+  return Boolean(configForm.value.api_key.trim())
+})
 
 const resetForm = () => {
   configForm.value = {
@@ -46,13 +117,21 @@ const resetForm = () => {
     base_url: '',
     api_key: '',
     provider_options: '',
+    is_default: false,
   }
   editingConfigId.value = null
+  formError.value = ''
+  modelOptions.value = []
+  modelStatus.value = ''
   showForm.value = false
 }
 
 const startCreate = () => {
   resetForm()
+  if (providers.value.length > 0) {
+    configForm.value.provider = providers.value[0].id
+    applyProviderDefaultBaseUrl()
+  }
   showForm.value = true
 }
 
@@ -64,16 +143,103 @@ const startEdit = (config) => {
     base_url: config.base_url || '',
     api_key: '',
     provider_options: config.provider_options ? JSON.stringify(config.provider_options, null, 2) : '',
+    is_default: Boolean(config.is_default),
   }
   editingConfigId.value = config.id
+  formError.value = ''
+  modelOptions.value = []
+  modelStatus.value = ''
   showForm.value = true
 }
 
+const loadProviders = async () => {
+  isLoadingProviders.value = true
+  try {
+    providerList.value = await llmConfigApi.providers()
+    if (showForm.value && !configForm.value.provider && providers.value.length > 0) {
+      configForm.value.provider = providers.value[0].id
+      applyProviderDefaultBaseUrl()
+    }
+  } catch (error) {
+    console.warn(error)
+    providerList.value = FALLBACK_PROVIDERS
+  } finally {
+    isLoadingProviders.value = false
+  }
+}
+
+const applyProviderDefaultBaseUrl = () => {
+  const provider = selectedProvider.value
+  if (!provider) return
+  if (provider.default_base_url && !configForm.value.base_url.trim()) {
+    configForm.value.base_url = provider.default_base_url
+  }
+  if (provider.supports_custom_base_url === false) {
+    configForm.value.base_url = ''
+  }
+}
+
+const parseProviderOptions = () => {
+  const rawOptions = configForm.value.provider_options.trim()
+  if (!rawOptions) return {}
+  try {
+    const parsed = JSON.parse(rawOptions)
+    if (!parsed || Array.isArray(parsed) || typeof parsed !== 'object') {
+      formError.value = 'Provider Options must be a JSON object.'
+      return null
+    }
+    return parsed
+  } catch {
+    formError.value = 'Provider Options is not valid JSON.'
+    return null
+  }
+}
+
+const formatProviderOptions = () => {
+  formError.value = ''
+  const parsed = parseProviderOptions()
+  if (parsed === null) return
+  configForm.value.provider_options = JSON.stringify(parsed, null, 2)
+}
+
+const fetchModels = async () => {
+  formError.value = ''
+  modelStatus.value = ''
+  modelOptions.value = []
+
+  const providerOptions = parseProviderOptions()
+  if (providerOptions === null) return
+
+  isLoadingModels.value = true
+  try {
+    let models
+    if (isEditing.value && editingConfig.value?.has_api_key && !configForm.value.api_key.trim()) {
+      models = await llmConfigApi.configModels(editingConfigId.value)
+    } else {
+      models = await llmConfigApi.models({
+        provider: configForm.value.provider,
+        base_url: configForm.value.base_url.trim() || null,
+        api_key: configForm.value.api_key.trim() || null,
+        provider_options: providerOptions,
+      })
+    }
+    modelOptions.value = models || []
+    modelStatus.value = modelOptions.value.length > 0 ? `${modelOptions.value.length} models loaded.` : 'No models returned.'
+  } catch (error) {
+    modelStatus.value = ''
+    formError.value = error instanceof Error ? error.message : String(error)
+  } finally {
+    isLoadingModels.value = false
+  }
+}
+
 const submitConfig = async () => {
+  formError.value = ''
   const payload = {
     name: configForm.value.name.trim(),
     provider: configForm.value.provider.trim(),
     model: configForm.value.model.trim(),
+    is_default: configForm.value.is_default,
   }
 
   if (configForm.value.base_url.trim()) {
@@ -84,13 +250,9 @@ const submitConfig = async () => {
     payload.api_key = configForm.value.api_key.trim()
   }
 
-  if (configForm.value.provider_options.trim()) {
-    try {
-      payload.provider_options = JSON.parse(configForm.value.provider_options)
-    } catch {
-      return
-    }
-  }
+  const providerOptions = parseProviderOptions()
+  if (providerOptions === null) return
+  payload.provider_options = providerOptions
 
   let result
   if (isEditing.value) {
@@ -121,6 +283,17 @@ const providerOptionsPreview = (options) => {
   }
   return `${keys.length} options`
 }
+
+watch(
+  () => configForm.value.provider,
+  () => {
+    modelOptions.value = []
+    modelStatus.value = ''
+    applyProviderDefaultBaseUrl()
+  },
+)
+
+onMounted(loadProviders)
 </script>
 
 <template>
@@ -192,18 +365,32 @@ const providerOptionsPreview = (options) => {
             </label>
             <label>
               <span>Provider</span>
-              <input v-model="configForm.provider" placeholder="openai" list="provider-list" required />
-              <datalist id="provider-list">
-                <option v-for="p in DEFAULT_PROVIDERS" :key="p" :value="p" />
-              </datalist>
+              <select v-model="configForm.provider" required>
+                <option v-if="isLoadingProviders" disabled value="">Loading providers</option>
+                <option v-for="provider in providers" :key="provider.id" :value="provider.id">
+                  {{ provider.name || provider.id }}
+                </option>
+              </select>
             </label>
             <label>
               <span>Model</span>
-              <input v-model="configForm.model" placeholder="gpt-4o-mini" required />
+              <div class="model-picker-row">
+                <input v-model="configForm.model" placeholder="Enter or fetch a model" list="model-list" required />
+                <button type="button" class="icon-form-button" :disabled="!canFetchModels" title="Fetch models" @click="fetchModels">
+                  <span class="material-symbols-outlined" aria-hidden="true">sync</span>
+                </button>
+              </div>
+              <datalist id="model-list">
+                <option v-for="model in modelOptionIds" :key="model" :value="model" />
+              </datalist>
             </label>
             <label>
               <span>Base URL (optional)</span>
-              <input v-model="configForm.base_url" placeholder="https://api.openai.com/v1" />
+              <input
+                v-model="configForm.base_url"
+                :disabled="selectedProvider?.supports_custom_base_url === false"
+                :placeholder="selectedProvider?.default_base_url || 'https://api.openai.com/v1'"
+              />
             </label>
             <label>
               <span>API Key (optional{{ isEditing && editingConfig?.has_api_key ? ', leave blank to keep current' : '' }})</span>
@@ -214,9 +401,19 @@ const providerOptionsPreview = (options) => {
               <textarea
                 v-model="configForm.provider_options"
                 rows="4"
-                placeholder='{"temperature": 0.7, "max_tokens": 2048}'
+                placeholder='{"generation": {"temperature": 0.7}, "connection": {"timeout": 60}}'
               ></textarea>
             </label>
+            <div class="form-inline-actions">
+              <button type="button" class="text-button compact" @click="formatProviderOptions">Format JSON</button>
+            </div>
+            <label class="checkbox-field">
+              <input v-model="configForm.is_default" type="checkbox" />
+              <span>Use as default model</span>
+            </label>
+
+            <p v-if="modelStatus" class="status-message">{{ modelStatus }}</p>
+            <p v-if="formError" class="status-message error">{{ formError }}</p>
 
             <button type="submit" class="primary-button" :disabled="isSaving">
               <span class="material-symbols-outlined" aria-hidden="true">save</span>
@@ -315,9 +512,77 @@ const providerOptionsPreview = (options) => {
   transition: border-color 180ms ease, box-shadow 180ms ease;
 }
 
+.config-form-panel select {
+  width: 100%;
+  min-height: 48px;
+  padding: 0 14px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  outline: 0;
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+  transition: border-color 180ms ease, box-shadow 180ms ease;
+}
+
+.config-form-panel select:focus {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 12%, transparent);
+}
+
 .config-form-panel textarea:focus {
   border-color: var(--primary);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 12%, transparent);
+}
+
+.model-picker-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 48px;
+  gap: 8px;
+}
+
+.icon-form-button {
+  display: grid;
+  min-width: 48px;
+  min-height: 48px;
+  place-items: center;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--ink);
+}
+
+.icon-form-button:hover:not(:disabled) {
+  border-color: var(--primary);
+}
+
+.form-inline-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: -10px;
+}
+
+.text-button.compact {
+  width: auto;
+  margin-top: 0;
+  padding: 0;
+  font-size: 13px;
+}
+
+.checkbox-field {
+  display: flex !important;
+  align-items: center;
+  gap: 10px !important;
+}
+
+.checkbox-field input {
+  width: 18px;
+  min-height: 18px;
+}
+
+.checkbox-field span {
+  letter-spacing: 0 !important;
+  text-transform: none !important;
 }
 
 .config-options-preview {
