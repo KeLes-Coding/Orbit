@@ -3,7 +3,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-import httpx
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_ollama import ChatOllama
+from langchain_openai import ChatOpenAI
 
 from app.core.crypto import decrypt_secret
 from app.models.llm_config import LLMConfig
@@ -24,7 +26,7 @@ class LLMClientError(Exception):
 
 
 class LLMClient:
-    # MVP 先支持 OpenAI Chat Completions 兼容协议和 Ollama，本地结构保留扩展点。
+    # MVP 先通过 LangChain 支持 OpenAI Chat Completions 兼容协议和 Ollama。
     async def generate(
         self,
         *,
@@ -33,32 +35,34 @@ class LLMClient:
         summary: str | None = None,
     ) -> LLMCompletion:
         provider = config.provider.strip().lower()
-        chat_messages = self._build_chat_messages(messages=messages, summary=summary)
+        chat_messages = self._build_langchain_messages(messages=messages, summary=summary)
 
         if provider in {"openai", "openai_compatible"}:
-            return await self._generate_openai_compatible(
-                config=config,
+            return await self._ainvoke(
+                model=self._build_openai_model(config),
                 messages=chat_messages,
+                config=config,
             )
         if provider == "ollama":
-            return await self._generate_ollama(config=config, messages=chat_messages)
+            return await self._ainvoke(
+                model=self._build_ollama_model(config),
+                messages=chat_messages,
+                config=config,
+            )
 
         raise LLMClientError(f"暂不支持的模型供应商：{config.provider}")
 
-    def _build_chat_messages(
+    def _build_langchain_messages(
         self,
         *,
         messages: list[Message],
         summary: str | None,
-    ) -> list[dict[str, str]]:
-        chat_messages: list[dict[str, str]] = []
+    ) -> list[BaseMessage]:
+        chat_messages: list[BaseMessage] = []
         if summary:
             # 摘要作为 system 上下文注入，不改写原始 messages 事实源。
             chat_messages.append(
-                {
-                    "role": "system",
-                    "content": f"以下是此前对话摘要，请在后续回复中作为上下文参考：\n{summary}",
-                }
+                SystemMessage(content=f"以下是此前对话摘要，请在后续回复中作为上下文参考：\n{summary}")
             )
 
         for message in messages:
@@ -68,121 +72,168 @@ class LLMClient:
                 continue
             if not message.content:
                 continue
-            chat_messages.append({"role": message.role, "content": message.content})
+            chat_messages.append(self._to_langchain_message(message))
 
         if not chat_messages:
             raise LLMClientError("没有可用于模型调用的消息上下文")
         return chat_messages
 
-    async def _generate_openai_compatible(
-        self,
-        *,
-        config: LLMConfig,
-        messages: list[dict[str, str]],
-    ) -> LLMCompletion:
+    def _to_langchain_message(self, message: Message) -> BaseMessage:
+        if message.role == "system":
+            return SystemMessage(content=message.content)
+        if message.role == "user":
+            return HumanMessage(content=message.content)
+        if message.role == "assistant":
+            return AIMessage(content=message.content)
+        return ToolMessage(
+            content=message.content,
+            tool_call_id=message.langgraph_message_id or str(message.id),
+        )
+
+    def _build_openai_model(self, config: LLMConfig) -> ChatOpenAI:
         api_key = decrypt_secret(config.api_key_ciphertext)
         if not api_key:
             raise LLMClientError("当前模型配置缺少 API Key")
 
-        options = dict(config.provider_options or {})
-        timeout = float(options.pop("timeout", 60))
-        extra_body = options.pop("extra_body", None) or {}
-        if not isinstance(extra_body, dict):
-            raise LLMClientError("provider_options.extra_body 必须是对象")
-        base_url = (config.base_url or "https://api.openai.com/v1").rstrip("/")
-        payload = {
-            **options,
-            **extra_body,
+        options = self._parse_provider_options(
+            config.provider_options,
+            default_timeout=60,
+        )
+        model_kwargs = {
             "model": config.model,
-            "messages": messages,
+            "api_key": api_key,
+            "base_url": (config.base_url or "https://api.openai.com/v1").rstrip("/"),
+            "timeout": options.timeout,
+            **options.generation,
+            **options.langchain,
         }
+        if options.extra_body:
+            model_kwargs["extra_body"] = options.extra_body
 
         try:
-            async with httpx.AsyncClient(timeout=timeout) as client:
-                response = await client.post(
-                    f"{base_url}/chat/completions",
-                    headers={"Authorization": f"Bearer {api_key}"},
-                    json=payload,
-                )
-                response.raise_for_status()
-        except httpx.HTTPStatusError as exc:
-            detail = self._extract_error_detail(exc.response)
-            raise LLMClientError(f"模型服务返回错误：{detail}") from exc
-        except httpx.HTTPError as exc:
-            raise LLMClientError(f"模型服务请求失败：{exc}") from exc
+            return ChatOpenAI(**model_kwargs)
+        except Exception as exc:
+            raise LLMClientError(f"模型配置初始化失败：{exc}") from exc
 
-        data = response.json()
-        content = (
-            data.get("choices", [{}])[0]
-            .get("message", {})
-            .get("content")
+    def _build_ollama_model(self, config: LLMConfig) -> ChatOllama:
+        options = self._parse_provider_options(
+            config.provider_options,
+            default_timeout=120,
         )
-        if not isinstance(content, str) or content == "":
-            raise LLMClientError("模型服务没有返回 assistant 内容")
+        model_kwargs = {
+            "model": config.model,
+            "base_url": (config.base_url or "http://127.0.0.1:11434").rstrip("/"),
+            **options.generation,
+            **options.langchain,
+        }
+        if options.timeout is not None:
+            model_kwargs["timeout"] = options.timeout
 
-        return LLMCompletion(
-            content=content,
-            token_usage=data.get("usage") or {},
-            response_metadata={
-                "provider": config.provider,
-                "finish_reason": data.get("choices", [{}])[0].get("finish_reason"),
-                "raw_id": data.get("id"),
-            },
-        )
+        try:
+            return ChatOllama(**model_kwargs)
+        except Exception as exc:
+            raise LLMClientError(f"Ollama 配置初始化失败：{exc}") from exc
 
-    async def _generate_ollama(
+    async def _ainvoke(
         self,
         *,
+        model: Any,
+        messages: list[BaseMessage],
         config: LLMConfig,
-        messages: list[dict[str, str]],
     ) -> LLMCompletion:
-        options = dict(config.provider_options or {})
-        timeout = float(options.pop("timeout", 120))
-        base_url = (config.base_url or "http://127.0.0.1:11434").rstrip("/")
-        payload = {
-            "model": config.model,
-            "messages": messages,
-            "stream": False,
-            "options": options,
-        }
-
         try:
-            async with httpx.AsyncClient(timeout=timeout) as client:
-                response = await client.post(f"{base_url}/api/chat", json=payload)
-                response.raise_for_status()
-        except httpx.HTTPStatusError as exc:
-            detail = self._extract_error_detail(exc.response)
-            raise LLMClientError(f"Ollama 返回错误：{detail}") from exc
-        except httpx.HTTPError as exc:
-            raise LLMClientError(f"Ollama 请求失败：{exc}") from exc
+            response = await model.ainvoke(messages)
+        except Exception as exc:
+            raise LLMClientError(f"模型服务请求失败：{exc}") from exc
 
-        data = response.json()
-        content = (data.get("message") or {}).get("content")
-        if not isinstance(content, str) or content == "":
-            raise LLMClientError("Ollama 没有返回 assistant 内容")
+        content = self._normalize_content(response.content)
+        if content == "":
+            raise LLMClientError("模型服务没有返回 assistant 内容")
+
+        response_metadata = dict(getattr(response, "response_metadata", None) or {})
+        response_metadata.setdefault("provider", config.provider)
+        response_metadata.setdefault("model", config.model)
+        token_usage = self._extract_token_usage(response=response, response_metadata=response_metadata)
+
+        if getattr(response, "id", None):
+            response_metadata.setdefault("raw_id", response.id)
 
         return LLMCompletion(
             content=content,
-            token_usage={
-                "prompt_eval_count": data.get("prompt_eval_count"),
-                "eval_count": data.get("eval_count"),
-            },
-            response_metadata={
-                "provider": config.provider,
-                "done": data.get("done"),
-                "total_duration": data.get("total_duration"),
-            },
+            token_usage=token_usage,
+            response_metadata=response_metadata,
         )
 
-    def _extract_error_detail(self, response: httpx.Response) -> str:
-        try:
-            data = response.json()
-        except ValueError:
-            return response.text[:500]
-        if isinstance(data, dict):
-            error = data.get("error")
-            if isinstance(error, dict):
-                return str(error.get("message") or error)
-            if error is not None:
-                return str(error)
-        return str(data)[:500]
+    def _normalize_content(self, content: Any) -> str:
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            text_parts: list[str] = []
+            for part in content:
+                if isinstance(part, str):
+                    text_parts.append(part)
+                elif isinstance(part, dict) and isinstance(part.get("text"), str):
+                    text_parts.append(part["text"])
+            return "".join(text_parts)
+        return str(content) if content is not None else ""
+
+    def _extract_token_usage(
+        self,
+        *,
+        response: Any,
+        response_metadata: dict[str, Any],
+    ) -> dict[str, Any]:
+        usage_metadata = getattr(response, "usage_metadata", None)
+        if isinstance(usage_metadata, dict):
+            return usage_metadata
+
+        token_usage = response_metadata.get("token_usage")
+        if isinstance(token_usage, dict):
+            return token_usage
+
+        usage = response_metadata.get("usage")
+        if isinstance(usage, dict):
+            return usage
+
+        return {}
+
+    def _parse_provider_options(
+        self,
+        raw_options: dict | None,
+        *,
+        default_timeout: float,
+    ) -> LLMProviderOptions:
+        options = dict(raw_options or {})
+        connection = options.pop("connection", {}) or {}
+        generation = options.pop("generation", {}) or {}
+        langchain = options.pop("langchain", {}) or {}
+        extra_body = options.pop("extra_body", {}) or {}
+
+        if not isinstance(connection, dict):
+            raise LLMClientError("provider_options.connection 必须是对象")
+        if not isinstance(generation, dict):
+            raise LLMClientError("provider_options.generation 必须是对象")
+        if not isinstance(langchain, dict):
+            raise LLMClientError("provider_options.langchain 必须是对象")
+        if not isinstance(extra_body, dict):
+            raise LLMClientError("provider_options.extra_body 必须是对象")
+
+        timeout = connection.pop("timeout", options.pop("timeout", default_timeout))
+        generation = {
+            **options,
+            **generation,
+        }
+        return LLMProviderOptions(
+            timeout=float(timeout),
+            generation=generation,
+            langchain=langchain,
+            extra_body=extra_body,
+        )
+
+
+@dataclass
+class LLMProviderOptions:
+    timeout: float
+    generation: dict[str, Any] = field(default_factory=dict)
+    langchain: dict[str, Any] = field(default_factory=dict)
+    extra_body: dict[str, Any] = field(default_factory=dict)
