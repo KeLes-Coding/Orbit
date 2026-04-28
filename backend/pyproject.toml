@@ -5,12 +5,18 @@ description = "Orbit MVP backend"
 requires-python = ">=3.10"
 dependencies = [
     "alembic",
+    "anthropic",
     "asyncpg",
     "email-validator",
     "fastapi",
+    "google-genai",
+    "httpx",
+    "langchain-anthropic",
     "langchain-core",
+    "langchain-google-genai",
     "langchain-ollama",
     "langchain-openai",
+    "openai",
     "PyJWT",
     "pydantic-settings",
     "sqlalchemy",

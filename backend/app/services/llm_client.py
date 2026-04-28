@@ -4,12 +4,11 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
-from langchain_ollama import ChatOllama
-from langchain_openai import ChatOpenAI
 
-from app.core.crypto import decrypt_secret
 from app.models.llm_config import LLMConfig
 from app.models.message import Message
+from app.services.llm.providers.base import LLMProviderError
+from app.services.llm.providers.registry import get_provider
 
 
 @dataclass
@@ -34,23 +33,26 @@ class LLMClient:
         messages: list[Message],
         summary: str | None = None,
     ) -> LLMCompletion:
-        provider = config.provider.strip().lower()
+        # LLMClient 只做运行时编排；具体 provider 差异交给 registry 下的 provider 实现。
+        provider = get_provider(config.provider)
+        if provider is None:
+            raise LLMClientError(f"暂不支持的模型供应商：{config.provider}")
+
         chat_messages = self._build_langchain_messages(messages=messages, summary=summary)
 
-        if provider in {"openai", "openai_compatible"}:
-            return await self._ainvoke(
-                model=self._build_openai_model(config),
-                messages=chat_messages,
-                config=config,
-            )
-        if provider == "ollama":
-            return await self._ainvoke(
-                model=self._build_ollama_model(config),
-                messages=chat_messages,
-                config=config,
-            )
+        try:
+            # from_model_config 会在 provider 层解密 API Key，并构造不含 ORM 的运行时配置。
+            chat_model = provider.build_chat_model(provider.from_model_config(config))
+        except LLMProviderError as exc:
+            raise LLMClientError(str(exc)) from exc
+        except Exception as exc:
+            raise LLMClientError(f"模型配置初始化失败：{exc}") from exc
 
-        raise LLMClientError(f"暂不支持的模型供应商：{config.provider}")
+        return await self._ainvoke(
+            model=chat_model,
+            messages=chat_messages,
+            config=config,
+        )
 
     def _build_langchain_messages(
         self,
@@ -90,50 +92,6 @@ class LLMClient:
             tool_call_id=message.langgraph_message_id or str(message.id),
         )
 
-    def _build_openai_model(self, config: LLMConfig) -> ChatOpenAI:
-        api_key = decrypt_secret(config.api_key_ciphertext)
-        if not api_key:
-            raise LLMClientError("当前模型配置缺少 API Key")
-
-        options = self._parse_provider_options(
-            config.provider_options,
-            default_timeout=60,
-        )
-        model_kwargs = {
-            "model": config.model,
-            "api_key": api_key,
-            "base_url": (config.base_url or "https://api.openai.com/v1").rstrip("/"),
-            "timeout": options.timeout,
-            **options.generation,
-            **options.langchain,
-        }
-        if options.extra_body:
-            model_kwargs["extra_body"] = options.extra_body
-
-        try:
-            return ChatOpenAI(**model_kwargs)
-        except Exception as exc:
-            raise LLMClientError(f"模型配置初始化失败：{exc}") from exc
-
-    def _build_ollama_model(self, config: LLMConfig) -> ChatOllama:
-        options = self._parse_provider_options(
-            config.provider_options,
-            default_timeout=120,
-        )
-        model_kwargs = {
-            "model": config.model,
-            "base_url": (config.base_url or "http://127.0.0.1:11434").rstrip("/"),
-            **options.generation,
-            **options.langchain,
-        }
-        if options.timeout is not None:
-            model_kwargs["timeout"] = options.timeout
-
-        try:
-            return ChatOllama(**model_kwargs)
-        except Exception as exc:
-            raise LLMClientError(f"Ollama 配置初始化失败：{exc}") from exc
-
     async def _ainvoke(
         self,
         *,
@@ -141,6 +99,7 @@ class LLMClient:
         messages: list[BaseMessage],
         config: LLMConfig,
     ) -> LLMCompletion:
+        # LangChain 不同 provider 的返回元信息形状略有差异，这里统一收敛成 LLMCompletion。
         try:
             response = await model.ainvoke(messages)
         except Exception as exc:
@@ -165,6 +124,7 @@ class LLMClient:
         )
 
     def _normalize_content(self, content: Any) -> str:
+        # 预留多模态返回：当前 MVP 仍只把文本部分落入 messages.content。
         if isinstance(content, str):
             return content
         if isinstance(content, list):
@@ -183,6 +143,7 @@ class LLMClient:
         response: Any,
         response_metadata: dict[str, Any],
     ) -> dict[str, Any]:
+        # LangChain 标准字段优先；兼容部分 provider 把用量放在 response_metadata 里的情况。
         usage_metadata = getattr(response, "usage_metadata", None)
         if isinstance(usage_metadata, dict):
             return usage_metadata
@@ -196,44 +157,3 @@ class LLMClient:
             return usage
 
         return {}
-
-    def _parse_provider_options(
-        self,
-        raw_options: dict | None,
-        *,
-        default_timeout: float,
-    ) -> LLMProviderOptions:
-        options = dict(raw_options or {})
-        connection = options.pop("connection", {}) or {}
-        generation = options.pop("generation", {}) or {}
-        langchain = options.pop("langchain", {}) or {}
-        extra_body = options.pop("extra_body", {}) or {}
-
-        if not isinstance(connection, dict):
-            raise LLMClientError("provider_options.connection 必须是对象")
-        if not isinstance(generation, dict):
-            raise LLMClientError("provider_options.generation 必须是对象")
-        if not isinstance(langchain, dict):
-            raise LLMClientError("provider_options.langchain 必须是对象")
-        if not isinstance(extra_body, dict):
-            raise LLMClientError("provider_options.extra_body 必须是对象")
-
-        timeout = connection.pop("timeout", options.pop("timeout", default_timeout))
-        generation = {
-            **options,
-            **generation,
-        }
-        return LLMProviderOptions(
-            timeout=float(timeout),
-            generation=generation,
-            langchain=langchain,
-            extra_body=extra_body,
-        )
-
-
-@dataclass
-class LLMProviderOptions:
-    timeout: float
-    generation: dict[str, Any] = field(default_factory=dict)
-    langchain: dict[str, Any] = field(default_factory=dict)
-    extra_body: dict[str, Any] = field(default_factory=dict)
