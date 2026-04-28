@@ -1,5 +1,5 @@
 <script setup>
-import { ref, onMounted, onUnmounted } from 'vue'
+import { nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useOrbit } from '../composables/useOrbit'
 
 const {
@@ -26,6 +26,14 @@ const {
 
 const showModelMenu = ref(false)
 const modelBtnRef = ref(null)
+const composerInputRef = ref(null)
+
+const resizeComposer = () => {
+  const input = composerInputRef.value
+  if (!input) return
+  input.style.height = 'auto'
+  input.style.height = `${Math.min(input.scrollHeight, 168)}px`
+}
 
 const currentLlmConfigId = () => {
   if (!activeConversation.value) return null
@@ -57,7 +65,22 @@ const onClickOutside = (event) => {
   }
 }
 
-onMounted(() => document.addEventListener('click', onClickOutside))
+const handleComposerKeydown = (event) => {
+  if (event.key !== 'Enter' || event.shiftKey || event.isComposing) return
+  event.preventDefault()
+  sendMessage()
+}
+
+const handleComposerInput = () => {
+  resizeComposer()
+}
+
+watch(draft, () => nextTick(resizeComposer))
+
+onMounted(() => {
+  document.addEventListener('click', onClickOutside)
+  resizeComposer()
+})
 onUnmounted(() => document.removeEventListener('click', onClickOutside))
 </script>
 
@@ -66,7 +89,7 @@ onUnmounted(() => document.removeEventListener('click', onClickOutside))
     <header class="mobile-header">
       <strong>Orbit</strong>
       <div class="header-actions">
-        <button type="button" aria-label="New thread" @click="createNewThread()">
+        <button type="button" aria-label="New chat" @click="createNewThread()">
           <span class="material-symbols-outlined" aria-hidden="true">add</span>
         </button>
         <button type="button" :aria-label="user ? 'Sign out' : 'Sign in'" @click="user ? logout() : openAuth()">
@@ -165,22 +188,27 @@ onUnmounted(() => document.removeEventListener('click', onClickOutside))
     <form class="composer-wrap" @submit.prevent="sendMessage">
       <p v-if="errorMessage" class="status-message error">{{ errorMessage }}</p>
       <p v-else-if="!user" class="status-message">
-        Sign in from the avatar to send messages and sync history.
+        Sign in from the avatar to send messages and sync chats.
       </p>
       <p v-else-if="llmConfigs.length === 0" class="status-message">
         Create a default model configuration before sending messages.
       </p>
       <div class="composer">
         <textarea
+          ref="composerInputRef"
           v-model="draft"
           rows="1"
           placeholder="Focus your intent..."
           aria-label="Message"
           :disabled="isSending"
+          @input="handleComposerInput"
+          @keydown="handleComposerKeydown"
         ></textarea>
-        <button type="submit" class="send-button" aria-label="Send message" :disabled="isSending">
-          <span class="material-symbols-outlined" aria-hidden="true">arrow_upward</span>
-        </button>
+        <div class="composer-actions">
+          <button type="submit" class="send-button" aria-label="Send message" :disabled="isSending || !draft.trim()">
+            <span class="material-symbols-outlined" aria-hidden="true">arrow_upward</span>
+          </button>
+        </div>
       </div>
       <p>AI may hallucinate. Cultivate discernment.</p>
     </form>

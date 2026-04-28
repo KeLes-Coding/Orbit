@@ -88,29 +88,12 @@ onUnmounted(() => document.removeEventListener('click', onClickOutside))
     <div class="nav-action">
       <button type="button" class="primary-button" @click="createNewThread()">
         <span class="material-symbols-outlined" aria-hidden="true">add</span>
-        <span>New Thread</span>
+        <span>New Chat</span>
       </button>
     </div>
 
     <nav class="nav-list" aria-label="Workspace">
-      <button
-        type="button"
-        :class="['nav-item', { active: activeView === 'chat' }]"
-        @click="setActiveView('chat')"
-      >
-        <span class="material-symbols-outlined" aria-hidden="true">chat_bubble</span>
-        <span>New Chat</span>
-      </button>
-
-      <button
-        type="button"
-        :class="['nav-item', { active: activeView === 'history' }]"
-        @click="setActiveView('history')"
-      >
-        <span class="material-symbols-outlined" aria-hidden="true">history</span>
-        <span>History</span>
-      </button>
-
+      <div class="thread-section-title">Chats</div>
       <div class="thread-list" aria-label="Recent conversations">
         <div
           v-for="conversation in sortedConversations"
@@ -156,7 +139,7 @@ onUnmounted(() => document.removeEventListener('click', onClickOutside))
           </template>
         </div>
         <p v-if="isBooting">Loading workspace...</p>
-        <p v-else-if="!user">Sign in to sync history</p>
+        <p v-else-if="!user">Sign in to sync chats</p>
         <p v-else-if="sortedConversations.length === 0">No conversations yet</p>
       </div>
 
@@ -210,6 +193,17 @@ onUnmounted(() => document.removeEventListener('click', onClickOutside))
   display: flex;
   align-items: center;
   gap: 4px;
+  min-height: 34px;
+  padding: 0 8px;
+  border-radius: 6px;
+  transition:
+    background 160ms ease,
+    color 160ms ease;
+}
+
+.thread-item:hover,
+.thread-item.active {
+  background: var(--surface-low);
 }
 
 .thread-item.active .thread-button {
@@ -230,7 +224,7 @@ onUnmounted(() => document.removeEventListener('click', onClickOutside))
   cursor: pointer;
   flex: 1;
   min-width: 0;
-  padding: 0;
+  padding: 7px 0;
 }
 
 .thread-button:hover {
