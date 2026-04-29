@@ -323,7 +323,10 @@ const createLlmConfig = async (payload) => {
   errorMessage.value = ''
   try {
     const config = await llmConfigApi.create(payload)
-    llmConfigs.value = [config, ...llmConfigs.value]
+    llmConfigs.value = [
+      config,
+      ...llmConfigs.value.map((c) => (config.is_default ? { ...c, is_default: false } : c)),
+    ]
     return config
   } catch (error) {
     setError(error)
@@ -338,7 +341,10 @@ const updateLlmConfig = async (configId, payload) => {
   errorMessage.value = ''
   try {
     const updated = await llmConfigApi.update(configId, payload)
-    llmConfigs.value = llmConfigs.value.map((c) => (c.id === configId ? updated : c))
+    llmConfigs.value = llmConfigs.value.map((c) => {
+      if (c.id === configId) return updated
+      return updated.is_default ? { ...c, is_default: false } : c
+    })
     return updated
   } catch (error) {
     setError(error)
@@ -366,7 +372,7 @@ const setDefaultLlmConfig = async (configId) => {
     const updated = await llmConfigApi.setDefault(configId)
     llmConfigs.value = llmConfigs.value.map((c) => ({
       ...c,
-      is_default: c.id === configId ? true : c.id === updated.id ? false : c.is_default,
+      is_default: c.id === updated.id,
     }))
     return true
   } catch (error) {

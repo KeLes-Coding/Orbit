@@ -122,6 +122,18 @@ export const llmConfigApi = {
   list() {
     return apiRequest('/llm-configs')
   },
+  providers() {
+    return apiRequest('/llm-configs/providers')
+  },
+  models(payload) {
+    return apiRequest('/llm-configs/models', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    })
+  },
+  configModels(configId) {
+    return apiRequest(`/llm-configs/${configId}/models`)
+  },
   get(configId) {
     return apiRequest(`/llm-configs/${configId}`)
   },

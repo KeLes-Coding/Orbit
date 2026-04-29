@@ -43,3 +43,27 @@ class LLMConfigRead(BaseModel):
     has_api_key: bool = False
     created_at: datetime
     updated_at: datetime
+
+
+class LLMProviderRead(BaseModel):
+    id: str
+    name: str
+    requires_api_key: bool
+    supports_custom_base_url: bool
+    supports_model_list: bool
+    default_base_url: str | None = None
+
+
+class LLMModelRead(BaseModel):
+    id: str
+    name: str | None = None
+    description: str | None = None
+    owned_by: str | None = None
+
+
+class LLMModelProbe(BaseModel):
+    # 用于配置尚未保存时临时获取模型列表；api_key 不会入库。
+    provider: str = Field(min_length=1, max_length=50)
+    base_url: str | None = None
+    api_key: str | None = Field(default=None, max_length=4096)
+    provider_options: dict = Field(default_factory=dict)

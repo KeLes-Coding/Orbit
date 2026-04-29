@@ -6,7 +6,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.crypto import encrypt_secret
 from app.models.llm_config import LLMConfig
 from app.repositories.llm_config import LLMConfigRepository
-from app.schemas.llm_config import LLMConfigCreate, LLMConfigRead, LLMConfigUpdate
+from app.schemas.llm_config import (
+    LLMConfigCreate,
+    LLMConfigRead,
+    LLMConfigUpdate,
+    LLMModelProbe,
+    LLMModelRead,
+    LLMProviderRead,
+)
+from app.services.llm.providers.base import LLMProviderError, LLMRuntimeConfig
+from app.services.llm.providers.registry import get_provider, list_provider_infos
 
 
 class LLMConfigService:
@@ -19,6 +28,58 @@ class LLMConfigService:
         # 列表接口不返回 api_key_ciphertext，只返回是否已配置 API Key。
         configs = await self.configs.list_active(user_id)
         return [self._to_read(config) for config in configs]
+
+    async def list_providers(self) -> list[LLMProviderRead]:
+        # Provider 元信息来自 registry，不从数据库读取，方便前端生成配置表单。
+        return [
+            LLMProviderRead(
+                id=provider.id,
+                name=provider.name,
+                requires_api_key=provider.requires_api_key,
+                supports_custom_base_url=provider.supports_custom_base_url,
+                supports_model_list=provider.supports_model_list,
+                default_base_url=provider.default_base_url,
+            )
+            for provider in list_provider_infos()
+        ]
+
+    async def list_config_models(self, *, user_id: UUID, config_id: UUID) -> list[LLMModelRead]:
+        # 已保存配置走这里：先做用户归属校验，再解密 API Key 交给 provider。
+        config = await self._get_owned_config(user_id=user_id, config_id=config_id)
+        provider = get_provider(config.provider)
+        if provider is None:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="暂不支持的模型供应商")
+
+        try:
+            # provider 层负责不同供应商的 SDK 差异，service 只负责错误语义转换。
+            models = await provider.list_models(provider.from_model_config(config))
+        except LLMProviderError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"获取模型列表失败：{exc}") from exc
+        return [self._to_model_read(model) for model in models]
+
+    async def probe_models(self, payload: LLMModelProbe) -> list[LLMModelRead]:
+        # 未保存配置走这里：请求中的 api_key 只用于本次探测，不进入数据库。
+        provider = get_provider(payload.provider)
+        if provider is None:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="暂不支持的模型供应商")
+
+        runtime_config = LLMRuntimeConfig(
+            provider=payload.provider,
+            model=None,
+            base_url=payload.base_url,
+            api_key=payload.api_key,
+            provider_options=payload.provider_options,
+        )
+        try:
+            # runtime_config 是临时配置对象，结构对齐 LLMConfig 但不包含用户归属。
+            models = await provider.list_models(runtime_config)
+        except LLMProviderError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"获取模型列表失败：{exc}") from exc
+        return [self._to_model_read(model) for model in models]
 
     async def get_config(self, *, user_id: UUID, config_id: UUID) -> LLMConfigRead:
         config = await self._get_owned_config(user_id=user_id, config_id=config_id)
@@ -33,12 +94,14 @@ class LLMConfigService:
         is_default = payload.is_default or is_first_config
         if is_default:
             await self.configs.unset_defaults(user_id)
+        # 入库前把 claude/google 等别名规范化，历史消息上的 provider 快照更稳定。
+        provider = self._normalize_provider_or_400(payload.provider)
 
         # API Key 在进入数据库前加密；后续响应永远不返回明文或密文。
         config = await self.configs.create(
             user_id=user_id,
             name=payload.name,
-            provider=payload.provider.strip(),
+            provider=provider,
             model=payload.model.strip(),
             base_url=payload.base_url,
             api_key_ciphertext=encrypt_secret(payload.api_key),
@@ -63,7 +126,7 @@ class LLMConfigService:
             await self._ensure_name_available(user_id=user_id, name=update_data["name"])
             config.name = update_data["name"]
         if "provider" in update_data:
-            config.provider = update_data["provider"].strip()
+            config.provider = self._normalize_provider_or_400(update_data["provider"])
         if "model" in update_data:
             config.model = update_data["model"].strip()
         if "base_url" in update_data:
@@ -126,3 +189,19 @@ class LLMConfigService:
         # Pydantic 从 ORM 对象取公共字段，再手动补 has_api_key 这个派生字段。
         data = LLMConfigRead.model_validate(config)
         return data.model_copy(update={"has_api_key": bool(config.api_key_ciphertext)})
+
+    def _normalize_provider_or_400(self, provider_id: str) -> str:
+        # 所有配置写入都经过 registry，避免后续聊天时才发现 provider 不支持。
+        provider = get_provider(provider_id)
+        if provider is None:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="暂不支持的模型供应商")
+        return provider.provider
+
+    def _to_model_read(self, model) -> LLMModelRead:
+        # Provider 内部统一返回 dataclass，这里再转换成 API schema。
+        return LLMModelRead(
+            id=model.id,
+            name=model.name,
+            description=model.description,
+            owned_by=model.owned_by,
+        )
