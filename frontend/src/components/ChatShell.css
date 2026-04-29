@@ -1,0 +1,82 @@
+.model-selector {
+  position: relative;
+}
+
+.model-menu {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 0;
+  min-width: 300px;
+  max-width: 420px;
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  z-index: 30;
+}
+
+.model-menu-label {
+  padding: 8px 12px 4px;
+  color: var(--ink-soft);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.model-menu-item {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ink);
+  font-size: 14px;
+  text-align: left;
+  cursor: pointer;
+  transition: background 140ms ease;
+}
+
+.model-menu-item:hover {
+  background: var(--surface-low);
+}
+
+.model-menu-item.active {
+  background: color-mix(in srgb, var(--primary) 8%, transparent);
+}
+
+.model-menu-name {
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.model-menu-sub {
+  margin-left: auto;
+  color: var(--ink-soft);
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.model-menu-empty {
+  padding: 12px;
+  color: var(--ink-soft);
+  font-size: 13px;
+  text-align: center;
+}
+
+.model-menu-divider {
+  height: 1px;
+  margin: 4px 8px;
+  background: var(--line);
+}
+
+.model-menu-icon {
+  font-size: 18px !important;
+  color: var(--ink-muted) !important;
+}
