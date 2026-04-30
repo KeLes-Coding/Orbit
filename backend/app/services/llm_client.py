@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, AsyncIterator
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 
@@ -17,6 +17,15 @@ class LLMCompletion:
     content: str
     token_usage: dict[str, Any] = field(default_factory=dict)
     response_metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class LLMStreamChunk:
+    # 流式调用的内部统一 chunk，避免会话服务直接依赖 LangChain 的返回形状。
+    content_delta: str = ""
+    token_usage: dict[str, Any] = field(default_factory=dict)
+    response_metadata: dict[str, Any] = field(default_factory=dict)
+    finish_reason: str | None = None
 
 
 class LLMClientError(Exception):
@@ -53,6 +62,47 @@ class LLMClient:
             messages=chat_messages,
             config=config,
         )
+
+    async def stream(
+        self,
+        *,
+        config: LLMConfig,
+        messages: list[Message],
+        summary: str | None = None,
+    ) -> AsyncIterator[LLMStreamChunk]:
+        # 与 generate 复用同一套上下文组装和 provider 初始化，只把 ainvoke 换成 astream。
+        provider = get_provider(config.provider)
+        if provider is None:
+            raise LLMClientError(f"暂不支持的模型供应商：{config.provider}")
+
+        chat_messages = self._build_langchain_messages(messages=messages, summary=summary)
+
+        try:
+            chat_model = provider.build_chat_model(provider.from_model_config(config))
+        except LLMProviderError as exc:
+            raise LLMClientError(str(exc)) from exc
+        except Exception as exc:
+            raise LLMClientError(f"模型配置初始化失败：{exc}") from exc
+
+        try:
+            async for chunk in chat_model.astream(chat_messages):
+                response_metadata = dict(getattr(chunk, "response_metadata", None) or {})
+                response_metadata.setdefault("provider", config.provider)
+                response_metadata.setdefault("model", config.model)
+                token_usage = self._extract_token_usage(
+                    response=chunk,
+                    response_metadata=response_metadata,
+                )
+                yield LLMStreamChunk(
+                    content_delta=self._normalize_content(getattr(chunk, "content", "")),
+                    token_usage=token_usage,
+                    response_metadata=response_metadata,
+                    finish_reason=self._extract_finish_reason(response_metadata),
+                )
+        except LLMClientError:
+            raise
+        except Exception as exc:
+            raise LLMClientError(f"模型服务流式请求失败：{exc}") from exc
 
     def _build_langchain_messages(
         self,
@@ -122,6 +172,10 @@ class LLMClient:
             token_usage=token_usage,
             response_metadata=response_metadata,
         )
+
+    def _extract_finish_reason(self, response_metadata: dict[str, Any]) -> str | None:
+        finish_reason = response_metadata.get("finish_reason") or response_metadata.get("done_reason")
+        return str(finish_reason) if finish_reason is not None else None
 
     def _normalize_content(self, content: Any) -> str:
         # 预留多模态返回：当前 MVP 仍只把文本部分落入 messages.content。
