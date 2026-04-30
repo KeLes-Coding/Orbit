@@ -13,6 +13,7 @@ class GeminiProvider(BaseLLMProvider):
     provider = "gemini"
     name = "Gemini"
     supports_custom_base_url = False
+    default_base_url = "https://generativelanguage.googleapis.com/v1beta"
 
     def build_chat_model(self, config: LLMRuntimeConfig) -> ChatGoogleGenerativeAI:
         # LangChain Google integration 使用 request_timeout，而不是通用 timeout。

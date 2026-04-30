@@ -13,12 +13,12 @@ from app.services.auth import AuthService
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 
-@router.post("/register", response_model=AuthToken, status_code=201)
+@router.post("/register", response_model=UserRead, status_code=201)
 async def register(
     payload: UserCreate,
     session: Annotated[AsyncSession, Depends(get_db_session)],
-) -> AuthToken:
-    # 注册成功后直接返回访问令牌，前端可以立刻进入已登录状态。
+) -> User:
+    # 注册只创建账号；访问令牌统一由登录接口签发。
     return await AuthService(session).register(payload)
 
 

@@ -13,8 +13,8 @@ import type { LlmConfig, LlmProvider, LlmModel } from "@/api/types"
 const FALLBACK_PROVIDERS: LlmProvider[] = [
   { id: "openai", name: "OpenAI", requires_api_key: true, supports_custom_base_url: true, supports_model_list: true, default_base_url: "https://api.openai.com/v1" },
   { id: "openai_compatible", name: "OpenAI Compatible", requires_api_key: true, supports_custom_base_url: true, supports_model_list: true },
-  { id: "anthropic", name: "Claude / Anthropic", requires_api_key: true, supports_custom_base_url: true, supports_model_list: true },
-  { id: "gemini", name: "Gemini", requires_api_key: true, supports_custom_base_url: false, supports_model_list: true },
+  { id: "anthropic", name: "Claude / Anthropic", requires_api_key: true, supports_custom_base_url: true, supports_model_list: true, default_base_url: "https://api.anthropic.com" },
+  { id: "gemini", name: "Gemini", requires_api_key: true, supports_custom_base_url: false, supports_model_list: true, default_base_url: "https://generativelanguage.googleapis.com/v1beta" },
   { id: "ollama", name: "Ollama", requires_api_key: false, supports_custom_base_url: true, supports_model_list: true, default_base_url: "http://127.0.0.1:11434" },
   { id: "deepseek", name: "DeepSeek", requires_api_key: true, supports_custom_base_url: true, supports_model_list: true, default_base_url: "https://api.deepseek.com" },
   { id: "qwen", name: "Qwen", requires_api_key: true, supports_custom_base_url: true, supports_model_list: true, default_base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1" },
@@ -114,15 +114,20 @@ export function ConfigFormDialog({
     if (!form.provider) return
     setModelOptions([])
     setModelStatus("")
-    const p = selectedProvider
-    if (!p) return
-    if (p.default_base_url && !form.base_url.trim()) {
-      setForm((prev) => ({ ...prev, base_url: p.default_base_url! }))
-    }
-    if (p.supports_custom_base_url === false) {
-      setForm((prev) => ({ ...prev, base_url: "" }))
-    }
   }, [form.provider])
+
+  const handleProviderChange = useCallback(
+    (providerId: string) => {
+      const nextProvider = providers.find((p) => p.id === providerId)
+      setForm((prev) => ({
+        ...prev,
+        provider: providerId,
+        model: "",
+        base_url: nextProvider?.default_base_url || "",
+      }))
+    },
+    [providers],
+  )
 
   const parseProviderOptions = useCallback((): Record<string, unknown> | null => {
     const raw = form.provider_options.trim()
@@ -236,7 +241,7 @@ export function ConfigFormDialog({
               <select
                 id="cfg-provider"
                 value={form.provider}
-                onChange={(e) => setForm((prev) => ({ ...prev, provider: e.target.value }))}
+                onChange={(e) => handleProviderChange(e.target.value)}
                 className="flex h-10 w-full rounded-sm border border-[var(--line)] bg-[var(--surface)] px-3 py-2 text-sm text-[var(--ink)] appearance-none transition-colors duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-orange/30"
               >
                 {providers.map((p) => (
@@ -257,20 +262,6 @@ export function ConfigFormDialog({
                   : "Custom base URL not supported."}
               </p>
             )}
-          </div>
-
-          {/* Model */}
-          <div className="flex flex-col gap-1.5">
-            <Label htmlFor="cfg-model">Model</Label>
-            <ModelPicker
-              value={form.model}
-              onChange={(v) => setForm((prev) => ({ ...prev, model: v }))}
-              modelOptions={modelOptions}
-              isLoading={isLoadingModels}
-              statusMessage={modelStatus}
-              canFetch={canFetchModels}
-              onFetch={fetchModels}
-            />
           </div>
 
           {/* Base URL */}
@@ -303,6 +294,20 @@ export function ConfigFormDialog({
               onChange={(e) => setForm((prev) => ({ ...prev, api_key: e.target.value }))}
               type="password"
               placeholder="sk-..."
+            />
+          </div>
+
+          {/* Model */}
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="cfg-model">Model</Label>
+            <ModelPicker
+              value={form.model}
+              onChange={(v) => setForm((prev) => ({ ...prev, model: v }))}
+              modelOptions={modelOptions}
+              isLoading={isLoadingModels}
+              statusMessage={modelStatus}
+              canFetch={canFetchModels}
+              onFetch={fetchModels}
             />
           </div>
 

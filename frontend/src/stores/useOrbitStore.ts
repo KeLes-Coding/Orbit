@@ -29,6 +29,7 @@ interface OrbitStore {
   authMode: 'login' | 'register'
   authForm: { email: string; password: string; displayName: string }
   activeConversationId: string | null
+  pendingConversationLlmConfigId: string | null
   editingThreadId: string | null
   editingTitle: string
 
@@ -46,6 +47,7 @@ interface OrbitStore {
   setAuthForm: (form: Partial<OrbitStore['authForm']>) => void
   resetAuthForm: () => void
   setActiveConversationId: (id: string | null) => void
+  setPendingConversationLlmConfigId: (id: string | null) => void
   setEditingThreadId: (id: string | null) => void
   setEditingTitle: (title: string) => void
   logout: () => void
@@ -67,6 +69,7 @@ export const useOrbitStore = create<OrbitStore>((set) => ({
   authMode: 'login',
   authForm: { ...defaultAuthForm },
   activeConversationId: null,
+  pendingConversationLlmConfigId: null,
   editingThreadId: null,
   editingTitle: '',
 
@@ -91,6 +94,7 @@ export const useOrbitStore = create<OrbitStore>((set) => ({
     set((state) => ({ authForm: { ...state.authForm, ...form } })),
   resetAuthForm: () => set({ authForm: { ...defaultAuthForm } }),
   setActiveConversationId: (id) => set({ activeConversationId: id }),
+  setPendingConversationLlmConfigId: (id) => set({ pendingConversationLlmConfigId: id }),
   setEditingThreadId: (id) => set({ editingThreadId: id }),
   setEditingTitle: (title) => set({ editingTitle: title }),
 
@@ -98,6 +102,7 @@ export const useOrbitStore = create<OrbitStore>((set) => ({
     set({
       draft: '',
       activeConversationId: null,
+      pendingConversationLlmConfigId: null,
       isCreatingConversationTitle: false,
       editingThreadId: null,
       editingTitle: '',

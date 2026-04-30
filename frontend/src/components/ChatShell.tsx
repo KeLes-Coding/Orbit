@@ -27,6 +27,7 @@ export function ChatShell() {
     messages,
     activeConversation,
     activeConversationId,
+    pendingConversationLlmConfigId,
     isLoadingMessages,
     isSending,
     selectConversation,
@@ -34,6 +35,7 @@ export function ChatShell() {
     sendMessage,
     stopGeneration,
     switchConversationLlm,
+    selectPendingConversationLlm,
   } = useConversations(hasUser)
 
   const { configs } = useLlmConfigs(hasUser)
@@ -49,17 +51,27 @@ export function ChatShell() {
   const { isDark, toggleTheme } = useTheme()
 
   const currentLlmConfigId = useMemo(() => {
-    if (!activeConversation) return null
+    if (!activeConversation) {
+      const pendingConfig = configs.find((c) => c.id === pendingConversationLlmConfigId)
+      if (pendingConfig) return pendingConfig.id
+      const defaultConfig = configs.find((c) => c.is_default)
+      if (defaultConfig) return defaultConfig.id
+      return null
+    }
     const activeConfig = configs.find((c) => c.id === activeConversation.llm_config_id)
     if (activeConfig) return activeConfig.id
     const defaultConfig = configs.find((c) => c.is_default)
     if (defaultConfig) return defaultConfig.id
     return null
-  }, [activeConversation, configs])
+  }, [activeConversation, configs, pendingConversationLlmConfigId])
 
   const selectModel = useCallback(
     async (config: LlmConfig) => {
-      if (!activeConversationId) return
+      if (!activeConversationId) {
+        selectPendingConversationLlm(config.id)
+        toast.success(`New chat will use ${config.name}`)
+        return
+      }
       try {
         await switchConversationLlm(activeConversationId, config.id)
         toast.success(`Switched to ${config.name}`)
@@ -67,7 +79,7 @@ export function ChatShell() {
         toast.error("Failed to switch model")
       }
     },
-    [activeConversationId, switchConversationLlm],
+    [activeConversationId, selectPendingConversationLlm, switchConversationLlm],
   )
 
   const goToConfigs = useCallback(() => {

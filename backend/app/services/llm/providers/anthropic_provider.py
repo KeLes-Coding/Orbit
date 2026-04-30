@@ -10,7 +10,7 @@ class AnthropicProvider(BaseLLMProvider):
     # 对外使用 anthropic 作为规范 provider，registry 中保留 claude 作为别名。
     provider = "anthropic"
     name = "Claude / Anthropic"
-    default_base_url = None
+    default_base_url = "https://api.anthropic.com"
 
     def build_chat_model(self, config: LLMRuntimeConfig) -> ChatAnthropic:
         # Anthropic integration 参数名使用 model_name，和其他 provider 略有不同。

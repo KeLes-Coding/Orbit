@@ -338,7 +338,7 @@ class ConversationService:
                 token_usage=token_usage,
                 response_metadata=response_metadata,
             )
-            raise
+            return
         except LLMClientError as exc:
             failed_message = await self._fail_or_partial_streaming_message(
                 conversation_id=conversation_id,
@@ -519,7 +519,7 @@ class ConversationService:
                 token_usage=token_usage,
                 response_metadata=response_metadata,
             )
-            raise
+            return
         except LLMClientError as exc:
             # 模型失败但已有部分内容时会保留 partial；完全无内容则标记 failed。
             failed_message = await self._fail_or_partial_streaming_message(

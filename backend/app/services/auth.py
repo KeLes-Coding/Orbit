@@ -13,7 +13,7 @@ class AuthService:
         self.session = session
         self.users = UserRepository(session)
 
-    async def register(self, payload: UserCreate) -> AuthToken:
+    async def register(self, payload: UserCreate) -> User:
         # 注册前先按邮箱查重；邮箱唯一性最终仍由数据库索引兜底。
         existing_user = await self.users.get_by_email(str(payload.email))
         if existing_user is not None:
@@ -28,9 +28,9 @@ class AuthService:
             password_hash=hash_password(payload.password),
             display_name=payload.display_name,
         )
-        # 用户创建成功后立即提交，随后返回登录态，前端无需再单独登录一次。
+        # 用户创建成功后立即提交；登录态仍由用户显式登录时签发。
         await self.session.commit()
-        return self._build_token(user)
+        return user
 
     async def login(self, payload: UserLogin) -> AuthToken:
         # 登录失败统一返回同一错误，避免暴露邮箱是否存在。

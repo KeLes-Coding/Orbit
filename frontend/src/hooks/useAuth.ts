@@ -1,5 +1,6 @@
 import { useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { toast } from 'sonner'
 import { authApi } from '@/api/auth'
 import { getStoredToken, setStoredToken, clearStoredToken } from '@/api/client'
 import { useOrbitStore } from '@/stores/useOrbitStore'
@@ -68,14 +69,13 @@ export function useAuth() {
 
   const registerMutation = useMutation({
     mutationFn: authApi.register,
-    onSuccess: (data) => {
-      setStoredToken(data.access_token)
-      queryClient.setQueryData(['user'], data.user)
-      setShowAuth(false)
+    onSuccess: () => {
+      const email = authForm.email
+      setAuthMode('login')
       resetAuthForm()
+      setAuthForm({ email })
       setErrorMessage('')
-      queryClient.invalidateQueries({ queryKey: ['conversations'] })
-      queryClient.invalidateQueries({ queryKey: ['llm-configs'] })
+      toast.success('Account created. Sign in to continue.')
     },
     onError: (error: Error) => {
       setErrorMessage(error.message)

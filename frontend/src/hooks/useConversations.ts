@@ -52,9 +52,11 @@ function appendMessageDelta(messages: Message[], messageId: string, delta: strin
 
 export function useConversations(hasUser: boolean) {
   const activeConversationId = useOrbitStore((s) => s.activeConversationId)
+  const pendingConversationLlmConfigId = useOrbitStore((s) => s.pendingConversationLlmConfigId)
   const draft = useOrbitStore((s) => s.draft)
   const isCreatingConversationTitle = useOrbitStore((s) => s.isCreatingConversationTitle)
   const setActiveConversationId = useOrbitStore((s) => s.setActiveConversationId)
+  const setPendingConversationLlmConfigId = useOrbitStore((s) => s.setPendingConversationLlmConfigId)
   const setDraft = useOrbitStore((s) => s.setDraft)
   const setErrorMessage = useOrbitStore((s) => s.setErrorMessage)
   const setActiveView = useOrbitStore((s) => s.setActiveView)
@@ -215,7 +217,7 @@ export function useConversations(hasUser: boolean) {
   )
 
   const streamNewConversationMessage = useCallback(
-    async (content: string) => {
+    async (content: string, llmConfigId: string | null) => {
       const controller = new AbortController()
       let conversationId: string | null = null
 
@@ -225,7 +227,7 @@ export function useConversations(hasUser: boolean) {
 
       try {
         for await (const streamEvent of conversationApi.streamNewConversationMessage(
-          { content, chat_mode: 'chat', metadata: {} },
+          { content, llm_config_id: llmConfigId, chat_mode: 'chat', metadata: {} },
           controller.signal,
         )) {
           if (streamEvent.event === 'conversation.created') {
@@ -239,6 +241,7 @@ export function useConversations(hasUser: boolean) {
             ])
             queryClient.setQueryData<Message[]>(['messages', conversation.id], [])
             setActiveConversationId(conversation.id)
+            setPendingConversationLlmConfigId(null)
             setActiveView('chat')
             continue
           }
@@ -290,6 +293,7 @@ export function useConversations(hasUser: boolean) {
       setActiveView,
       setErrorMessage,
       setIsCreatingConversationTitle,
+      setPendingConversationLlmConfigId,
     ],
   )
 
@@ -305,7 +309,7 @@ export function useConversations(hasUser: boolean) {
 
     const conversationId = activeConversationId
     if (!conversationId) {
-      void streamNewConversationMessage(content)
+      void streamNewConversationMessage(content, pendingConversationLlmConfigId)
       return
     }
 
@@ -313,6 +317,7 @@ export function useConversations(hasUser: boolean) {
   }, [
     draft,
     activeConversationId,
+    pendingConversationLlmConfigId,
     hasUser,
     isStreaming,
     streamMessage,
@@ -344,7 +349,6 @@ export function useConversations(hasUser: boolean) {
           message.id === activeStream.messageId ? { ...message, status: 'cancelled' } : message,
         ),
       )
-      activeStream.controller.abort()
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : 'Failed to stop generation.')
     } finally {
@@ -400,6 +404,7 @@ export function useConversations(hasUser: boolean) {
     sortedConversations,
     activeConversation,
     activeConversationId,
+    pendingConversationLlmConfigId,
     messages,
     isLoadingMessages,
     isSending: isStreaming,
@@ -412,6 +417,7 @@ export function useConversations(hasUser: boolean) {
       }
       setActiveView('chat')
       setActiveConversationId(null)
+      setPendingConversationLlmConfigId(null)
       setIsCreatingConversationTitle(false)
       setErrorMessage('')
     },
@@ -420,6 +426,7 @@ export function useConversations(hasUser: boolean) {
     renameConversation: (id: string, title: string) => renameConversation.mutate({ id, title }),
     archiveConversation: (id: string) => archiveConversation.mutate(id),
     switchConversationLlm: (conversationId: string, configId: string) =>
-      switchConversationLlm.mutate({ conversationId, configId }),
+      switchConversationLlm.mutateAsync({ conversationId, configId }),
+    selectPendingConversationLlm: (configId: string) => setPendingConversationLlmConfigId(configId),
   }
 }
