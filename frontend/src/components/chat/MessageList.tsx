@@ -1,20 +1,23 @@
 import { useEffect, useMemo, useRef, useState } from "react"
+import { ArrowDown } from "lucide-react"
 import type { Message } from "@/api/types"
 import { MessageBubble } from "./MessageBubble"
 
 interface MessageListProps {
   messages: (Message & { paragraphs?: string[] })[]
   onRetry?: (messageId: string) => void
+  isSending?: boolean
 }
 
-export function MessageList({ messages, onRetry }: MessageListProps) {
-  const bottomRef = useRef<HTMLDivElement>(null)
+export function MessageList({ messages, onRetry, isSending }: MessageListProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const scrollParentRef = useRef<HTMLElement | null>(null)
   const messageRefs = useRef<Map<string, HTMLDivElement>>(new Map())
   const isPinnedToBottomRef = useRef(true)
+  const rafIdRef = useRef<number | null>(null)
   const activeRoundIdRef = useRef<string | null>(null)
   const [activeRoundId, setActiveRoundId] = useState<string | null>(null)
+  const [isPinnedToBottom, setIsPinnedToBottom] = useState(true)
 
   const rounds = useMemo(
     () =>
@@ -28,6 +31,16 @@ export function MessageList({ messages, onRetry }: MessageListProps) {
     [messages],
   )
 
+  const latestMessage = messages[messages.length - 1]
+  const latestMessageKey = latestMessage
+    ? [
+        latestMessage.id,
+        latestMessage.status,
+        latestMessage.content?.length ?? 0,
+        latestMessage.reasoning_content?.length ?? 0,
+      ].join(":")
+    : "empty"
+
   const getScrollParent = () => {
     if (scrollParentRef.current) return scrollParentRef.current
     scrollParentRef.current = containerRef.current?.closest<HTMLElement>(".chat-canvas") ?? null
@@ -37,13 +50,22 @@ export function MessageList({ messages, onRetry }: MessageListProps) {
   const updatePinnedState = () => {
     const el = getScrollParent()
     if (!el) return true
-    const isNearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 120
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
+    const threshold = isSending ? 88 : 120
+    const isNearBottom = distanceFromBottom <= threshold
     isPinnedToBottomRef.current = isNearBottom
+    setIsPinnedToBottom(isNearBottom)
     return isNearBottom
   }
 
   const scrollToBottom = (smooth = false) => {
-    bottomRef.current?.scrollIntoView({ behavior: smooth ? "smooth" : "auto" })
+    const el = getScrollParent()
+    if (!el) return
+    if (smooth) {
+      el.scrollTo({ top: el.scrollHeight, behavior: "smooth" })
+    } else {
+      el.scrollTop = el.scrollHeight
+    }
   }
 
   const setActiveRound = (roundId: string | null) => {
@@ -81,6 +103,7 @@ export function MessageList({ messages, onRetry }: MessageListProps) {
     if (!scrollParent || !target) return
 
     isPinnedToBottomRef.current = false
+    setIsPinnedToBottom(false)
     const parentRect = scrollParent.getBoundingClientRect()
     const targetRect = target.getBoundingClientRect()
     scrollParent.scrollTo({
@@ -106,11 +129,25 @@ export function MessageList({ messages, onRetry }: MessageListProps) {
   /* Only keep following the stream while the user remains near the bottom. */
   useEffect(() => {
     if (isPinnedToBottomRef.current) {
-      scrollToBottom()
+      if (rafIdRef.current !== null) {
+        cancelAnimationFrame(rafIdRef.current)
+      }
+      rafIdRef.current = requestAnimationFrame(() => {
+        scrollToBottom()
+        rafIdRef.current = null
+      })
     }
     updateActiveRound()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [messages])
+  }, [latestMessageKey, messages.length])
+
+  useEffect(() => {
+    return () => {
+      if (rafIdRef.current !== null) {
+        cancelAnimationFrame(rafIdRef.current)
+      }
+    }
+  }, [])
 
   /* Scroll to bottom on first load */
   useEffect(() => {
@@ -154,8 +191,21 @@ export function MessageList({ messages, onRetry }: MessageListProps) {
             <MessageBubble message={message} onRetry={onRetry} />
           </div>
         ))}
-        <div ref={bottomRef} />
       </div>
+      {!isPinnedToBottom && messages.length > 0 && (
+        <button
+          type="button"
+          className="scroll-bottom-btn"
+          aria-label="Scroll to bottom"
+          onClick={() => {
+            scrollToBottom(true)
+            isPinnedToBottomRef.current = true
+            setIsPinnedToBottom(true)
+          }}
+        >
+          <ArrowDown className="h-4 w-4" />
+        </button>
+      )}
     </>
   )
 }

@@ -44,7 +44,7 @@ export function MessageBubble({ message }: MessageBubbleProps) {
     >
       {isAssistant && (
         <div className="assistant-mark" aria-hidden="true">
-          <OrbitIcon size={18} alwaysInvert />
+          <OrbitIcon size={20} />
         </div>
       )}
 

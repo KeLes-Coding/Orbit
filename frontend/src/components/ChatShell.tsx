@@ -176,7 +176,7 @@ export function ChatShell() {
         ) : isEmpty ? (
           <EmptyChatState variant="greeting" />
         ) : (
-          <MessageList messages={messages} />
+          <MessageList messages={messages} isSending={isSending} />
         )}
       </section>
 
