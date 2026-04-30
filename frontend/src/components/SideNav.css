@@ -4,14 +4,21 @@
   gap: 4px;
   min-height: 34px;
   padding: 0 8px;
+  margin: 0 4px;
   border-radius: 6px;
+  border-left: 2px solid transparent;
   transition:
     background 160ms ease,
-    color 160ms ease;
+    color 160ms ease,
+    border-color 180ms ease;
 }
 
-.thread-item:hover,
+.thread-item:hover {
+  background: var(--surface-low);
+}
+
 .thread-item.active {
+  border-left-color: var(--accent-orange, #d97706);
   background: var(--surface-low);
 }
 
@@ -54,8 +61,8 @@
 
 .thread-action-btn {
   display: grid;
-  width: 24px;
-  height: 24px;
+  width: 26px;
+  height: 26px;
   place-items: center;
   border: 0;
   border-radius: 4px;
@@ -71,15 +78,13 @@
 }
 
 .thread-action-delete:hover {
-  color: #ba1a1a;
+  background: rgba(186, 26, 26, 0.1);
+  color: var(--color-danger, #ba1a1a);
 }
 
 .theme-dark .thread-action-delete:hover {
+  background: rgba(255, 180, 171, 0.12);
   color: #ffb4ab;
-}
-
-.thread-action-btn .material-symbols-outlined {
-  font-size: 14px;
 }
 
 .thread-edit-input {
@@ -93,6 +98,31 @@
   font: inherit;
   font-size: 14px;
   line-height: 1.4;
+}
+
+/* Empty state in thread list */
+.thread-empty-message {
+  margin: 0;
+  padding: 8px 12px;
+  color: var(--ink-soft);
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.thread-empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 24px 16px;
+  text-align: center;
+}
+
+.thread-empty-state p {
+  margin: 0;
+  color: var(--ink-soft);
+  font-family: "Noto Serif", Georgia, serif;
+  font-size: 14px;
 }
 
 .account-section {
@@ -132,7 +162,6 @@
   background: var(--surface-low);
 }
 
-.account-menu-item .material-symbols-outlined {
-  font-size: 18px;
+.account-menu-item svg {
   color: var(--ink-muted);
 }

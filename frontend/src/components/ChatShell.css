@@ -76,7 +76,65 @@
   background: var(--line);
 }
 
-.model-menu-icon {
-  font-size: 18px !important;
-  color: var(--ink-muted) !important;
+/* ---------- Typing indicator ---------- */
+.typing-indicator {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.typing-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--ink-soft);
+  animation: typingBreathe 1.4s ease-in-out infinite;
+}
+
+.typing-dot:nth-child(2) {
+  animation-delay: 0.2s;
+}
+
+.typing-dot:nth-child(3) {
+  animation-delay: 0.4s;
+}
+
+.typing-label {
+  margin-left: 4px;
+  color: var(--ink-soft);
+  font-size: 12px;
+}
+
+@keyframes typingBreathe {
+  0%, 80%, 100% {
+    opacity: 0.3;
+    transform: scale(0.8);
+  }
+  40% {
+    opacity: 1;
+    transform: scale(1.2);
+  }
+}
+
+/* ---------- Empty state icon ---------- */
+.empty-state-icon {
+  width: 42px;
+  height: 42px;
+  margin-bottom: 16px;
+  color: var(--ink-soft);
+}
+
+.assistant-mark-icon {
+  width: 16px;
+  height: 16px;
+}
+
+/* ---------- Composer sending state ---------- */
+.composer.is-sending {
+  opacity: 0.76;
+}
+
+.composer.is-sending textarea {
+  cursor: wait;
 }

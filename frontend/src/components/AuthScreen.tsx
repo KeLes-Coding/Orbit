@@ -1,5 +1,6 @@
-import { useAuth } from '@/hooks/useAuth'
-import { useTheme } from '@/hooks/useTheme'
+import { useAuth } from "@/hooks/useAuth"
+import { useTheme } from "@/hooks/useTheme"
+import { Moon, Sun, X, LogIn, UserPlus } from "lucide-react"
 
 export function AuthScreen() {
   const {
@@ -23,19 +24,17 @@ export function AuthScreen() {
         <button
           type="button"
           className="icon-button"
-          aria-label={isDark ? 'Switch to light mode' : 'Switch to dark mode'}
+          aria-label={isDark ? "Switch to light mode" : "Switch to dark mode"}
           onClick={toggleTheme}
         >
-          <span className="material-symbols-outlined" aria-hidden="true">
-            {isDark ? 'light_mode' : 'dark_mode'}
-          </span>
+          {isDark ? <Sun className="h-5 w-5" /> : <Moon className="h-5 w-5" />}
         </button>
         <button type="button" className="icon-button" aria-label="Back to chat" onClick={closeAuth}>
-          <span className="material-symbols-outlined" aria-hidden="true">close</span>
+          <X className="h-5 w-5" />
         </button>
       </div>
       <div className="auth-panel">
-        <p className="auth-kicker">{authMode === 'login' ? 'Login' : 'Register'}</p>
+        <p className="auth-kicker">{authMode === "login" ? "Login" : "Register"}</p>
         <h1>Orbit</h1>
         <p className="auth-copy">Sign in to continue your conversations with the backend workspace.</p>
 
@@ -46,7 +45,7 @@ export function AuthScreen() {
             submitAuth()
           }}
         >
-          {authMode === 'register' && (
+          {authMode === "register" && (
             <label>
               <span>Display name</span>
               <input
@@ -73,7 +72,7 @@ export function AuthScreen() {
             <input
               value={authForm.password}
               onChange={(e) => setAuthForm({ password: e.target.value })}
-              autoComplete={authMode === 'login' ? 'current-password' : 'new-password'}
+              autoComplete={authMode === "login" ? "current-password" : "new-password"}
               placeholder="At least 8 characters"
               type="password"
               required
@@ -83,17 +82,19 @@ export function AuthScreen() {
           {errorMessage && <p className="status-message error">{errorMessage}</p>}
 
           <button type="submit" className="primary-button" disabled={isAuthenticating}>
-            <span className="material-symbols-outlined" aria-hidden="true">
-              {authMode === 'login' ? 'login' : 'person_add'}
-            </span>
+            {authMode === "login" ? (
+              <LogIn className="h-5 w-5" />
+            ) : (
+              <UserPlus className="h-5 w-5" />
+            )}
             <span>
-              {isAuthenticating ? 'Working' : authMode === 'login' ? 'Sign In' : 'Create Account'}
+              {isAuthenticating ? "Working" : authMode === "login" ? "Sign In" : "Create Account"}
             </span>
           </button>
         </form>
 
         <button type="button" className="text-button" onClick={toggleAuthMode}>
-          {authMode === 'login' ? 'Create a new account' : 'Use an existing account'}
+          {authMode === "login" ? "Create a new account" : "Use an existing account"}
         </button>
       </div>
     </section>
