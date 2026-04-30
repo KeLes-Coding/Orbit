@@ -32,6 +32,7 @@ export function ChatShell() {
     selectConversation,
     createNewThread,
     sendMessage,
+    stopGeneration,
     switchConversationLlm,
   } = useConversations(hasUser)
 
@@ -70,8 +71,8 @@ export function ChatShell() {
   )
 
   const goToConfigs = useCallback(() => {
-    setActiveView("library")
-    navigate("/library")
+    setActiveView("model_configs")
+    navigate("/model-configs")
   }, [navigate, setActiveView])
 
   const handleNewThread = useCallback(() => {
@@ -89,8 +90,8 @@ export function ChatShell() {
     }
     if (configs.length === 0) {
       setErrorMessage("Create a model configuration before sending messages.")
-      setActiveView("library")
-      navigate("/library")
+      setActiveView("model_configs")
+      navigate("/model-configs")
       return
     }
     sendMessage()
@@ -159,6 +160,7 @@ export function ChatShell() {
         setDraft={setDraft}
         isSending={isSending}
         onSend={handleSendMessage}
+        onStop={stopGeneration}
         onClearError={() => setErrorMessage("")}
         errorMessage={errorMessage}
         isAuthenticated={!!user}

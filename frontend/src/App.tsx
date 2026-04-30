@@ -1,5 +1,5 @@
 import { lazy, Suspense, useEffect, useState } from "react"
-import { Routes, Route, useLocation } from "react-router-dom"
+import { Routes, Route, useLocation, Navigate } from "react-router-dom"
 import { Menu } from "lucide-react"
 import { useAuth } from "@/hooks/useAuth"
 import { useTheme } from "@/hooks/useTheme"
@@ -23,7 +23,7 @@ function RouteSync() {
   const setIsBooting = useOrbitStore((s) => s.setIsBooting)
   const { isBooting } = useAuth()
   const location = useLocation()
-  const routeView = location.pathname === "/library" ? "library" : "chat"
+  const routeView = location.pathname === "/model-configs" ? "model_configs" : "chat"
 
   useEffect(() => {
     if (!getStoredToken()) {
@@ -44,7 +44,8 @@ function RouteSync() {
       ) : (
         <Routes>
           <Route path="/" element={<ChatShell />} />
-          <Route path="/library" element={<SettingsView />} />
+          <Route path="/model-configs" element={<SettingsView />} />
+          <Route path="/library" element={<Navigate to="/model-configs" replace />} />
           <Route path="*" element={<ChatShell />} />
         </Routes>
       )}
@@ -56,6 +57,11 @@ export default function App() {
   const { showAuth } = useAuth()
   const { isDark } = useTheme()
   const [mobileOpen, setMobileOpen] = useState(false)
+
+  useEffect(() => {
+    // Radix portal 内容挂在 app-shell 外层，需要把主题类同步到 documentElement。
+    document.documentElement.classList.toggle("theme-dark", isDark)
+  }, [isDark])
 
   const appClass = `app-shell${isDark ? " theme-dark" : ""}`
 

@@ -14,6 +14,8 @@ export function MessageBubble({ message }: MessageBubbleProps) {
   const isAssistant = message.role === "assistant"
   const isStreaming = message.status === "streaming"
   const isFailed = message.status === "failed"
+  const isPartial = message.status === "partial"
+  const isCancelled = message.status === "cancelled"
 
   const hasContent = useMemo(
     () => (message.content || "").trim().length > 0,
@@ -53,6 +55,16 @@ export function MessageBubble({ message }: MessageBubbleProps) {
           {isFailed && (
             <p className="status-message error">
               The assistant response failed. Check the model configuration and try again.
+            </p>
+          )}
+          {isPartial && (
+            <p className="status-message">
+              The assistant response stopped after a partial result.
+            </p>
+          )}
+          {isCancelled && (
+            <p className="status-message">
+              Generation stopped.
             </p>
           )}
         </div>

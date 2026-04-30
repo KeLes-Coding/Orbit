@@ -12,12 +12,12 @@ const getInitialTheme = (): boolean => {
 
 const getInitialActiveView = (): OrbitStore['activeView'] => {
   if (typeof window === 'undefined') return 'chat'
-  return window.location.pathname === '/library' ? 'library' : 'chat'
+  return window.location.pathname === '/model-configs' ? 'model_configs' : 'chat'
 }
 
 interface OrbitStore {
   isDark: boolean
-  activeView: 'chat' | 'library'
+  activeView: 'chat' | 'model_configs'
   draft: string
   showAuth: boolean
   errorMessage: string
@@ -32,7 +32,7 @@ interface OrbitStore {
   editingTitle: string
 
   toggleTheme: () => void
-  setActiveView: (view: 'chat' | 'library') => void
+  setActiveView: (view: 'chat' | 'model_configs') => void
   setDraft: (text: string) => void
   setShowAuth: (show: boolean) => void
   setErrorMessage: (msg: string) => void

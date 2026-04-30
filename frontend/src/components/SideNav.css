@@ -18,7 +18,7 @@
   width: 5px;
   height: 5px;
   border-radius: 50%;
-  background: var(--accent-orange, #d97706);
+  background: var(--accent-orange);
   flex-shrink: 0;
   margin-left: 5px;
   margin-right: 3px;
@@ -88,13 +88,8 @@
 }
 
 .thread-action-delete:hover {
-  background: rgba(186, 26, 26, 0.1);
-  color: var(--color-danger, #ba1a1a);
-}
-
-.theme-dark .thread-action-delete:hover {
-  background: rgba(255, 180, 171, 0.12);
-  color: #ffb4ab;
+  background: color-mix(in srgb, var(--color-danger) 12%, transparent);
+  color: var(--color-danger);
 }
 
 .thread-edit-input {

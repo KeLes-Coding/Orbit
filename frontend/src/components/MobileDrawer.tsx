@@ -52,10 +52,10 @@ export function MobileDrawer({ onOpenChange }: MobileDrawerProps) {
     createNewThread()
   }, [closeSheet, createNewThread, navigate, openAuth, setActiveView, user])
 
-  const handleLibrary = useCallback(() => {
+  const handleModelConfigs = useCallback(() => {
     closeSheet()
-    setActiveView("library")
-    navigate("/library")
+    setActiveView("model_configs")
+    navigate("/model-configs")
   }, [closeSheet, navigate, setActiveView])
 
   const displayName = user?.display_name || user?.email?.split("@")[0] || ""
@@ -125,7 +125,7 @@ export function MobileDrawer({ onOpenChange }: MobileDrawerProps) {
         <button
           type="button"
           className="account-menu-item w-full"
-          onClick={handleLibrary}
+          onClick={handleModelConfigs}
         >
           <Settings className="h-4 w-4" />
           <span>LLM Configs</span>

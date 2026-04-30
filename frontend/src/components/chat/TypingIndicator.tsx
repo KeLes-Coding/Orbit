@@ -4,7 +4,7 @@ export function TypingIndicator() {
       <span className="typing-dot" />
       <span className="typing-dot" />
       <span className="typing-dot" />
-      <span className="typing-label">凝思中...</span>
+      <span className="typing-label">Thinking...</span>
     </div>
   )
 }

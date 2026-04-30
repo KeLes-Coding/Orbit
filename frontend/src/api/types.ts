@@ -32,11 +32,18 @@ export interface Conversation {
 export interface Message {
   id: string
   conversation_id: string
-  role: 'user' | 'assistant' | 'system'
+  role: 'user' | 'assistant' | 'system' | 'tool'
   content: string
+  content_parts?: unknown[]
   paragraphs?: string[]
-  status?: 'completed' | 'streaming' | 'failed'
+  status?: 'completed' | 'streaming' | 'failed' | 'partial' | 'cancelled'
   sequence_no?: number
+  langgraph_message_id?: string | null
+  llm_config_id?: string | null
+  provider?: string | null
+  model?: string | null
+  token_usage?: Record<string, unknown>
+  response_metadata?: Record<string, unknown>
   token_count?: number
   created_at: string
   updated_at?: string
@@ -102,6 +109,28 @@ export interface SendMessageResponse {
   user_message: Message
   assistant_message: Message
 }
+
+export type StreamMessageEvent =
+  | {
+      event: 'message.created'
+      data: {
+        user_message: Message
+        assistant_message: Message
+      }
+    }
+  | {
+      event: 'message.delta'
+      data: {
+        message_id: string
+        delta: string
+      }
+    }
+  | {
+      event: 'message.completed' | 'message.failed' | 'message.cancelled'
+      data: {
+        message: Message
+      }
+    }
 
 export interface ProbeModelsPayload {
   provider: string

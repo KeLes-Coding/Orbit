@@ -132,9 +132,9 @@ export function SideNav() {
     [navigate, selectConversation, setActiveView],
   )
 
-  const handleOpenLibrary = useCallback(() => {
-    setActiveView("library")
-    navigate("/library")
+  const handleOpenModelConfigs = useCallback(() => {
+    setActiveView("model_configs")
+    navigate("/model-configs")
   }, [navigate, setActiveView])
 
   /* ---------- Account ---------- */
@@ -276,7 +276,7 @@ export function SideNav() {
               <button
                 type="button"
                 className="account-menu-item"
-                onClick={() => handleMenuAction(handleOpenLibrary)}
+                onClick={() => handleMenuAction(handleOpenModelConfigs)}
               >
                 <Settings className="h-4 w-4" />
                 <span>LLM Configs</span>

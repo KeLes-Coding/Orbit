@@ -745,6 +745,16 @@ textarea:disabled {
   opacity: 1;
 }
 
+.stop-button {
+  background: var(--surface-low);
+  color: var(--ink);
+}
+
+.stop-button:hover {
+  background: var(--line);
+  color: var(--ink);
+}
+
 .composer-wrap p {
   max-width: 560px;
   margin-top: 16px;

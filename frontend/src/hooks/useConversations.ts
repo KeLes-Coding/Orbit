@@ -1,4 +1,4 @@
-import { useMemo, useCallback, useEffect } from 'react'
+import { useMemo, useCallback, useEffect, useRef, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { conversationApi } from '@/api/conversations'
 import { useOrbitStore } from '@/stores/useOrbitStore'
@@ -17,6 +17,39 @@ function normalizeMessage(message: Message | null | undefined): NormalizedMessag
   }
 }
 
+function sortMessages(messages: Message[]): Message[] {
+  return [...messages].sort((a, b) => (a.sequence_no ?? 0) - (b.sequence_no ?? 0))
+}
+
+function replaceLocalExchange(
+  messages: Message[],
+  userMessage: Message,
+  assistantMessage: Message,
+): Message[] {
+  const filtered = messages.filter((message) => !String(message.id).startsWith('local-'))
+  return sortMessages([...filtered, userMessage, assistantMessage])
+}
+
+function upsertMessage(messages: Message[], nextMessage: Message): Message[] {
+  const exists = messages.some((message) => message.id === nextMessage.id)
+  if (!exists) return sortMessages([...messages, nextMessage])
+  return sortMessages(
+    messages.map((message) => (message.id === nextMessage.id ? { ...message, ...nextMessage } : message)),
+  )
+}
+
+function appendMessageDelta(messages: Message[], messageId: string, delta: string): Message[] {
+  return messages.map((message) =>
+    message.id === messageId
+      ? {
+          ...message,
+          content: `${message.content || ''}${delta}`,
+          status: 'streaming',
+        }
+      : message,
+  )
+}
+
 export function useConversations(hasUser: boolean) {
   const activeConversationId = useOrbitStore((s) => s.activeConversationId)
   const draft = useOrbitStore((s) => s.draft)
@@ -25,6 +58,12 @@ export function useConversations(hasUser: boolean) {
   const setErrorMessage = useOrbitStore((s) => s.setErrorMessage)
   const setActiveView = useOrbitStore((s) => s.setActiveView)
   const queryClient = useQueryClient()
+  const [isStreaming, setIsStreaming] = useState(false)
+  const activeStreamRef = useRef<{
+    conversationId: string
+    messageId: string | null
+    controller: AbortController
+  } | null>(null)
 
   const conversationsQuery = useQuery({
     queryKey: ['conversations'],
@@ -98,59 +137,88 @@ export function useConversations(hasUser: boolean) {
     },
   })
 
-  const sendMessageMutation = useMutation({
-    mutationFn: ({ conversationId, content }: { conversationId: string; content: string }) =>
-      conversationApi.sendMessage(conversationId, content),
-    onMutate: async ({ conversationId, content }) => {
+  const streamMessage = useCallback(
+    async (conversationId: string, content: string) => {
       await queryClient.cancelQueries({ queryKey: ['messages', conversationId] })
-      const previousMessages =
-        queryClient.getQueryData<Message[]>(['messages', conversationId]) || []
+      const previousMessages = queryClient.getQueryData<Message[]>(['messages', conversationId]) || []
+      const localId = Date.now()
+      const controller = new AbortController()
 
-      const optUser = normalizeMessage({
-        id: `local-user-${Date.now()}`,
-        conversation_id: conversationId,
-        role: 'user',
-        content,
-        status: 'completed',
-        created_at: new Date().toISOString(),
-      })!
-      const optAsst = normalizeMessage({
-        id: `local-assistant-${Date.now()}`,
-        conversation_id: conversationId,
-        role: 'assistant',
-        content: 'Thinking...',
-        status: 'streaming',
-        created_at: new Date().toISOString(),
-      })!
-
+      // 后端返回真实消息前先插入本地占位，保证发送后 UI 立即有反馈。
       queryClient.setQueryData<Message[]>(['messages', conversationId], [
         ...previousMessages,
-        optUser,
-        optAsst,
+        {
+          id: `local-user-${localId}`,
+          conversation_id: conversationId,
+          role: 'user',
+          content,
+          status: 'completed',
+          created_at: new Date().toISOString(),
+        },
+        {
+          id: `local-assistant-${localId}`,
+          conversation_id: conversationId,
+          role: 'assistant',
+          content: '',
+          status: 'streaming',
+          created_at: new Date().toISOString(),
+        },
       ])
 
-      return { previousMessages }
-    },
-    onError: (error: Error, { conversationId }, context) => {
-      if (context?.previousMessages) {
-        queryClient.setQueryData(['messages', conversationId], context.previousMessages)
+      setIsStreaming(true)
+      activeStreamRef.current = { conversationId, messageId: null, controller }
+
+      try {
+        for await (const streamEvent of conversationApi.streamMessage(
+          conversationId,
+          content,
+          controller.signal,
+        )) {
+          if (streamEvent.event === 'message.created') {
+            activeStreamRef.current = {
+              conversationId,
+              messageId: streamEvent.data.assistant_message.id,
+              controller,
+            }
+            queryClient.setQueryData<Message[]>(['messages', conversationId], (old = []) =>
+              replaceLocalExchange(
+                old,
+                streamEvent.data.user_message,
+                streamEvent.data.assistant_message,
+              ),
+            )
+            continue
+          }
+
+          if (streamEvent.event === 'message.delta') {
+            queryClient.setQueryData<Message[]>(['messages', conversationId], (old = []) =>
+              appendMessageDelta(old, streamEvent.data.message_id, streamEvent.data.delta),
+            )
+            continue
+          }
+
+          queryClient.setQueryData<Message[]>(['messages', conversationId], (old = []) =>
+            upsertMessage(old, streamEvent.data.message),
+          )
+        }
+        queryClient.invalidateQueries({ queryKey: ['conversations'] })
+      } catch (error) {
+        if (error instanceof DOMException && error.name === 'AbortError') {
+          return
+        }
+        queryClient.setQueryData(['messages', conversationId], previousMessages)
+        setErrorMessage(error instanceof Error ? error.message : 'Streaming request failed.')
+      } finally {
+        activeStreamRef.current = null
+        setIsStreaming(false)
       }
-      setErrorMessage(error.message)
     },
-    onSuccess: (response, { conversationId }) => {
-      queryClient.setQueryData<Message[]>(['messages', conversationId], (old = []) => {
-        const filtered = old.filter((m) => !String(m.id).startsWith('local-'))
-        return [...filtered, response.user_message, response.assistant_message].sort(
-          (a, b) => (a.sequence_no ?? 0) - (b.sequence_no ?? 0),
-        )
-      })
-      queryClient.invalidateQueries({ queryKey: ['conversations'] })
-    },
-  })
+    [queryClient, setErrorMessage],
+  )
 
   const sendMessage = useCallback(() => {
     const content = draft.trim()
-    if (!content || sendMessageMutation.isPending) return
+    if (!content || isStreaming) return
     if (!hasUser) {
       setErrorMessage('Sign in before sending messages.')
       return
@@ -161,18 +229,45 @@ export function useConversations(hasUser: boolean) {
     let conversationId = activeConversationId
     if (!conversationId) {
       const title = content.length > 48 ? `${content.slice(0, 48)}...` : content
-      createNewThread.mutate(title, {
-        onSuccess: (conv) => {
-          if (conv) {
-            sendMessageMutation.mutate({ conversationId: conv.id, content })
-          }
-        },
-      })
+      createNewThread
+        .mutateAsync(title)
+        .then((conv) => streamMessage(conv.id, content))
+        .catch((error: Error) => setErrorMessage(error.message))
       return
     }
 
-    sendMessageMutation.mutate({ conversationId, content })
-  }, [draft, activeConversationId, hasUser, sendMessageMutation, createNewThread, setDraft, setErrorMessage])
+    void streamMessage(conversationId, content)
+  }, [
+    draft,
+    activeConversationId,
+    hasUser,
+    isStreaming,
+    streamMessage,
+    createNewThread,
+    setDraft,
+    setErrorMessage,
+  ])
+
+  const stopGeneration = useCallback(async () => {
+    const activeStream = activeStreamRef.current
+    if (!activeStream?.messageId) return
+
+    try {
+      await conversationApi.cancelMessage(activeStream.conversationId, activeStream.messageId)
+      // 取消接口可能会直接打断 SSE 任务，前端先用已有增量内容更新为 cancelled。
+      queryClient.setQueryData<Message[]>(['messages', activeStream.conversationId], (old = []) =>
+        old.map((message) =>
+          message.id === activeStream.messageId ? { ...message, status: 'cancelled' } : message,
+        ),
+      )
+      activeStream.controller.abort()
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : 'Failed to stop generation.')
+    } finally {
+      activeStreamRef.current = null
+      setIsStreaming(false)
+    }
+  }, [queryClient, setErrorMessage])
 
   const renameConversation = useMutation({
     mutationFn: ({ id, title }: { id: string; title: string }) =>
@@ -223,7 +318,7 @@ export function useConversations(hasUser: boolean) {
     activeConversationId,
     messages,
     isLoadingMessages,
-    isSending: sendMessageMutation.isPending,
+    isSending: isStreaming,
     formatConversationTitle,
     selectConversation,
     createNewThread: (title?: string | null) => {
@@ -234,6 +329,7 @@ export function useConversations(hasUser: boolean) {
       createNewThread.mutate(title)
     },
     sendMessage,
+    stopGeneration,
     renameConversation: (id: string, title: string) => renameConversation.mutate({ id, title }),
     archiveConversation: (id: string) => archiveConversation.mutate(id),
     switchConversationLlm: (conversationId: string, configId: string) =>
