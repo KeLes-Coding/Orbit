@@ -1,6 +1,7 @@
 import apiClient, { API_BASE_URL, clearStoredToken, getStoredToken } from './client'
 import type {
   Conversation,
+  CreateConversationMessagePayload,
   CreateConversationPayload,
   Message,
   SendMessageResponse,
@@ -133,6 +134,30 @@ export const conversationApi = {
       method: 'POST',
       headers: createHeaders(),
       body: JSON.stringify({ content }),
+      signal,
+    })
+
+    if (response.status === 401) {
+      clearStoredToken()
+    }
+    if (!response.ok) {
+      throw new Error(await parseStreamError(response))
+    }
+    if (!response.body) {
+      throw new Error('Streaming response is not readable')
+    }
+
+    yield* parseSseStream(response.body)
+  },
+
+  async *streamNewConversationMessage(
+    payload: CreateConversationMessagePayload,
+    signal?: AbortSignal,
+  ): AsyncGenerator<StreamMessageEvent> {
+    const response = await fetch(resolveApiUrl('/conversations/messages/stream'), {
+      method: 'POST',
+      headers: createHeaders(),
+      body: JSON.stringify(payload),
       signal,
     })
 

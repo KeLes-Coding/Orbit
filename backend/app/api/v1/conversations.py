@@ -12,6 +12,7 @@ from app.db.session import get_db_session
 from app.models.user import User
 from app.schemas.conversation import (
     ConversationCreate,
+    ConversationMessageCreate,
     ConversationRead,
     ConversationUpdate,
     MessageExchangeRead,
@@ -43,6 +44,41 @@ async def create_conversation(
     return await ConversationService(session).create_conversation(
         user_id=current_user.id,
         payload=payload,
+    )
+
+
+@router.post("/messages/stream")
+async def stream_new_conversation_message(
+    payload: ConversationMessageCreate,
+    request: Request,
+    current_user: Annotated[User, Depends(get_current_user)],
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+) -> StreamingResponse:
+    service = ConversationService(session)
+    # 首条消息入口：前端处于“未选中会话”的 New Chat 状态时走这里，
+    # 后端负责创建 conversation、生成标题，再继续复用 SSE 消息流。
+    stream_events = service.stream_new_conversation_message(
+        user_id=current_user.id,
+        payload=payload,
+        should_cancel=request.is_disconnected,
+    )
+    # 先预取第一条事件，让鉴权、模型配置、建会话等错误仍以普通 HTTP 错误返回，
+    # 避免 StreamingResponse 已开始后才暴露异常。
+    first_event = await anext(stream_events)
+
+    async def event_generator() -> AsyncIterator[str]:
+        # 第一条通常是 conversation.created，前端收到后再把真实会话插入侧边栏。
+        yield encode_sse_event(first_event)
+        async for event in stream_events:
+            yield encode_sse_event(event)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
     )
 
 

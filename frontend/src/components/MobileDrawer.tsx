@@ -86,20 +86,24 @@ export function MobileDrawer({ onOpenChange }: MobileDrawerProps) {
             {sortedConversations.length === 0 ? (
               <p className="thread-empty-message">No conversations yet</p>
             ) : (
-              sortedConversations.map((conv) => (
-                <div
-                  key={conv.id}
-                  className={`thread-item${conv.id === activeConversationId ? " active" : ""}`}
-                >
-                  <button
-                    type="button"
-                    className="thread-button"
-                    onClick={() => handleSelectConversation(conv.id)}
+              sortedConversations.map((conv) => {
+                const isPendingTitle = Boolean(conv.metadata?.pendingTitle)
+                return (
+                  <div
+                    key={conv.id}
+                    className={`thread-item${conv.id === activeConversationId ? " active" : ""}${isPendingTitle ? " pending" : ""}`}
                   >
-                    {formatConversationTitle(conv)}
-                  </button>
-                </div>
-              ))
+                    <button
+                      type="button"
+                      className="thread-button"
+                      disabled={isPendingTitle}
+                      onClick={() => handleSelectConversation(conv.id)}
+                    >
+                      {formatConversationTitle(conv)}
+                    </button>
+                  </div>
+                )
+              })
             )}
           </div>
         </div>

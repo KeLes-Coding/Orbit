@@ -25,6 +25,7 @@ interface OrbitStore {
   isAuthenticating: boolean
   isSending: boolean
   isSaving: boolean
+  isCreatingConversationTitle: boolean
   authMode: 'login' | 'register'
   authForm: { email: string; password: string; displayName: string }
   activeConversationId: string | null
@@ -40,6 +41,7 @@ interface OrbitStore {
   setIsAuthenticating: (val: boolean) => void
   setIsSending: (val: boolean) => void
   setIsSaving: (val: boolean) => void
+  setIsCreatingConversationTitle: (val: boolean) => void
   setAuthMode: (mode: 'login' | 'register') => void
   setAuthForm: (form: Partial<OrbitStore['authForm']>) => void
   resetAuthForm: () => void
@@ -61,6 +63,7 @@ export const useOrbitStore = create<OrbitStore>((set) => ({
   isAuthenticating: false,
   isSending: false,
   isSaving: false,
+  isCreatingConversationTitle: false,
   authMode: 'login',
   authForm: { ...defaultAuthForm },
   activeConversationId: null,
@@ -82,6 +85,7 @@ export const useOrbitStore = create<OrbitStore>((set) => ({
   setIsAuthenticating: (val) => set({ isAuthenticating: val }),
   setIsSending: (val) => set({ isSending: val }),
   setIsSaving: (val) => set({ isSaving: val }),
+  setIsCreatingConversationTitle: (val) => set({ isCreatingConversationTitle: val }),
   setAuthMode: (mode) => set({ authMode: mode }),
   setAuthForm: (form) =>
     set((state) => ({ authForm: { ...state.authForm, ...form } })),
@@ -94,6 +98,7 @@ export const useOrbitStore = create<OrbitStore>((set) => ({
     set({
       draft: '',
       activeConversationId: null,
+      isCreatingConversationTitle: false,
       editingThreadId: null,
       editingTitle: '',
       authForm: { ...defaultAuthForm },

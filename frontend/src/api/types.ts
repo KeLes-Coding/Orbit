@@ -19,7 +19,7 @@ export interface User {
 
 export interface Conversation {
   id: string
-  thread_id?: number | null
+  thread_id?: string | null
   user_id: string
   llm_config_id?: string | null
   title?: string | null
@@ -94,6 +94,13 @@ export interface CreateConversationPayload {
   metadata?: Record<string, unknown>
 }
 
+export interface CreateConversationMessagePayload {
+  content: string
+  llm_config_id?: string | null
+  chat_mode?: string
+  metadata?: Record<string, unknown>
+}
+
 export interface UpdateConversationPayload {
   title?: string
   llm_config_id?: string | null
@@ -111,6 +118,12 @@ export interface SendMessageResponse {
 }
 
 export type StreamMessageEvent =
+  | {
+      event: 'conversation.created'
+      data: {
+        conversation: Conversation
+      }
+    }
   | {
       event: 'message.created'
       data: {

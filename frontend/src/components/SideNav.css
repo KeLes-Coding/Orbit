@@ -37,6 +37,38 @@
   font-weight: 600;
 }
 
+.thread-item.pending .thread-button {
+  color: var(--ink-soft);
+  cursor: default;
+}
+
+.thread-item.pending .thread-button::after {
+  content: "";
+  display: inline-block;
+  width: 28px;
+  height: 1em;
+  margin-left: 8px;
+  vertical-align: -0.18em;
+  border-radius: 999px;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    color-mix(in srgb, var(--ink-soft) 26%, transparent),
+    transparent
+  );
+  background-size: 160% 100%;
+  animation: title-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes title-pulse {
+  from {
+    background-position: 160% 0;
+  }
+  to {
+    background-position: -160% 0;
+  }
+}
+
 .thread-button {
   max-width: 100%;
   overflow: hidden;

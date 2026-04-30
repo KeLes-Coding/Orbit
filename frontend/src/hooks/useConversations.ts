@@ -1,4 +1,4 @@
-import { useMemo, useCallback, useEffect, useRef, useState } from 'react'
+import { useMemo, useCallback, useRef, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { conversationApi } from '@/api/conversations'
 import { useOrbitStore } from '@/stores/useOrbitStore'
@@ -53,14 +53,16 @@ function appendMessageDelta(messages: Message[], messageId: string, delta: strin
 export function useConversations(hasUser: boolean) {
   const activeConversationId = useOrbitStore((s) => s.activeConversationId)
   const draft = useOrbitStore((s) => s.draft)
+  const isCreatingConversationTitle = useOrbitStore((s) => s.isCreatingConversationTitle)
   const setActiveConversationId = useOrbitStore((s) => s.setActiveConversationId)
   const setDraft = useOrbitStore((s) => s.setDraft)
   const setErrorMessage = useOrbitStore((s) => s.setErrorMessage)
   const setActiveView = useOrbitStore((s) => s.setActiveView)
+  const setIsCreatingConversationTitle = useOrbitStore((s) => s.setIsCreatingConversationTitle)
   const queryClient = useQueryClient()
   const [isStreaming, setIsStreaming] = useState(false)
   const activeStreamRef = useRef<{
-    conversationId: string
+    conversationId: string | null
     messageId: string | null
     controller: AbortController
   } | null>(null)
@@ -85,13 +87,27 @@ export function useConversations(hasUser: boolean) {
     [rawMessages],
   )
 
-  const sortedConversations = useMemo(
-    () =>
-      [...conversations].sort(
-        (a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime(),
-      ),
-    [conversations],
-  )
+  const sortedConversations = useMemo(() => {
+    const sorted = [...conversations].sort(
+      (a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime(),
+    )
+    if (!isCreatingConversationTitle) return sorted
+    const now = new Date().toISOString()
+    return [
+      {
+        id: 'local-pending-title',
+        thread_id: null,
+        user_id: 'local',
+        llm_config_id: null,
+        title: 'Generating title...',
+        chat_mode: 'chat',
+        metadata: { pendingTitle: true },
+        created_at: now,
+        updated_at: now,
+      },
+      ...sorted,
+    ]
+  }, [conversations, isCreatingConversationTitle])
 
   const activeConversation = useMemo(
     () => conversations.find((c) => c.id === activeConversationId),
@@ -100,14 +116,9 @@ export function useConversations(hasUser: boolean) {
 
   const isLoadingMessages = messagesQuery.isLoading || messagesQuery.isFetching
 
-  useEffect(() => {
-    if (!hasUser || activeConversationId || sortedConversations.length === 0) return
-    setActiveConversationId(sortedConversations[0].id)
-  }, [activeConversationId, hasUser, setActiveConversationId, sortedConversations])
-
   const formatConversationTitle = useCallback(
     (conversation: Conversation) =>
-      conversation.title || `Thread ${conversation.thread_id?.toString().slice(0, 8) ?? conversation.id.slice(0, 8)}`,
+      conversation.title || 'Untitled chat',
     [],
   )
 
@@ -119,23 +130,6 @@ export function useConversations(hasUser: boolean) {
     },
     [setActiveView, setActiveConversationId, setErrorMessage],
   )
-
-  const createNewThread = useMutation({
-    mutationFn: (title?: string | null) =>
-      conversationApi.create({ title, chat_mode: 'chat', metadata: {} }),
-    onSuccess: (conversation) => {
-      queryClient.setQueryData<Conversation[]>(['conversations'], (old = []) => [
-        conversation,
-        ...old,
-      ])
-      setActiveConversationId(conversation.id)
-      queryClient.setQueryData(['messages', conversation.id], [])
-      setActiveView('chat')
-    },
-    onError: (error: Error) => {
-      setErrorMessage(error.message)
-    },
-  })
 
   const streamMessage = useCallback(
     async (conversationId: string, content: string) => {
@@ -174,6 +168,10 @@ export function useConversations(hasUser: boolean) {
           content,
           controller.signal,
         )) {
+          if (streamEvent.event === 'conversation.created') {
+            continue
+          }
+
           if (streamEvent.event === 'message.created') {
             activeStreamRef.current = {
               conversationId,
@@ -216,6 +214,85 @@ export function useConversations(hasUser: boolean) {
     [queryClient, setErrorMessage],
   )
 
+  const streamNewConversationMessage = useCallback(
+    async (content: string) => {
+      const controller = new AbortController()
+      let conversationId: string | null = null
+
+      setIsStreaming(true)
+      setIsCreatingConversationTitle(true)
+      activeStreamRef.current = { conversationId: null, messageId: null, controller }
+
+      try {
+        for await (const streamEvent of conversationApi.streamNewConversationMessage(
+          { content, chat_mode: 'chat', metadata: {} },
+          controller.signal,
+        )) {
+          if (streamEvent.event === 'conversation.created') {
+            const conversation = streamEvent.data.conversation
+            conversationId = conversation.id
+            activeStreamRef.current = { conversationId, messageId: null, controller }
+            setIsCreatingConversationTitle(false)
+            queryClient.setQueryData<Conversation[]>(['conversations'], (old = []) => [
+              conversation,
+              ...old.filter((item) => item.id !== conversation.id),
+            ])
+            queryClient.setQueryData<Message[]>(['messages', conversation.id], [])
+            setActiveConversationId(conversation.id)
+            setActiveView('chat')
+            continue
+          }
+
+          if (!conversationId) continue
+
+          if (streamEvent.event === 'message.created') {
+            activeStreamRef.current = {
+              conversationId,
+              messageId: streamEvent.data.assistant_message.id,
+              controller,
+            }
+            queryClient.setQueryData<Message[]>(['messages', conversationId], () =>
+              replaceLocalExchange(
+                [],
+                streamEvent.data.user_message,
+                streamEvent.data.assistant_message,
+              ),
+            )
+            continue
+          }
+
+          if (streamEvent.event === 'message.delta') {
+            queryClient.setQueryData<Message[]>(['messages', conversationId], (old = []) =>
+              appendMessageDelta(old, streamEvent.data.message_id, streamEvent.data.delta),
+            )
+            continue
+          }
+
+          queryClient.setQueryData<Message[]>(['messages', conversationId], (old = []) =>
+            upsertMessage(old, streamEvent.data.message),
+          )
+        }
+        queryClient.invalidateQueries({ queryKey: ['conversations'] })
+      } catch (error) {
+        if (error instanceof DOMException && error.name === 'AbortError') {
+          return
+        }
+        setErrorMessage(error instanceof Error ? error.message : 'Streaming request failed.')
+      } finally {
+        activeStreamRef.current = null
+        setIsCreatingConversationTitle(false)
+        setIsStreaming(false)
+      }
+    },
+    [
+      queryClient,
+      setActiveConversationId,
+      setActiveView,
+      setErrorMessage,
+      setIsCreatingConversationTitle,
+    ],
+  )
+
   const sendMessage = useCallback(() => {
     const content = draft.trim()
     if (!content || isStreaming) return
@@ -226,13 +303,9 @@ export function useConversations(hasUser: boolean) {
     setDraft('')
     setErrorMessage('')
 
-    let conversationId = activeConversationId
+    const conversationId = activeConversationId
     if (!conversationId) {
-      const title = content.length > 48 ? `${content.slice(0, 48)}...` : content
-      createNewThread
-        .mutateAsync(title)
-        .then((conv) => streamMessage(conv.id, content))
-        .catch((error: Error) => setErrorMessage(error.message))
+      void streamNewConversationMessage(content)
       return
     }
 
@@ -243,14 +316,25 @@ export function useConversations(hasUser: boolean) {
     hasUser,
     isStreaming,
     streamMessage,
-    createNewThread,
+    streamNewConversationMessage,
     setDraft,
     setErrorMessage,
   ])
 
   const stopGeneration = useCallback(async () => {
     const activeStream = activeStreamRef.current
-    if (!activeStream?.messageId) return
+    if (!activeStream) return
+    if (!activeStream.messageId) {
+      activeStream.controller.abort()
+      activeStreamRef.current = null
+      setIsCreatingConversationTitle(false)
+      setIsStreaming(false)
+      return
+    }
+    if (!activeStream.conversationId) {
+      activeStream.controller.abort()
+      return
+    }
 
     try {
       await conversationApi.cancelMessage(activeStream.conversationId, activeStream.messageId)
@@ -267,7 +351,7 @@ export function useConversations(hasUser: boolean) {
       activeStreamRef.current = null
       setIsStreaming(false)
     }
-  }, [queryClient, setErrorMessage])
+  }, [queryClient, setErrorMessage, setIsCreatingConversationTitle])
 
   const renameConversation = useMutation({
     mutationFn: ({ id, title }: { id: string; title: string }) =>
@@ -321,12 +405,15 @@ export function useConversations(hasUser: boolean) {
     isSending: isStreaming,
     formatConversationTitle,
     selectConversation,
-    createNewThread: (title?: string | null) => {
+    createNewThread: () => {
       if (!hasUser) {
         setErrorMessage('Sign in before creating a conversation.')
         return
       }
-      createNewThread.mutate(title)
+      setActiveView('chat')
+      setActiveConversationId(null)
+      setIsCreatingConversationTitle(false)
+      setErrorMessage('')
     },
     sendMessage,
     stopGeneration,

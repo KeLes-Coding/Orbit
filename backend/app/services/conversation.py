@@ -12,11 +12,13 @@ from app.repositories.conversation import ConversationRepository, MessageReposit
 from app.repositories.llm_config import LLMConfigRepository
 from app.schemas.conversation import (
     ConversationCreate,
+    ConversationMessageCreate,
     ConversationRead,
     ConversationUpdate,
     MessageExchangeRead,
     MessageRead,
 )
+from app.services.generation.title import ConversationTitleGenerator
 from app.services.llm_client import LLMClient, LLMClientError
 from app.services.streaming import message_stream_registry
 
@@ -35,6 +37,7 @@ class ConversationService:
         self.messages = MessageRepository(session)
         self.llm_configs = LLMConfigRepository(session)
         self.llm_client = LLMClient()
+        self.title_generator = ConversationTitleGenerator()
 
     async def list_conversations(self, user_id: UUID) -> list[ConversationRead]:
         # 会话列表只返回未归档会话，并按 updated_at 倒序排列。
@@ -339,6 +342,188 @@ class ConversationService:
         except LLMClientError as exc:
             failed_message = await self._fail_or_partial_streaming_message(
                 conversation_id=conversation_id,
+                assistant_message=assistant_message,
+                content="".join(full_content_parts),
+                error=str(exc),
+                token_usage=token_usage,
+                response_metadata=response_metadata,
+            )
+            yield ConversationStreamEvent(
+                event="message.failed",
+                data={"message": MessageRead.model_validate(failed_message).model_dump(mode="json")},
+            )
+        finally:
+            await message_stream_registry.unregister(assistant_message.id)
+
+    async def stream_new_conversation_message(
+        self,
+        *,
+        user_id: UUID,
+        payload: ConversationMessageCreate,
+        should_cancel: Callable[[], Awaitable[bool]] | None = None,
+    ) -> AsyncIterator[ConversationStreamEvent]:
+        # New Chat 的首条消息会从这里进入：先确定可用模型，再创建会话与消息。
+        llm_config_id = payload.llm_config_id or await self._get_default_llm_config_id(user_id)
+        if llm_config_id is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="请先创建并启用一个默认模型配置",
+            )
+
+        llm_config = await self.llm_configs.get_active(user_id=user_id, config_id=llm_config_id)
+        if llm_config is None or not llm_config.is_enabled:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="当前会话的模型配置不可用",
+            )
+
+        # 标题生成失败会在 generator 内部降级为用户消息截断，不影响后续发起对话。
+        title = await self.title_generator.generate(
+            user_message=payload.content,
+            fallback_config=llm_config,
+        )
+        # 此时才落库 conversation，避免用户只是点击 New Chat 就产生空会话。
+        conversation = await self.conversations.create(
+            user_id=user_id,
+            title=title,
+            llm_config_id=llm_config.id,
+            chat_mode=payload.chat_mode,
+            metadata=payload.metadata,
+        )
+        user_message = await self.messages.create_user_message(
+            conversation_id=conversation.id,
+            content=payload.content,
+        )
+        history_messages = await self.messages.list_by_conversation(conversation.id)
+        assistant_message = await self.messages.create_assistant_placeholder(
+            conversation_id=conversation.id,
+            llm_config_id=llm_config.id,
+            provider=llm_config.provider,
+            model=llm_config.model,
+        )
+        await self.conversations.touch(conversation.id)
+        await self.session.commit()
+        await self.session.refresh(conversation)
+
+        # 注册流式任务，取消接口可通过 assistant_message.id 找到当前生成。
+        active_stream = await message_stream_registry.register(assistant_message.id)
+        full_content_parts: list[str] = []
+        token_usage: dict[str, Any] = {}
+        response_metadata: dict[str, Any] = {"provider": llm_config.provider, "model": llm_config.model}
+        finish_reason: str | None = None
+
+        try:
+            # 先把真实会话发给前端，用生成后的标题替换本地 pending 项。
+            yield ConversationStreamEvent(
+                event="conversation.created",
+                data={
+                    "conversation": ConversationRead.model_validate(conversation).model_dump(
+                        mode="json"
+                    )
+                },
+            )
+            # 再发送本轮真实 user/assistant 消息，替换前端本地占位。
+            yield ConversationStreamEvent(
+                event="message.created",
+                data={
+                    "user_message": MessageRead.model_validate(user_message).model_dump(mode="json"),
+                    "assistant_message": MessageRead.model_validate(assistant_message).model_dump(
+                        mode="json"
+                    ),
+                },
+            )
+            await message_stream_registry.attach_current_task(assistant_message.id)
+            if await self._stream_should_cancel(active_stream.cancel_event, should_cancel):
+                cancelled_message = await self._cancel_streaming_message(
+                    conversation_id=conversation.id,
+                    assistant_message=assistant_message,
+                    content="",
+                    token_usage=token_usage,
+                    response_metadata=response_metadata,
+                )
+                yield ConversationStreamEvent(
+                    event="message.cancelled",
+                    data={
+                        "message": MessageRead.model_validate(cancelled_message).model_dump(
+                            mode="json"
+                        )
+                    },
+                )
+                return
+
+            async for chunk in self.llm_client.stream(
+                config=llm_config,
+                messages=history_messages,
+                summary=conversation.summary,
+            ):
+                # 用户点击停止或浏览器断开时，保留已生成内容并落成 cancelled。
+                if await self._stream_should_cancel(active_stream.cancel_event, should_cancel):
+                    cancelled_message = await self._cancel_streaming_message(
+                        conversation_id=conversation.id,
+                        assistant_message=assistant_message,
+                        content="".join(full_content_parts),
+                        token_usage=token_usage,
+                        response_metadata=response_metadata,
+                    )
+                    yield ConversationStreamEvent(
+                        event="message.cancelled",
+                        data={"message": MessageRead.model_validate(cancelled_message).model_dump(mode="json")},
+                    )
+                    return
+
+                if chunk.token_usage:
+                    token_usage = chunk.token_usage
+                if chunk.response_metadata:
+                    response_metadata.update(chunk.response_metadata)
+                if chunk.finish_reason:
+                    finish_reason = chunk.finish_reason
+
+                if not chunk.content_delta:
+                    continue
+
+                # SSE 增量只传文本 delta；最终完整内容仍以后端落库消息为准。
+                full_content_parts.append(chunk.content_delta)
+                yield ConversationStreamEvent(
+                    event="message.delta",
+                    data={
+                        "message_id": str(assistant_message.id),
+                        "delta": chunk.content_delta,
+                    },
+                )
+
+            full_content = "".join(full_content_parts)
+            if not full_content:
+                raise LLMClientError("模型服务没有返回 assistant 内容")
+
+            # 流式完成后把完整 assistant 内容和用量统一写回数据库。
+            if finish_reason:
+                response_metadata["finish_reason"] = finish_reason
+            assistant_message = await self.messages.complete_assistant_message(
+                message=assistant_message,
+                content=full_content,
+                token_usage=token_usage,
+                response_metadata=response_metadata,
+            )
+            await self.conversations.touch(conversation.id)
+            await self.session.commit()
+            yield ConversationStreamEvent(
+                event="message.completed",
+                data={"message": MessageRead.model_validate(assistant_message).model_dump(mode="json")},
+            )
+        except asyncio.CancelledError:
+            # 任务被外部取消时也要把已有增量保存下来，避免遗留 streaming 状态。
+            await self._cancel_streaming_message(
+                conversation_id=conversation.id,
+                assistant_message=assistant_message,
+                content="".join(full_content_parts),
+                token_usage=token_usage,
+                response_metadata=response_metadata,
+            )
+            raise
+        except LLMClientError as exc:
+            # 模型失败但已有部分内容时会保留 partial；完全无内容则标记 failed。
+            failed_message = await self._fail_or_partial_streaming_message(
+                conversation_id=conversation.id,
                 assistant_message=assistant_message,
                 content="".join(full_content_parts),
                 error=str(exc),
