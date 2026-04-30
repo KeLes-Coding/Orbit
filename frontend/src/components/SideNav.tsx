@@ -126,7 +126,7 @@ export function SideNav() {
   const handleSelectConversation = useCallback(
     (conversationId: string) => {
       setActiveView("chat")
-      navigate("/")
+      navigate(`/conversations/${conversationId}`)
       selectConversation(conversationId)
     },
     [navigate, selectConversation, setActiveView],

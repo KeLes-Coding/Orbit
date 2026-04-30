@@ -1,5 +1,5 @@
-import { useMemo, useCallback } from "react"
-import { useNavigate } from "react-router-dom"
+import { useMemo, useCallback, useEffect } from "react"
+import { useLocation, useNavigate, useParams } from "react-router-dom"
 import { toast } from "sonner"
 import {
   Moon,
@@ -22,6 +22,7 @@ import type { LlmConfig } from "@/api/types"
 import "./ChatShell.css"
 
 export function ChatShell() {
+  const { conversationId: routeConversationId } = useParams<{ conversationId?: string }>()
   const { user, hasUser, openAuth, logout } = useAuth()
   const {
     messages,
@@ -40,6 +41,7 @@ export function ChatShell() {
 
   const { configs } = useLlmConfigs(hasUser)
   const navigate = useNavigate()
+  const location = useLocation()
 
   const draft = useOrbitStore((s) => s.draft)
   const setDraft = useOrbitStore((s) => s.setDraft)
@@ -49,6 +51,18 @@ export function ChatShell() {
   const setActiveView = useOrbitStore((s) => s.setActiveView)
 
   const { isDark, toggleTheme } = useTheme()
+
+  useEffect(() => {
+    if (routeConversationId && routeConversationId !== activeConversationId) {
+      selectConversation(routeConversationId)
+    }
+  }, [activeConversationId, routeConversationId, selectConversation])
+
+  useEffect(() => {
+    if (activeConversationId && !routeConversationId && location.pathname === "/") {
+      navigate(`/conversations/${activeConversationId}`, { replace: true })
+    }
+  }, [activeConversationId, location.pathname, navigate, routeConversationId])
 
   const currentLlmConfigId = useMemo(() => {
     if (!activeConversation) {

@@ -44,6 +44,7 @@ function RouteSync() {
       ) : (
         <Routes>
           <Route path="/" element={<ChatShell />} />
+          <Route path="/conversations/:conversationId" element={<ChatShell />} />
           <Route path="/model-configs" element={<SettingsView />} />
           <Route path="/library" element={<Navigate to="/model-configs" replace />} />
           <Route path="*" element={<ChatShell />} />
