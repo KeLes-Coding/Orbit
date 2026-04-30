@@ -3,19 +3,7 @@ import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 import type { Message } from "@/api/types"
 import { TypingIndicator } from "./TypingIndicator"
-
-function WaterDrop({ className }: { className?: string }) {
-  return (
-    <svg
-      className={className}
-      viewBox="0 0 24 24"
-      fill="currentColor"
-      xmlns="http://www.w3.org/2000/svg"
-    >
-      <path d="M12 2C12 2 6 10 6 14.5C6 17.8 8.7 20.5 12 20.5C15.3 20.5 18 17.8 18 14.5C18 10 12 2 12 2Z" />
-    </svg>
-  )
-}
+import { OrbitIcon } from "@/components/OrbitIcon"
 
 interface MessageBubbleProps {
   message: Message & { paragraphs?: string[] }
@@ -38,7 +26,7 @@ export function MessageBubble({ message }: MessageBubbleProps) {
     >
       {isAssistant && (
         <div className="assistant-mark" aria-hidden="true">
-          <WaterDrop className="assistant-mark-icon" />
+          <OrbitIcon size={18} alwaysInvert />
         </div>
       )}
 

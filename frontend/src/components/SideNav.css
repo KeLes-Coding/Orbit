@@ -3,14 +3,25 @@
   align-items: center;
   gap: 4px;
   min-height: 34px;
-  padding: 0 8px;
+  padding: 0 8px 0 0;
   margin: 0 4px;
   border-radius: 6px;
-  border-left: 2px solid transparent;
+  position: relative;
   transition:
     background 160ms ease,
-    color 160ms ease,
-    border-color 180ms ease;
+    color 160ms ease;
+}
+
+/* Active indicator: small orange dot */
+.thread-item.active::before {
+  content: "";
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--accent-orange, #d97706);
+  flex-shrink: 0;
+  margin-left: 5px;
+  margin-right: 3px;
 }
 
 .thread-item:hover {
@@ -18,7 +29,6 @@
 }
 
 .thread-item.active {
-  border-left-color: var(--accent-orange, #d97706);
   background: var(--surface-low);
 }
 

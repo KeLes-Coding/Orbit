@@ -62,6 +62,20 @@ textarea:disabled {
   opacity: 0.62;
 }
 
+.material-symbols-outlined {
+  font-family: "Material Symbols Outlined";
+  font-size: 24px;
+  font-style: normal;
+  font-weight: normal;
+  line-height: 1;
+  text-transform: none;
+  white-space: nowrap;
+  direction: ltr;
+  -webkit-font-feature-settings: "liga";
+  -webkit-font-smoothing: antialiased;
+  font-variation-settings: "FILL" 0, "wght" 400, "GRAD" 0, "opsz" 24;
+}
+
 .app-shell {
   display: flex;
   width: 100%;
@@ -122,12 +136,6 @@ textarea:disabled {
   gap: 16px;
   color: var(--ink-soft);
   text-align: center;
-}
-
-.boot-svg {
-  width: 42px;
-  height: 42px;
-  color: var(--ink-soft);
 }
 
 .boot-screen p {

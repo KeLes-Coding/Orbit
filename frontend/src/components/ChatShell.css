@@ -117,19 +117,6 @@
   }
 }
 
-/* ---------- Empty state icon ---------- */
-.empty-state-icon {
-  width: 42px;
-  height: 42px;
-  margin-bottom: 16px;
-  color: var(--ink-soft);
-}
-
-.assistant-mark-icon {
-  width: 16px;
-  height: 16px;
-}
-
 /* ---------- Composer sending state ---------- */
 .composer.is-sending {
   opacity: 0.76;

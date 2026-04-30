@@ -3,7 +3,6 @@ import { useNavigate } from "react-router-dom"
 import { toast } from "sonner"
 import {
   Plus,
-  BookOpen,
   Pencil,
   X,
   LogOut,
@@ -17,6 +16,7 @@ import { useConversations } from "@/hooks/useConversations"
 import { useOrbitStore } from "@/stores/useOrbitStore"
 import { useClickOutside } from "@/hooks/useClickOutside"
 import { Button } from "@/components/ui/button"
+import { OrbitIcon } from "@/components/OrbitIcon"
 import {
   Dialog,
   DialogContent,
@@ -40,7 +40,6 @@ export function SideNav() {
     archiveConversation,
   } = useConversations(hasUser)
 
-  const activeView = useOrbitStore((s) => s.activeView)
   const setActiveView = useOrbitStore((s) => s.setActiveView)
   const navigate = useNavigate()
 
@@ -163,7 +162,10 @@ export function SideNav() {
     <>
       <aside className="side-nav" aria-label="Primary navigation">
         <div className="brand-panel">
-          <h1>Orbit</h1>
+          <div className="flex items-center gap-2 mb-1">
+            <OrbitIcon size={28} />
+            <h1>Orbit</h1>
+          </div>
           <p>Zen AI Assistant</p>
         </div>
 
@@ -247,14 +249,6 @@ export function SideNav() {
             )}
           </div>
 
-          <button
-            type="button"
-            className={`nav-item${activeView === "library" ? " active" : ""}`}
-            onClick={handleOpenLibrary}
-          >
-            <BookOpen className="h-5 w-5" />
-            <span>Library</span>
-          </button>
         </nav>
 
         <div className="account-section" ref={accountMenuRef}>
@@ -264,7 +258,7 @@ export function SideNav() {
             </span>
             <span className="account-copy">
               <strong>{displayName || "Guest"}</strong>
-              <small>{user ? "Sign out" : "Sign in"}</small>
+              <small>{user ? user.email : "Sign in"}</small>
             </span>
             {user ? (
               showAccountMenu ? (

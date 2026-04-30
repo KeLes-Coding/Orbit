@@ -1,19 +1,14 @@
 import { useCallback } from "react"
 import { useNavigate } from "react-router-dom"
-import {
-  Plus,
-  BookOpen,
-  MessageSquare,
-  LogOut,
-  Settings,
-  LogIn,
-} from "lucide-react"
+import { Plus, LogOut, LogIn, Settings } from "lucide-react"
+import { toast } from "sonner"
 import { useAuth } from "@/hooks/useAuth"
 import { useConversations } from "@/hooks/useConversations"
 import { useOrbitStore } from "@/stores/useOrbitStore"
-import { SheetContent, SheetHeader, SheetTitle, SheetClose } from "@/components/ui/sheet"
+import { SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Button } from "@/components/ui/button"
+import { OrbitIcon } from "@/components/OrbitIcon"
 import "./SideNav.css"
 
 interface MobileDrawerProps {
@@ -63,15 +58,16 @@ export function MobileDrawer({ onOpenChange }: MobileDrawerProps) {
     navigate("/library")
   }, [closeSheet, navigate, setActiveView])
 
-  const handleLogout = useCallback(() => {
-    closeSheet()
-    logout()
-  }, [closeSheet, logout])
+  const displayName = user?.display_name || user?.email?.split("@")[0] || ""
+  const accountInitial = displayName.slice(0, 1).toUpperCase()
 
   return (
     <SheetContent side="left" aria-describedby="mobile-nav-title">
       <SheetHeader>
-        <SheetTitle id="mobile-nav-title">Orbit</SheetTitle>
+        <div className="flex items-center gap-2">
+          <OrbitIcon size={28} />
+          <SheetTitle id="mobile-nav-title">Orbit</SheetTitle>
+        </div>
       </SheetHeader>
 
       {/* New Chat */}
@@ -109,8 +105,23 @@ export function MobileDrawer({ onOpenChange }: MobileDrawerProps) {
         </div>
       </ScrollArea>
 
-      {/* Bottom actions */}
-      <div className="mt-auto border-t border-[var(--line)] pt-2 pb-4 px-2 flex flex-col gap-1">
+      {/* Bottom: user info + actions */}
+      <div className="mt-auto border-t border-[var(--line)] pt-3 pb-4 px-3 flex flex-col gap-1">
+        {user && (
+          <div className="flex items-center gap-3 px-2 py-2">
+            <span className="avatar" aria-hidden="true">
+              {accountInitial}
+            </span>
+            <span className="flex-1 min-w-0">
+              <span className="block text-sm font-semibold text-[var(--ink)] truncate">
+                {displayName}
+              </span>
+              <span className="block text-[10px] text-[var(--ink-soft)] uppercase tracking-wider truncate">
+                {user.email}
+              </span>
+            </span>
+          </div>
+        )}
         <button
           type="button"
           className="account-menu-item w-full"
@@ -123,7 +134,11 @@ export function MobileDrawer({ onOpenChange }: MobileDrawerProps) {
           <button
             type="button"
             className="account-menu-item w-full"
-            onClick={handleLogout}
+            onClick={() => {
+              closeSheet()
+              logout()
+              toast.success("Signed out")
+            }}
           >
             <LogOut className="h-4 w-4" />
             <span>Sign Out</span>
