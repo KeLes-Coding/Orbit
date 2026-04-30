@@ -34,6 +34,7 @@ export interface Message {
   conversation_id: string
   role: 'user' | 'assistant' | 'system' | 'tool'
   content: string
+  reasoning_content?: string
   content_parts?: unknown[]
   paragraphs?: string[]
   status?: 'completed' | 'streaming' | 'failed' | 'partial' | 'cancelled'
@@ -133,6 +134,13 @@ export type StreamMessageEvent =
     }
   | {
       event: 'message.delta'
+      data: {
+        message_id: string
+        delta: string
+      }
+    }
+  | {
+      event: 'message.reasoning_delta'
       data: {
         message_id: string
         delta: string

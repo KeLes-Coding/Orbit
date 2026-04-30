@@ -13,6 +13,7 @@ Desktop.ini
 # Logs
 *.log
 logs/
+backend/logs/
 
 # Environment and local config
 .env

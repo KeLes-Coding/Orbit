@@ -1,4 +1,4 @@
-import { useMemo } from "react"
+import { useEffect, useMemo, useState } from "react"
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 import type { Message } from "@/api/types"
@@ -21,6 +21,22 @@ export function MessageBubble({ message }: MessageBubbleProps) {
     () => (message.content || "").trim().length > 0,
     [message.content],
   )
+  const hasReasoning = useMemo(
+    () => (message.reasoning_content || "").trim().length > 0,
+    [message.reasoning_content],
+  )
+  const isReasoningOpenByDefault = isStreaming && hasReasoning && !hasContent
+  const [isReasoningOpen, setIsReasoningOpen] = useState(isReasoningOpenByDefault)
+
+  useEffect(() => {
+    if (isStreaming && hasReasoning && !hasContent) {
+      setIsReasoningOpen(true)
+      return
+    }
+    if (hasContent) {
+      setIsReasoningOpen(false)
+    }
+  }, [hasContent, hasReasoning, isStreaming])
 
   return (
     <article
@@ -36,6 +52,27 @@ export function MessageBubble({ message }: MessageBubbleProps) {
         <div className="user-bubble">{message.content}</div>
       ) : (
         <div className="assistant-copy">
+          {hasReasoning && (
+            <section
+              className={`reasoning-block${isReasoningOpen ? " open" : ""}`}
+              aria-label="Thought process"
+            >
+              <button
+                type="button"
+                className="reasoning-toggle"
+                aria-expanded={isReasoningOpen}
+                onClick={() => setIsReasoningOpen((open) => !open)}
+              >
+                {isStreaming && !hasContent ? "Thinking" : "Thought process"}
+              </button>
+              {isReasoningOpen && (
+                <div className="reasoning-body">
+                  {message.reasoning_content}
+                </div>
+              )}
+            </section>
+          )}
+
           {isStreaming && !hasContent ? (
             <TypingIndicator />
           ) : (

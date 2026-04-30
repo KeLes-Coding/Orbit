@@ -184,6 +184,7 @@ class ConversationService:
         assistant_message = await self.messages.complete_assistant_message(
             message=assistant_message,
             content=completion.content,
+            reasoning_content=completion.reasoning_content,
             token_usage=completion.token_usage,
             response_metadata=completion.response_metadata,
         )
@@ -238,6 +239,7 @@ class ConversationService:
 
         active_stream = await message_stream_registry.register(assistant_message.id)
         full_content_parts: list[str] = []
+        full_reasoning_parts: list[str] = []
         token_usage: dict[str, Any] = {}
         response_metadata: dict[str, Any] = {"provider": llm_config.provider, "model": llm_config.model}
         finish_reason: str | None = None
@@ -283,6 +285,7 @@ class ConversationService:
                         conversation_id=conversation_id,
                         assistant_message=assistant_message,
                         content="".join(full_content_parts),
+                        reasoning_content="".join(full_reasoning_parts),
                         token_usage=token_usage,
                         response_metadata=response_metadata,
                     )
@@ -299,19 +302,28 @@ class ConversationService:
                 if chunk.finish_reason:
                     finish_reason = chunk.finish_reason
 
-                if not chunk.content_delta:
-                    continue
+                if chunk.reasoning_delta:
+                    full_reasoning_parts.append(chunk.reasoning_delta)
+                    yield ConversationStreamEvent(
+                        event="message.reasoning_delta",
+                        data={
+                            "message_id": str(assistant_message.id),
+                            "delta": chunk.reasoning_delta,
+                        },
+                    )
 
-                full_content_parts.append(chunk.content_delta)
-                yield ConversationStreamEvent(
-                    event="message.delta",
-                    data={
-                        "message_id": str(assistant_message.id),
-                        "delta": chunk.content_delta,
-                    },
-                )
+                if chunk.content_delta:
+                    full_content_parts.append(chunk.content_delta)
+                    yield ConversationStreamEvent(
+                        event="message.delta",
+                        data={
+                            "message_id": str(assistant_message.id),
+                            "delta": chunk.content_delta,
+                        },
+                    )
 
             full_content = "".join(full_content_parts)
+            full_reasoning = "".join(full_reasoning_parts)
             if not full_content:
                 raise LLMClientError("模型服务没有返回 assistant 内容")
 
@@ -320,6 +332,7 @@ class ConversationService:
             assistant_message = await self.messages.complete_assistant_message(
                 message=assistant_message,
                 content=full_content,
+                reasoning_content=full_reasoning,
                 token_usage=token_usage,
                 response_metadata=response_metadata,
             )
@@ -335,6 +348,7 @@ class ConversationService:
                 conversation_id=conversation_id,
                 assistant_message=assistant_message,
                 content="".join(full_content_parts),
+                reasoning_content="".join(full_reasoning_parts),
                 token_usage=token_usage,
                 response_metadata=response_metadata,
             )
@@ -344,6 +358,7 @@ class ConversationService:
                 conversation_id=conversation_id,
                 assistant_message=assistant_message,
                 content="".join(full_content_parts),
+                reasoning_content="".join(full_reasoning_parts),
                 error=str(exc),
                 token_usage=token_usage,
                 response_metadata=response_metadata,
@@ -408,6 +423,7 @@ class ConversationService:
         # 注册流式任务，取消接口可通过 assistant_message.id 找到当前生成。
         active_stream = await message_stream_registry.register(assistant_message.id)
         full_content_parts: list[str] = []
+        full_reasoning_parts: list[str] = []
         token_usage: dict[str, Any] = {}
         response_metadata: dict[str, Any] = {"provider": llm_config.provider, "model": llm_config.model}
         finish_reason: str | None = None
@@ -462,6 +478,7 @@ class ConversationService:
                         conversation_id=conversation.id,
                         assistant_message=assistant_message,
                         content="".join(full_content_parts),
+                        reasoning_content="".join(full_reasoning_parts),
                         token_usage=token_usage,
                         response_metadata=response_metadata,
                     )
@@ -478,20 +495,30 @@ class ConversationService:
                 if chunk.finish_reason:
                     finish_reason = chunk.finish_reason
 
-                if not chunk.content_delta:
-                    continue
+                if chunk.reasoning_delta:
+                    # reasoning 使用独立 SSE 事件，前端可以单独渲染 thinking 块而不污染正文。
+                    full_reasoning_parts.append(chunk.reasoning_delta)
+                    yield ConversationStreamEvent(
+                        event="message.reasoning_delta",
+                        data={
+                            "message_id": str(assistant_message.id),
+                            "delta": chunk.reasoning_delta,
+                        },
+                    )
 
-                # SSE 增量只传文本 delta；最终完整内容仍以后端落库消息为准。
-                full_content_parts.append(chunk.content_delta)
-                yield ConversationStreamEvent(
-                    event="message.delta",
-                    data={
-                        "message_id": str(assistant_message.id),
-                        "delta": chunk.content_delta,
-                    },
-                )
+                if chunk.content_delta:
+                    # SSE 正文增量仍保持旧事件名；最终完整内容以后端落库消息为准。
+                    full_content_parts.append(chunk.content_delta)
+                    yield ConversationStreamEvent(
+                        event="message.delta",
+                        data={
+                            "message_id": str(assistant_message.id),
+                            "delta": chunk.content_delta,
+                        },
+                    )
 
             full_content = "".join(full_content_parts)
+            full_reasoning = "".join(full_reasoning_parts)
             if not full_content:
                 raise LLMClientError("模型服务没有返回 assistant 内容")
 
@@ -501,6 +528,7 @@ class ConversationService:
             assistant_message = await self.messages.complete_assistant_message(
                 message=assistant_message,
                 content=full_content,
+                reasoning_content=full_reasoning,
                 token_usage=token_usage,
                 response_metadata=response_metadata,
             )
@@ -516,6 +544,7 @@ class ConversationService:
                 conversation_id=conversation.id,
                 assistant_message=assistant_message,
                 content="".join(full_content_parts),
+                reasoning_content="".join(full_reasoning_parts),
                 token_usage=token_usage,
                 response_metadata=response_metadata,
             )
@@ -526,6 +555,7 @@ class ConversationService:
                 conversation_id=conversation.id,
                 assistant_message=assistant_message,
                 content="".join(full_content_parts),
+                reasoning_content="".join(full_reasoning_parts),
                 error=str(exc),
                 token_usage=token_usage,
                 response_metadata=response_metadata,
@@ -563,6 +593,7 @@ class ConversationService:
         message = await self.messages.cancel_assistant_message(
             message=message,
             content=message.content,
+            reasoning_content=message.reasoning_content,
             token_usage=message.token_usage,
             response_metadata=message.response_metadata,
         )
@@ -613,11 +644,13 @@ class ConversationService:
         content: str,
         token_usage: dict[str, Any],
         response_metadata: dict[str, Any],
+        reasoning_content: str = "",
     ):
         # 取消时不丢弃 assistant 占位消息，而是保存已生成内容并落成最终状态。
         assistant_message = await self.messages.cancel_assistant_message(
             message=assistant_message,
             content=content,
+            reasoning_content=reasoning_content,
             token_usage=token_usage,
             response_metadata=response_metadata,
         )
@@ -635,12 +668,14 @@ class ConversationService:
         error: str,
         token_usage: dict[str, Any],
         response_metadata: dict[str, Any],
+        reasoning_content: str = "",
     ):
-        # 流式失败时，有内容就保留 partial，完全没有内容才标记 failed。
-        if content:
+        # 流式失败时，有正文或 reasoning 就保留 partial，完全没有增量才标记 failed。
+        if content or reasoning_content:
             assistant_message = await self.messages.partial_assistant_message(
                 message=assistant_message,
                 content=content,
+                reasoning_content=reasoning_content,
                 error=error,
                 token_usage=token_usage,
                 response_metadata=response_metadata,

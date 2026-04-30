@@ -147,9 +147,11 @@ class MessageRepository:
         content: str,
         token_usage: dict[str, Any],
         response_metadata: dict[str, Any],
+        reasoning_content: str = "",
     ) -> Message:
         # 模型调用成功后，把占位消息推进到 completed，并保存用量和供应商元信息。
         message.content = content
+        message.reasoning_content = reasoning_content
         message.status = "completed"
         message.token_usage = token_usage
         message.response_metadata = response_metadata
@@ -173,9 +175,11 @@ class MessageRepository:
         error: str,
         token_usage: dict[str, Any] | None = None,
         response_metadata: dict[str, Any] | None = None,
+        reasoning_content: str = "",
     ) -> Message:
         # 流式生成中途失败但已有内容时，保留部分回复并标记为 partial。
         message.content = content
+        message.reasoning_content = reasoning_content
         message.status = "partial"
         message.token_usage = token_usage or {}
         message.response_metadata = {**(response_metadata or {}), "error": error}
@@ -188,11 +192,13 @@ class MessageRepository:
         *,
         message: Message,
         content: str,
+        reasoning_content: str = "",
         token_usage: dict[str, Any] | None = None,
         response_metadata: dict[str, Any] | None = None,
     ) -> Message:
         # 用户主动停止或连接断开时，保存已生成内容并标记为 cancelled。
         message.content = content
+        message.reasoning_content = reasoning_content
         message.status = "cancelled"
         message.token_usage = token_usage or {}
         message.response_metadata = {**(response_metadata or {}), "error": "cancelled_by_user"}

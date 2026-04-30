@@ -23,6 +23,10 @@ class Settings(BaseSettings):
     # 标题生成在首条消息链路上同步执行，超时要短，避免拖慢用户发起对话。
     title_timeout_seconds: float = 10
     title_max_chars: int = 48
+    # LLM 调试日志默认关闭；排查 provider 返回结构时再打开，避免日常日志泄露对话内容。
+    llm_debug_logging: bool = False
+    llm_debug_max_chars: int = 4000
+    llm_debug_log_path: str = "logs/llm-debug.log"
     cors_origins: list[str] = Field(
         default_factory=lambda: ["http://localhost:5173", "http://127.0.0.1:5173"]
     )

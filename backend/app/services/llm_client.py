@@ -7,14 +7,16 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, System
 
 from app.models.llm_config import LLMConfig
 from app.models.message import Message
+from app.services.llm_debug import log_llm_object
 from app.services.llm.providers.base import LLMProviderError
 from app.services.llm.providers.registry import get_provider
 
 
 @dataclass
 class LLMCompletion:
-    # 统一不同供应商的返回结构，服务层只关心文本、用量和原始元信息。
+    # 统一不同供应商的返回结构，服务层只关心正文、推理文本、用量和原始元信息。
     content: str
+    reasoning_content: str = ""
     token_usage: dict[str, Any] = field(default_factory=dict)
     response_metadata: dict[str, Any] = field(default_factory=dict)
 
@@ -23,6 +25,7 @@ class LLMCompletion:
 class LLMStreamChunk:
     # 流式调用的内部统一 chunk，避免会话服务直接依赖 LangChain 的返回形状。
     content_delta: str = ""
+    reasoning_delta: str = ""
     token_usage: dict[str, Any] = field(default_factory=dict)
     response_metadata: dict[str, Any] = field(default_factory=dict)
     finish_reason: str | None = None
@@ -78,7 +81,34 @@ class LLMClient:
         chat_messages = self._build_langchain_messages(messages=messages, summary=summary)
 
         try:
-            chat_model = provider.build_chat_model(provider.from_model_config(config))
+            runtime_config = provider.from_model_config(config)
+            if provider.supports_native_stream(runtime_config):
+                async for chunk in provider.stream_chat(config=runtime_config, messages=chat_messages):
+                    response_metadata = dict(chunk.response_metadata or {})
+                    response_metadata.setdefault("provider", config.provider)
+                    response_metadata.setdefault("model", config.model)
+                    log_llm_object(
+                        phase="provider.stream.chunk",
+                        provider=config.provider,
+                        model=config.model,
+                        value=chunk.raw,
+                        extracted={
+                            "content_delta": chunk.content_delta,
+                            "reasoning_delta": chunk.reasoning_delta,
+                            "token_usage": chunk.token_usage,
+                            "finish_reason": chunk.finish_reason,
+                        },
+                    )
+                    yield LLMStreamChunk(
+                        content_delta=chunk.content_delta,
+                        reasoning_delta=chunk.reasoning_delta,
+                        token_usage=chunk.token_usage,
+                        response_metadata=response_metadata,
+                        finish_reason=chunk.finish_reason,
+                    )
+                return
+
+            chat_model = provider.build_chat_model(runtime_config)
         except LLMProviderError as exc:
             raise LLMClientError(str(exc)) from exc
         except Exception as exc:
@@ -93,8 +123,22 @@ class LLMClient:
                     response=chunk,
                     response_metadata=response_metadata,
                 )
+                content_delta, reasoning_delta = self._split_message_content(chunk)
+                log_llm_object(
+                    phase="stream.chunk",
+                    provider=config.provider,
+                    model=config.model,
+                    value=chunk,
+                    extracted={
+                        "content_delta": content_delta,
+                        "reasoning_delta": reasoning_delta,
+                        "token_usage": token_usage,
+                        "finish_reason": self._extract_finish_reason(response_metadata),
+                    },
+                )
                 yield LLMStreamChunk(
-                    content_delta=self._normalize_content(getattr(chunk, "content", "")),
+                    content_delta=content_delta,
+                    reasoning_delta=reasoning_delta,
                     token_usage=token_usage,
                     response_metadata=response_metadata,
                     finish_reason=self._extract_finish_reason(response_metadata),
@@ -155,7 +199,17 @@ class LLMClient:
         except Exception as exc:
             raise LLMClientError(f"模型服务请求失败：{exc}") from exc
 
-        content = self._normalize_content(response.content)
+        content, reasoning_content = self._split_message_content(response)
+        log_llm_object(
+            phase="generate.response",
+            provider=config.provider,
+            model=config.model,
+            value=response,
+            extracted={
+                "content": content,
+                "reasoning_content": reasoning_content,
+            },
+        )
         if content == "":
             raise LLMClientError("模型服务没有返回 assistant 内容")
 
@@ -169,6 +223,7 @@ class LLMClient:
 
         return LLMCompletion(
             content=content,
+            reasoning_content=reasoning_content,
             token_usage=token_usage,
             response_metadata=response_metadata,
         )
@@ -186,10 +241,87 @@ class LLMClient:
             for part in content:
                 if isinstance(part, str):
                     text_parts.append(part)
-                elif isinstance(part, dict) and isinstance(part.get("text"), str):
-                    text_parts.append(part["text"])
+                elif isinstance(part, dict):
+                    # reasoning/thinking block 不能混入正文，否则历史上下文会把推理过程再次喂给模型。
+                    block_type = str(part.get("type") or "").lower()
+                    if block_type not in {"reasoning", "thinking"} and isinstance(part.get("text"), str):
+                        text_parts.append(part["text"])
             return "".join(text_parts)
         return str(content) if content is not None else ""
+
+    def _split_message_content(self, message: Any) -> tuple[str, str]:
+        # LangChain 会把不同供应商的 text/reasoning 标准化到 content_blocks，优先使用这层契约。
+        content_blocks = getattr(message, "content_blocks", None) or []
+        content_parts: list[str] = []
+        reasoning_parts: list[str] = []
+        for block in content_blocks:
+            block_type = self._get_block_value(block, "type")
+            if block_type == "text":
+                content_parts.append(self._extract_block_text(block, "text", "content"))
+            elif block_type in {"reasoning", "thinking"}:
+                reasoning_parts.append(
+                    self._extract_block_text(block, "reasoning", "text", "content", "summary")
+                )
+
+        content = "".join(content_parts)
+        reasoning = "".join(reasoning_parts)
+        if content or reasoning:
+            # 有些 integration 只标准化其中一种 block；缺失的一侧再从原始字段兜底。
+            if not content:
+                content = self._normalize_content(getattr(message, "content", ""))
+            if not reasoning:
+                reasoning = self._extract_reasoning_fallback(message)
+            return content, reasoning
+
+        return (
+            self._normalize_content(getattr(message, "content", "")),
+            self._extract_reasoning_fallback(message),
+        )
+
+    def _get_block_value(self, block: Any, key: str) -> str:
+        if isinstance(block, dict):
+            value = block.get(key)
+        else:
+            value = getattr(block, key, None)
+        return str(value).lower() if value is not None else ""
+
+    def _extract_block_text(self, block: Any, *keys: str) -> str:
+        for key in keys:
+            if isinstance(block, dict):
+                value = block.get(key)
+            else:
+                value = getattr(block, key, None)
+            text = self._normalize_text_value(value)
+            if text:
+                return text
+        return ""
+
+    def _normalize_text_value(self, value: Any) -> str:
+        if isinstance(value, str):
+            return value
+        if isinstance(value, list):
+            return "".join(self._normalize_text_value(item) for item in value)
+        if isinstance(value, dict):
+            for key in ("text", "content", "reasoning"):
+                if key in value:
+                    text = self._normalize_text_value(value[key])
+                    if text:
+                        return text
+        return ""
+
+    def _extract_reasoning_fallback(self, message: Any) -> str:
+        # 少数 LangChain integration 还会把 reasoning 暴露在 raw kwargs/metadata，作为标准 block 缺失时的兜底。
+        for container in (
+            getattr(message, "additional_kwargs", None),
+            getattr(message, "response_metadata", None),
+        ):
+            if not isinstance(container, dict):
+                continue
+            for key in ("reasoning_content", "reasoning", "thinking"):
+                text = self._normalize_text_value(container.get(key))
+                if text:
+                    return text
+        return ""
 
     def _extract_token_usage(
         self,
