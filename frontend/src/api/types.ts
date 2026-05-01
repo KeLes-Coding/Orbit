@@ -19,7 +19,7 @@ export interface User {
 
 export interface Conversation {
   id: string
-  thread_id?: number | null
+  thread_id?: string | null
   user_id: string
   llm_config_id?: string | null
   title?: string | null
@@ -32,11 +32,18 @@ export interface Conversation {
 export interface Message {
   id: string
   conversation_id: string
-  role: 'user' | 'assistant' | 'system'
+  role: 'user' | 'assistant' | 'system' | 'tool'
   content: string
+  content_parts?: unknown[]
   paragraphs?: string[]
-  status?: 'completed' | 'streaming' | 'failed'
+  status?: 'completed' | 'streaming' | 'failed' | 'partial' | 'cancelled'
   sequence_no?: number
+  langgraph_message_id?: string | null
+  llm_config_id?: string | null
+  provider?: string | null
+  model?: string | null
+  token_usage?: Record<string, unknown>
+  response_metadata?: Record<string, unknown>
   token_count?: number
   created_at: string
   updated_at?: string
@@ -87,6 +94,13 @@ export interface CreateConversationPayload {
   metadata?: Record<string, unknown>
 }
 
+export interface CreateConversationMessagePayload {
+  content: string
+  llm_config_id?: string | null
+  chat_mode?: string
+  metadata?: Record<string, unknown>
+}
+
 export interface UpdateConversationPayload {
   title?: string
   llm_config_id?: string | null
@@ -102,6 +116,34 @@ export interface SendMessageResponse {
   user_message: Message
   assistant_message: Message
 }
+
+export type StreamMessageEvent =
+  | {
+      event: 'conversation.created'
+      data: {
+        conversation: Conversation
+      }
+    }
+  | {
+      event: 'message.created'
+      data: {
+        user_message: Message
+        assistant_message: Message
+      }
+    }
+  | {
+      event: 'message.delta'
+      data: {
+        message_id: string
+        delta: string
+      }
+    }
+  | {
+      event: 'message.completed' | 'message.failed' | 'message.cancelled'
+      data: {
+        message: Message
+      }
+    }
 
 export interface ProbeModelsPayload {
   provider: string

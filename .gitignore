@@ -60,3 +60,4 @@ temp/
 .codex
 doc/
 config_text.txt
+backend/orbit_backend.egg-info

@@ -132,9 +132,9 @@ export function SideNav() {
     [navigate, selectConversation, setActiveView],
   )
 
-  const handleOpenLibrary = useCallback(() => {
-    setActiveView("library")
-    navigate("/library")
+  const handleOpenModelConfigs = useCallback(() => {
+    setActiveView("model_configs")
+    navigate("/model-configs")
   }, [navigate, setActiveView])
 
   /* ---------- Account ---------- */
@@ -179,10 +179,12 @@ export function SideNav() {
         <nav className="nav-list" aria-label="Workspace">
           <div className="thread-section-title">Chats</div>
           <div className="thread-list" aria-label="Recent conversations">
-            {sortedConversations.map((conversation) => (
+            {sortedConversations.map((conversation) => {
+              const isPendingTitle = Boolean(conversation.metadata?.pendingTitle)
+              return (
               <div
                 key={conversation.id}
-                className={`thread-item${conversation.id === activeConversationId ? " active" : ""}`}
+                className={`thread-item${conversation.id === activeConversationId ? " active" : ""}${isPendingTitle ? " pending" : ""}`}
               >
                 {editingThreadId === conversation.id ? (
                   <input
@@ -202,10 +204,12 @@ export function SideNav() {
                     <button
                       type="button"
                       className="thread-button"
+                      disabled={isPendingTitle}
                       onClick={() => handleSelectConversation(conversation.id)}
                     >
                       {formatConversationTitle(conversation)}
                     </button>
+                    {!isPendingTitle && (
                     <div className="thread-actions">
                       <button
                         type="button"
@@ -226,10 +230,11 @@ export function SideNav() {
                         <X className="h-3.5 w-3.5" />
                       </button>
                     </div>
+                    )}
                   </>
                 )}
               </div>
-            ))}
+            )})}
 
             {/* Empty / loading states */}
             {isBooting && (
@@ -276,7 +281,7 @@ export function SideNav() {
               <button
                 type="button"
                 className="account-menu-item"
-                onClick={() => handleMenuAction(handleOpenLibrary)}
+                onClick={() => handleMenuAction(handleOpenModelConfigs)}
               >
                 <Settings className="h-4 w-4" />
                 <span>LLM Configs</span>

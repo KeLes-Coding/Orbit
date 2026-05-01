@@ -84,6 +84,14 @@ class MessageRepository:
         result = await self.session.execute(statement)
         return list(result.scalars().all())
 
+    async def get_by_id(self, *, conversation_id: UUID, message_id: UUID) -> Message | None:
+        statement = select(Message).where(
+            Message.conversation_id == conversation_id,
+            Message.id == message_id,
+        )
+        result = await self.session.execute(statement)
+        return result.scalar_one_or_none()
+
     async def next_sequence_no(self, conversation_id: UUID) -> int:
         # MVP 先用 max(sequence_no)+1；高并发发送时可升级为行锁或独立计数器。
         statement = select(func.coalesce(func.max(Message.sequence_no), 0) + 1).where(
@@ -153,6 +161,41 @@ class MessageRepository:
         # 调用失败也保留 assistant 消息，前端可以根据 failed 状态展示重试入口。
         message.status = "failed"
         message.response_metadata = {"error": error}
+        await self.session.flush()
+        await self.session.refresh(message)
+        return message
+
+    async def partial_assistant_message(
+        self,
+        *,
+        message: Message,
+        content: str,
+        error: str,
+        token_usage: dict[str, Any] | None = None,
+        response_metadata: dict[str, Any] | None = None,
+    ) -> Message:
+        # 流式生成中途失败但已有内容时，保留部分回复并标记为 partial。
+        message.content = content
+        message.status = "partial"
+        message.token_usage = token_usage or {}
+        message.response_metadata = {**(response_metadata or {}), "error": error}
+        await self.session.flush()
+        await self.session.refresh(message)
+        return message
+
+    async def cancel_assistant_message(
+        self,
+        *,
+        message: Message,
+        content: str,
+        token_usage: dict[str, Any] | None = None,
+        response_metadata: dict[str, Any] | None = None,
+    ) -> Message:
+        # 用户主动停止或连接断开时，保存已生成内容并标记为 cancelled。
+        message.content = content
+        message.status = "cancelled"
+        message.token_usage = token_usage or {}
+        message.response_metadata = {**(response_metadata or {}), "error": "cancelled_by_user"}
         await self.session.flush()
         await self.session.refresh(message)
         return message

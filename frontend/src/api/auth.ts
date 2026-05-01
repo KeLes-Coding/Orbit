@@ -6,7 +6,7 @@ export const authApi = {
     return apiClient.post('/auth/login', payload)
   },
 
-  register(payload: RegisterPayload): Promise<AuthToken> {
+  register(payload: RegisterPayload): Promise<User> {
     return apiClient.post('/auth/register', payload)
   },
 

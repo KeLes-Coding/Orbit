@@ -1,7 +1,10 @@
+import json
+from collections.abc import AsyncIterator
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Response, status
+from fastapi import APIRouter, Depends, Request, Response, status
+from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user
@@ -9,13 +12,14 @@ from app.db.session import get_db_session
 from app.models.user import User
 from app.schemas.conversation import (
     ConversationCreate,
+    ConversationMessageCreate,
     ConversationRead,
     ConversationUpdate,
     MessageExchangeRead,
     MessageCreate,
     MessageRead,
 )
-from app.services.conversation import ConversationService
+from app.services.conversation import ConversationService, ConversationStreamEvent
 
 
 router = APIRouter(prefix="/conversations", tags=["conversations"])
@@ -40,6 +44,41 @@ async def create_conversation(
     return await ConversationService(session).create_conversation(
         user_id=current_user.id,
         payload=payload,
+    )
+
+
+@router.post("/messages/stream")
+async def stream_new_conversation_message(
+    payload: ConversationMessageCreate,
+    request: Request,
+    current_user: Annotated[User, Depends(get_current_user)],
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+) -> StreamingResponse:
+    service = ConversationService(session)
+    # 首条消息入口：前端处于“未选中会话”的 New Chat 状态时走这里，
+    # 后端负责创建 conversation、生成标题，再继续复用 SSE 消息流。
+    stream_events = service.stream_new_conversation_message(
+        user_id=current_user.id,
+        payload=payload,
+        should_cancel=request.is_disconnected,
+    )
+    # 先预取第一条事件，让鉴权、模型配置、建会话等错误仍以普通 HTTP 错误返回，
+    # 避免 StreamingResponse 已开始后才暴露异常。
+    first_event = await anext(stream_events)
+
+    async def event_generator() -> AsyncIterator[str]:
+        # 第一条通常是 conversation.created，前端收到后再把真实会话插入侧边栏。
+        yield encode_sse_event(first_event)
+        async for event in stream_events:
+            yield encode_sse_event(event)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
     )
 
 
@@ -111,3 +150,62 @@ async def create_user_message(
         conversation_id=conversation_id,
         content=payload.content,
     )
+
+
+@router.post("/{conversation_id}/messages/stream")
+async def stream_user_message(
+    conversation_id: UUID,
+    payload: MessageCreate,
+    request: Request,
+    current_user: Annotated[User, Depends(get_current_user)],
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+) -> StreamingResponse:
+    service = ConversationService(session)
+    # 先拉取第一条事件，确保鉴权、会话归属、模型配置等错误仍能返回普通 HTTP 错误。
+    stream_events = service.stream_user_message(
+        user_id=current_user.id,
+        conversation_id=conversation_id,
+        content=payload.content,
+        should_cancel=request.is_disconnected,
+    )
+    first_event = await anext(stream_events)
+
+    async def event_generator() -> AsyncIterator[str]:
+        # SSE MVP阶段输出 event/data。
+        yield encode_sse_event(first_event)
+        async for event in stream_events:
+            yield encode_sse_event(event)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@router.post(
+    "/{conversation_id}/messages/{message_id}/cancel",
+    response_model=MessageRead,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def cancel_message_generation(
+    conversation_id: UUID,
+    message_id: UUID,
+    current_user: Annotated[User, Depends(get_current_user)],
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+) -> MessageRead:
+    # 取消接口只负责发出停止信号；真正的最终状态由流式生成协程落库。
+    return await ConversationService(session).cancel_message_generation(
+        user_id=current_user.id,
+        conversation_id=conversation_id,
+        message_id=message_id,
+    )
+
+
+def encode_sse_event(event: ConversationStreamEvent) -> str:
+    # SSE 事件之间用空行分隔，data 使用紧凑 JSON 方便前端逐事件解析。
+    data = json.dumps(event.data, ensure_ascii=False, separators=(",", ":"))
+    return f"event: {event.event}\ndata: {data}\n\n"

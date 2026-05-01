@@ -43,6 +43,14 @@ class MessageCreate(BaseModel):
     content: str = Field(min_length=1)
 
 
+class ConversationMessageCreate(MessageCreate):
+    # 首条消息入口：发送第一条用户消息时由后端同步创建会话。
+    # 这样前端点击 New Chat 时无需提前落库一个空会话。
+    llm_config_id: UUID | None = None
+    chat_mode: Literal["chat", "rag", "agent", "tool"] = "chat"
+    metadata: dict = Field(default_factory=dict)
+
+
 class MessageRead(BaseModel):
     # 消息响应模型包含状态和模型快照，方便前端展示与后续审计。
     model_config = ConfigDict(from_attributes=True)

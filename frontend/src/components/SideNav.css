@@ -18,7 +18,7 @@
   width: 5px;
   height: 5px;
   border-radius: 50%;
-  background: var(--accent-orange, #d97706);
+  background: var(--accent-orange);
   flex-shrink: 0;
   margin-left: 5px;
   margin-right: 3px;
@@ -35,6 +35,38 @@
 .thread-item.active .thread-button {
   color: var(--ink);
   font-weight: 600;
+}
+
+.thread-item.pending .thread-button {
+  color: var(--ink-soft);
+  cursor: default;
+}
+
+.thread-item.pending .thread-button::after {
+  content: "";
+  display: inline-block;
+  width: 28px;
+  height: 1em;
+  margin-left: 8px;
+  vertical-align: -0.18em;
+  border-radius: 999px;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    color-mix(in srgb, var(--ink-soft) 26%, transparent),
+    transparent
+  );
+  background-size: 160% 100%;
+  animation: title-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes title-pulse {
+  from {
+    background-position: 160% 0;
+  }
+  to {
+    background-position: -160% 0;
+  }
 }
 
 .thread-button {
@@ -88,13 +120,8 @@
 }
 
 .thread-action-delete:hover {
-  background: rgba(186, 26, 26, 0.1);
-  color: var(--color-danger, #ba1a1a);
-}
-
-.theme-dark .thread-action-delete:hover {
-  background: rgba(255, 180, 171, 0.12);
-  color: #ffb4ab;
+  background: color-mix(in srgb, var(--color-danger) 12%, transparent);
+  color: var(--color-danger);
 }
 
 .thread-edit-input {

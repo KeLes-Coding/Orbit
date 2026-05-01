@@ -1,5 +1,5 @@
 import { useEffect, useRef, useCallback, type KeyboardEvent } from "react"
-import { ArrowUp } from "lucide-react"
+import { ArrowUp, Square } from "lucide-react"
 import { useAutosizeTextarea } from "@/hooks/useAutosizeTextarea"
 
 interface ChatComposerProps {
@@ -7,6 +7,7 @@ interface ChatComposerProps {
   setDraft: (text: string) => void
   isSending: boolean
   onSend: () => void
+  onStop: () => void
   onClearError: () => void
   errorMessage?: string
   isAuthenticated: boolean
@@ -18,6 +19,7 @@ export function ChatComposer({
   setDraft,
   isSending,
   onSend,
+  onStop,
   onClearError,
   errorMessage,
   isAuthenticated,
@@ -81,14 +83,26 @@ export function ChatComposer({
           onKeyDown={handleKeyDown}
         />
         <div className="composer-actions">
-          <button
-            type="submit"
-            className="send-button"
-            aria-label="Send message"
-            disabled={!canSend}
-          >
-            <ArrowUp className="h-4 w-4" />
-          </button>
+          {isSending ? (
+            <button
+              type="button"
+              className="send-button stop-button"
+              aria-label="Stop generating"
+              title="Stop generating"
+              onClick={onStop}
+            >
+              <Square className="h-3.5 w-3.5" />
+            </button>
+          ) : (
+            <button
+              type="submit"
+              className="send-button"
+              aria-label="Send message"
+              disabled={!canSend}
+            >
+              <ArrowUp className="h-4 w-4" />
+            </button>
+          )}
         </div>
       </div>
       <p>AI may hallucinate. Cultivate discernment.</p>

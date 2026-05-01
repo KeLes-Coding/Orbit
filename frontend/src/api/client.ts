@@ -1,7 +1,7 @@
 import axios, { AxiosError } from 'axios'
 import type { ApiErrorDetail } from './types'
 
-const API_BASE_URL: string = import.meta.env.VITE_API_BASE_URL || '/api/v1'
+export const API_BASE_URL: string = import.meta.env.VITE_API_BASE_URL || '/api/v1'
 const TOKEN_KEY = 'orbit.accessToken'
 
 export const getStoredToken = (): string | null => localStorage.getItem(TOKEN_KEY)

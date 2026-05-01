@@ -15,6 +15,14 @@ class Settings(BaseSettings):
     auth_secret_key: str = "orbit-local-dev-secret-change-me-32-bytes-min"
     encryption_secret_key: str = "orbit-local-encryption-secret"
     access_token_expire_minutes: int = 60 * 24 * 7
+    # 会话标题生成可使用独立小模型；未配置时会退回使用当前会话模型配置。
+    title_provider: str | None = None
+    title_model: str | None = None
+    title_base_url: str | None = None
+    title_api_key: str | None = None
+    # 标题生成在首条消息链路上同步执行，超时要短，避免拖慢用户发起对话。
+    title_timeout_seconds: float = 10
+    title_max_chars: int = 48
     cors_origins: list[str] = Field(
         default_factory=lambda: ["http://localhost:5173", "http://127.0.0.1:5173"]
     )
