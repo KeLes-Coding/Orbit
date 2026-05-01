@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import Any
 
 from langchain_core.language_models.chat_models import BaseChatModel
+from langchain_core.messages import BaseMessage
 
 from app.core.crypto import decrypt_secret
 from app.models.llm_config import LLMConfig
@@ -41,6 +43,17 @@ class LLMModelInfo:
     name: str | None = None
     description: str | None = None
     owned_by: str | None = None
+
+
+@dataclass(frozen=True)
+class LLMProviderStreamChunk:
+    # Provider 原生流式 chunk，用于保留 OpenAI-compatible 扩展字段（如 DeepSeek reasoning_content）。
+    content_delta: str = ""
+    reasoning_delta: str = ""
+    token_usage: dict[str, Any] = field(default_factory=dict)
+    response_metadata: dict[str, Any] = field(default_factory=dict)
+    finish_reason: str | None = None
+    raw: Any = None
 
 
 @dataclass(frozen=True)
@@ -132,6 +145,17 @@ class BaseLLMProvider(ABC):
     @abstractmethod
     def build_chat_model(self, config: LLMRuntimeConfig) -> BaseChatModel:
         pass
+
+    def supports_native_stream(self, config: LLMRuntimeConfig) -> bool:
+        return False
+
+    async def stream_chat(
+        self,
+        *,
+        config: LLMRuntimeConfig,
+        messages: list[BaseMessage],
+    ) -> AsyncIterator[LLMProviderStreamChunk]:
+        raise LLMProviderError(f"{self.name} 暂不支持 provider 原生流式调用")
 
     async def list_models(self, config: LLMRuntimeConfig) -> list[LLMModelInfo]:
         if not self.supports_model_list:

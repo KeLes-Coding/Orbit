@@ -61,6 +61,7 @@ class MessageRead(BaseModel):
     langgraph_message_id: str | None
     role: str
     content: str
+    reasoning_content: str
     content_parts: list
     status: str
     llm_config_id: UUID | None

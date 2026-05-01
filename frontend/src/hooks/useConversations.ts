@@ -13,6 +13,7 @@ function normalizeMessage(message: Message | null | undefined): NormalizedMessag
   return {
     ...message,
     content: message.content || '',
+    reasoning_content: message.reasoning_content || '',
     paragraphs: (message.content || '').split(/\n{2,}/).filter(Boolean),
   }
 }
@@ -44,6 +45,18 @@ function appendMessageDelta(messages: Message[], messageId: string, delta: strin
       ? {
           ...message,
           content: `${message.content || ''}${delta}`,
+          status: 'streaming',
+        }
+      : message,
+  )
+}
+
+function appendMessageReasoningDelta(messages: Message[], messageId: string, delta: string): Message[] {
+  return messages.map((message) =>
+    message.id === messageId
+      ? {
+          ...message,
+          reasoning_content: `${message.reasoning_content || ''}${delta}`,
           status: 'streaming',
         }
       : message,
@@ -156,6 +169,7 @@ export function useConversations(hasUser: boolean) {
           conversation_id: conversationId,
           role: 'assistant',
           content: '',
+          reasoning_content: '',
           status: 'streaming',
           created_at: new Date().toISOString(),
         },
@@ -193,6 +207,13 @@ export function useConversations(hasUser: boolean) {
           if (streamEvent.event === 'message.delta') {
             queryClient.setQueryData<Message[]>(['messages', conversationId], (old = []) =>
               appendMessageDelta(old, streamEvent.data.message_id, streamEvent.data.delta),
+            )
+            continue
+          }
+
+          if (streamEvent.event === 'message.reasoning_delta') {
+            queryClient.setQueryData<Message[]>(['messages', conversationId], (old = []) =>
+              appendMessageReasoningDelta(old, streamEvent.data.message_id, streamEvent.data.delta),
             )
             continue
           }
@@ -267,6 +288,13 @@ export function useConversations(hasUser: boolean) {
           if (streamEvent.event === 'message.delta') {
             queryClient.setQueryData<Message[]>(['messages', conversationId], (old = []) =>
               appendMessageDelta(old, streamEvent.data.message_id, streamEvent.data.delta),
+            )
+            continue
+          }
+
+          if (streamEvent.event === 'message.reasoning_delta') {
+            queryClient.setQueryData<Message[]>(['messages', conversationId], (old = []) =>
+              appendMessageReasoningDelta(old, streamEvent.data.message_id, streamEvent.data.delta),
             )
             continue
           }

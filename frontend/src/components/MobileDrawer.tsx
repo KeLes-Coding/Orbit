@@ -35,7 +35,7 @@ export function MobileDrawer({ onOpenChange }: MobileDrawerProps) {
     (conversationId: string) => {
       closeSheet()
       setActiveView("chat")
-      navigate("/")
+      navigate(`/conversations/${conversationId}`)
       selectConversation(conversationId)
     },
     [closeSheet, navigate, selectConversation, setActiveView],

@@ -24,6 +24,7 @@ class Message(Base):
     langgraph_message_id: Mapped[str | None] = mapped_column(Text)
     role: Mapped[str] = mapped_column(String(32), nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("''"))
+    reasoning_content: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("''"))
     content_parts: Mapped[list] = mapped_column(JSONB, nullable=False, server_default=text("'[]'::jsonb"))
     status: Mapped[str] = mapped_column(String(32), nullable=False, server_default=text("'completed'"))
     # assistant 消息保存当次调用的模型快照，避免后续切换配置影响历史追溯。

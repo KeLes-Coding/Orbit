@@ -44,6 +44,7 @@ function RouteSync() {
       ) : (
         <Routes>
           <Route path="/" element={<ChatShell />} />
+          <Route path="/conversations/:conversationId" element={<ChatShell />} />
           <Route path="/model-configs" element={<SettingsView />} />
           <Route path="/library" element={<Navigate to="/model-configs" replace />} />
           <Route path="*" element={<ChatShell />} />
@@ -56,6 +57,8 @@ function RouteSync() {
 export default function App() {
   const { showAuth } = useAuth()
   const { isDark } = useTheme()
+  const sidebarCollapsed = useOrbitStore((s) => s.sidebarCollapsed)
+  const setSidebarCollapsed = useOrbitStore((s) => s.setSidebarCollapsed)
   const [mobileOpen, setMobileOpen] = useState(false)
 
   useEffect(() => {
@@ -85,10 +88,28 @@ export default function App() {
       </Sheet>
 
       {!showAuth && (
-        <>
-          <SideNav />
-          <RouteSync />
-        </>
+        <div className="orbit-drawer drawer lg:drawer-open">
+          <input
+            id="orbit-sidebar-drawer"
+            type="checkbox"
+            className="drawer-toggle"
+            checked={!sidebarCollapsed}
+            onChange={(event) => setSidebarCollapsed(!event.target.checked)}
+          />
+
+          <main className="drawer-content orbit-drawer-content">
+            <RouteSync />
+          </main>
+
+          <div className="drawer-side orbit-drawer-side is-drawer-close:overflow-visible">
+            <label
+              htmlFor="orbit-sidebar-drawer"
+              aria-label="Close sidebar"
+              className="drawer-overlay"
+            />
+            <SideNav />
+          </div>
+        </div>
       )}
     </div>
   )
