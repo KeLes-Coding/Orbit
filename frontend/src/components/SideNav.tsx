@@ -8,8 +8,12 @@ import {
   LogOut,
   Settings,
   ChevronDown,
+  ChevronRight,
   ChevronUp,
   LogIn,
+  PanelLeftClose,
+  PanelLeftOpen,
+  MessageCircle,
 } from "lucide-react"
 import { useAuth } from "@/hooks/useAuth"
 import { useConversations } from "@/hooks/useConversations"
@@ -17,6 +21,11 @@ import { useOrbitStore } from "@/stores/useOrbitStore"
 import { useClickOutside } from "@/hooks/useClickOutside"
 import { Button } from "@/components/ui/button"
 import { OrbitIcon } from "@/components/OrbitIcon"
+import {
+  Tooltip,
+  TooltipTrigger,
+  TooltipContent,
+} from "@/components/ui/tooltip"
 import {
   Dialog,
   DialogContent,
@@ -41,6 +50,8 @@ export function SideNav() {
   } = useConversations(hasUser)
 
   const setActiveView = useOrbitStore((s) => s.setActiveView)
+  const sidebarCollapsed = useOrbitStore((s) => s.sidebarCollapsed)
+  const toggleSidebar = useOrbitStore((s) => s.toggleSidebar)
   const navigate = useNavigate()
 
   const editingThreadId = useOrbitStore((s) => s.editingThreadId)
@@ -49,6 +60,7 @@ export function SideNav() {
   const setEditingTitle = useOrbitStore((s) => s.setEditingTitle)
 
   const [showAccountMenu, setShowAccountMenu] = useState(false)
+  const [sessionsExpanded, setSessionsExpanded] = useState(true)
   const [archiveTarget, setArchiveTarget] = useState<Conversation | null>(null)
   const [isArchiving, setIsArchiving] = useState(false)
   const editInputRef = useRef<HTMLInputElement>(null)
@@ -158,83 +170,161 @@ export function SideNav() {
     useCallback(() => setShowAccountMenu(false), []),
   )
 
+  const handleToggleSidebar = useCallback(() => {
+    setShowAccountMenu(false)
+    toggleSidebar()
+  }, [toggleSidebar])
+
+  const sidebarClass = `side-nav ${sidebarCollapsed ? "is-drawer-close collapsed" : "is-drawer-open"}`
+
   return (
     <>
-      <aside className="side-nav" aria-label="Primary navigation">
+      <aside
+        className={sidebarClass}
+        data-drawer-state={sidebarCollapsed ? "closed" : "open"}
+        aria-label="Primary navigation"
+        aria-expanded={!sidebarCollapsed}
+      >
+        {/* ---- Brand + Toggle ---- */}
         <div className="brand-panel">
-          <div className="flex items-center gap-2 mb-1">
+          <div className="brand-mark">
             <OrbitIcon size={28} />
-            <h1>Orbit</h1>
+            <div className="brand-copy">
+              <h1>Orbit</h1>
+            </div>
           </div>
-          <p>Zen AI Assistant</p>
+          <Tooltip delayDuration={300}>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                className="sidebar-toggle btn btn-ghost btn-square"
+                onClick={handleToggleSidebar}
+                aria-label={sidebarCollapsed ? "展开侧边栏" : "折叠侧边栏"}
+              >
+                {sidebarCollapsed ? (
+                  <PanelLeftOpen className="h-7 w-7" />
+                ) : (
+                  <PanelLeftClose className="h-7 w-7" />
+                )}
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="right">
+              {sidebarCollapsed ? "展开侧边栏" : "折叠侧边栏"}
+            </TooltipContent>
+          </Tooltip>
         </div>
 
+        {/* ---- New Chat ---- */}
         <div className="nav-action">
-          <Button variant="default" className="w-full" onClick={handleNewThread}>
-            <Plus className="h-4 w-4" />
-            <span>New Chat</span>
-          </Button>
+          <Tooltip delayDuration={300}>
+            <TooltipTrigger asChild>
+              <Button
+                variant="default"
+                className="new-chat-button"
+                onClick={handleNewThread}
+                aria-label="New Chat"
+              >
+                <Plus className="h-4 w-4" />
+                <span className="sidebar-label">New Chat</span>
+              </Button>
+            </TooltipTrigger>
+            {sidebarCollapsed && (
+              <TooltipContent side="right">New Chat</TooltipContent>
+            )}
+          </Tooltip>
         </div>
 
+        {/* ---- Thread List ---- */}
         <nav className="nav-list" aria-label="Workspace">
-          <div className="thread-section-title">Chats</div>
-          <div className="thread-list" aria-label="Recent conversations">
+          <div className="thread-section-header">
+            <Tooltip delayDuration={300}>
+              <TooltipTrigger asChild>
+                <div className="thread-section-title" aria-label="Chats">
+                  <MessageCircle className="thread-section-icon h-4 w-4" aria-hidden="true" />
+                  <span className="sidebar-label">Chats</span>
+                </div>
+              </TooltipTrigger>
+              {sidebarCollapsed && (
+                <TooltipContent side="right">Chats</TooltipContent>
+              )}
+            </Tooltip>
+            <button
+              type="button"
+              className="sessions-toggle btn btn-ghost btn-xs btn-square"
+              onClick={() => setSessionsExpanded((expanded) => !expanded)}
+              aria-label={sessionsExpanded ? "Collapse chats" : "Expand chats"}
+              aria-expanded={sessionsExpanded}
+            >
+              {sessionsExpanded ? (
+                <ChevronDown className="h-3.5 w-3.5" />
+              ) : (
+                <ChevronRight className="h-3.5 w-3.5" />
+              )}
+            </button>
+          </div>
+          <div
+            className={`thread-list${sessionsExpanded ? "" : " sessions-collapsed"}`}
+            aria-label="Recent conversations"
+            aria-hidden={!sessionsExpanded}
+          >
             {sortedConversations.map((conversation) => {
               const isPendingTitle = Boolean(conversation.metadata?.pendingTitle)
               return (
-              <div
-                key={conversation.id}
-                className={`thread-item${conversation.id === activeConversationId ? " active" : ""}${isPendingTitle ? " pending" : ""}`}
-              >
-                {editingThreadId === conversation.id ? (
-                  <input
-                    ref={editInputRef}
-                    value={editingTitle}
-                    onChange={(e) => setEditingTitle(e.target.value)}
-                    className="thread-edit-input"
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") submitRename()
-                      if (e.key === "Escape") cancelEdit()
-                    }}
-                    onBlur={submitRename}
-                    onClick={(e) => e.stopPropagation()}
-                  />
-                ) : (
-                  <>
-                    <button
-                      type="button"
-                      className="thread-button"
-                      disabled={isPendingTitle}
-                      onClick={() => handleSelectConversation(conversation.id)}
-                    >
-                      {formatConversationTitle(conversation)}
-                    </button>
-                    {!isPendingTitle && (
-                    <div className="thread-actions">
+                <div
+                  key={conversation.id}
+                  className={`thread-item${conversation.id === activeConversationId ? " active" : ""}${isPendingTitle ? " pending" : ""}`}
+                >
+                  {editingThreadId === conversation.id ? (
+                    <input
+                      ref={editInputRef}
+                      value={editingTitle}
+                      onChange={(e) => setEditingTitle(e.target.value)}
+                      className="thread-edit-input"
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") submitRename()
+                        if (e.key === "Escape") cancelEdit()
+                      }}
+                      onBlur={submitRename}
+                      onClick={(e) => e.stopPropagation()}
+                    />
+                  ) : (
+                    <>
                       <button
                         type="button"
-                        className="thread-action-btn"
-                        aria-label="Rename"
-                        title="Rename"
-                        onClick={(e) => startRename(conversation, e)}
+                        className="thread-button"
+                        disabled={isPendingTitle}
+                        onClick={() => handleSelectConversation(conversation.id)}
+                        aria-label={formatConversationTitle(conversation)}
                       >
-                        <Pencil className="h-3.5 w-3.5" />
+                        <span className="thread-title">{formatConversationTitle(conversation)}</span>
                       </button>
-                      <button
-                        type="button"
-                        className="thread-action-btn thread-action-delete"
-                        aria-label="Archive"
-                        title="Archive"
-                        onClick={(e) => openArchiveDialog(conversation, e)}
-                      >
-                        <X className="h-3.5 w-3.5" />
-                      </button>
-                    </div>
-                    )}
-                  </>
-                )}
-              </div>
-            )})}
+                      {!isPendingTitle && (
+                      <div className="thread-actions">
+                        <button
+                          type="button"
+                          className="thread-action-btn btn btn-ghost btn-xs btn-square"
+                          aria-label="Rename"
+                          title="Rename"
+                          onClick={(e) => startRename(conversation, e)}
+                        >
+                          <Pencil className="h-3.5 w-3.5" />
+                        </button>
+                        <button
+                          type="button"
+                          className="thread-action-btn thread-action-delete btn btn-ghost btn-xs btn-square"
+                          aria-label="Archive"
+                          title="Archive"
+                          onClick={(e) => openArchiveDialog(conversation, e)}
+                        >
+                          <X className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
+                      )}
+                    </>
+                  )}
+                </div>
+              )
+            })}
 
             {/* Empty / loading states */}
             {isBooting && (
@@ -253,28 +343,42 @@ export function SideNav() {
               </div>
             )}
           </div>
-
         </nav>
 
+        {/* ---- Account Section ---- */}
         <div className="account-section" ref={accountMenuRef}>
-          <button type="button" className="account-button" onClick={toggleAccountMenu}>
-            <span className="avatar" aria-hidden="true">
-              {user ? accountInitial : "?"}
-            </span>
-            <span className="account-copy">
-              <strong>{displayName || "Guest"}</strong>
-              <small>{user ? user.email : "Sign in"}</small>
-            </span>
-            {user ? (
-              showAccountMenu ? (
-                <ChevronUp className="h-4 w-4 text-[var(--ink-muted)]" />
-              ) : (
-                <ChevronDown className="h-4 w-4 text-[var(--ink-muted)]" />
-              )
-            ) : (
-              <LogIn className="h-4 w-4 text-[var(--ink-muted)]" />
+          <Tooltip delayDuration={300}>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                className="account-button"
+                onClick={toggleAccountMenu}
+                aria-label={user ? "Account menu" : "Sign in"}
+              >
+                <span className="avatar" aria-hidden="true">
+                  {user ? accountInitial : "?"}
+                </span>
+                <span className="account-copy">
+                  <strong>{displayName || "Guest"}</strong>
+                  <small>{user ? user.email : "Sign in"}</small>
+                </span>
+                {user ? (
+                  showAccountMenu ? (
+                    <ChevronUp className="h-4 w-4 text-[var(--ink-muted)]" />
+                  ) : (
+                    <ChevronDown className="h-4 w-4 text-[var(--ink-muted)]" />
+                  )
+                ) : (
+                  <LogIn className="h-4 w-4 text-[var(--ink-muted)]" />
+                )}
+              </button>
+            </TooltipTrigger>
+            {sidebarCollapsed && (
+              <TooltipContent side="right">
+                {user ? displayName : "Sign in"}
+              </TooltipContent>
             )}
-          </button>
+          </Tooltip>
 
           {showAccountMenu && user && (
             <div className="account-menu">

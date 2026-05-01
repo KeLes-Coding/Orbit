@@ -57,6 +57,7 @@ function RouteSync() {
 export default function App() {
   const { showAuth } = useAuth()
   const { isDark } = useTheme()
+  const sidebarCollapsed = useOrbitStore((s) => s.sidebarCollapsed)
   const [mobileOpen, setMobileOpen] = useState(false)
 
   useEffect(() => {
@@ -64,7 +65,7 @@ export default function App() {
     document.documentElement.classList.toggle("theme-dark", isDark)
   }, [isDark])
 
-  const appClass = `app-shell${isDark ? " theme-dark" : ""}`
+  const appClass = `app-shell${isDark ? " theme-dark" : ""}${sidebarCollapsed ? " sidebar-collapsed" : ""}`
 
   return (
     <div className={appClass}>

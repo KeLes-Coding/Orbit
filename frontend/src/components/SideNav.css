@@ -4,7 +4,7 @@
   gap: 4px;
   min-height: 34px;
   padding: 0 8px 0 0;
-  margin: 0 4px;
+  margin: 0;
   border-radius: 6px;
   position: relative;
   transition:
@@ -15,13 +15,14 @@
 /* Active indicator: small orange dot */
 .thread-item.active::before {
   content: "";
+  position: absolute;
+  left: -12px;
+  top: 50%;
   width: 5px;
   height: 5px;
   border-radius: 50%;
   background: var(--accent-orange);
-  flex-shrink: 0;
-  margin-left: 5px;
-  margin-right: 3px;
+  transform: translateY(-50%);
 }
 
 .thread-item:hover {
@@ -70,6 +71,8 @@
 }
 
 .thread-button {
+  display: flex;
+  align-items: center;
   max-width: 100%;
   overflow: hidden;
   border: 0;
@@ -82,7 +85,14 @@
   cursor: pointer;
   flex: 1;
   min-width: 0;
-  padding: 7px 0;
+  padding: 7px 0 7px 0;
+}
+
+.thread-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .thread-button:hover {
@@ -102,26 +112,17 @@
 }
 
 .thread-action-btn {
-  display: grid;
-  width: 26px;
-  height: 26px;
-  place-items: center;
-  border: 0;
-  border-radius: 4px;
-  background: transparent;
   color: var(--ink-soft);
-  cursor: pointer;
-  transition: background 140ms ease, color 140ms ease;
+  transition: color 140ms ease;
 }
 
 .thread-action-btn:hover {
-  background: var(--surface-mid);
   color: var(--ink);
 }
 
 .thread-action-delete:hover {
-  background: color-mix(in srgb, var(--color-danger) 12%, transparent);
-  color: var(--color-danger);
+  background: color-mix(in srgb, var(--color-danger) 12%, transparent) !important;
+  color: var(--color-danger) !important;
 }
 
 .thread-edit-input {
@@ -135,6 +136,10 @@
   font: inherit;
   font-size: 14px;
   line-height: 1.4;
+}
+
+.side-nav.is-drawer-close .thread-edit-input {
+  display: none;
 }
 
 /* Empty state in thread list */
@@ -162,21 +167,114 @@
   font-size: 14px;
 }
 
+/* ---- Sidebar toggle button ---- */
+.sidebar-toggle {
+  position: static;
+  flex: 0 0 40px;
+  width: 40px;
+  height: 40px;
+  min-height: 40px;
+  color: var(--ink-muted);
+  z-index: 10;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--surface) 72%, transparent) !important;
+  transition:
+    background 160ms ease,
+    color 160ms ease,
+    transform 260ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.sidebar-toggle:hover {
+  background: var(--surface-low) !important;
+  color: var(--ink);
+}
+
+.side-nav.is-drawer-close .sidebar-toggle {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  opacity: 0;
+  pointer-events: none;
+  transform: translate(-50%, -50%) scale(0.96);
+}
+
+.side-nav.is-drawer-close .brand-panel:hover .sidebar-toggle,
+.side-nav.is-drawer-close .brand-panel:focus-within .sidebar-toggle {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translate(-50%, -50%) scale(1);
+}
+
+.side-nav.is-drawer-close .brand-panel:hover .brand-mark,
+.side-nav.is-drawer-close .brand-panel:focus-within .brand-mark {
+  opacity: 0;
+  transform: scale(0.96);
+}
+
+.sessions-toggle {
+  flex: 0 0 26px;
+  color: var(--ink-soft);
+}
+
+.sessions-toggle:hover {
+  color: var(--ink);
+}
+
+/* ---- Account section ---- */
 .account-section {
   position: relative;
+  margin-top: auto;
+  padding-top: 8px;
+}
+
+.side-nav.is-drawer-close .account-section {
+  width: 100%;
+  border-top: 1px solid var(--line);
+}
+
+.side-nav.is-drawer-close .account-button {
+  width: 42px;
+  min-width: 42px;
+  justify-content: center;
+  margin: 8px auto 16px;
+  padding: 5px;
+  border-radius: 12px;
+  transform: none;
+}
+
+.side-nav.is-drawer-close .account-button:hover {
+  transform: none;
+}
+
+.side-nav.is-drawer-close .account-copy,
+.side-nav.is-drawer-close .account-button > svg {
+  display: none;
+}
+
+.side-nav.is-drawer-close .avatar {
+  flex-basis: 32px;
 }
 
 .account-menu {
   position: absolute;
-  bottom: calc(100% + 4px);
-  left: 0;
-  right: 0;
+  bottom: calc(100% + 8px);
+  left: 8px;
+  right: 8px;
   padding: 4px;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--surface);
   box-shadow: var(--shadow);
   z-index: 30;
+}
+
+.side-nav.is-drawer-close .account-menu {
+  left: 100%;
+  right: auto;
+  bottom: 50px;
+  width: 208px;
+  margin-left: 10px;
+  box-shadow: var(--shadow-float);
 }
 
 .account-menu-item {

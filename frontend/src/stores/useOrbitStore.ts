@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 
 const THEME_KEY = 'orbit.theme'
+const SIDEBAR_KEY = 'orbit.sidebarCollapsed'
 
 const getInitialTheme = (): boolean => {
   if (typeof window === 'undefined') return false
@@ -8,6 +9,11 @@ const getInitialTheme = (): boolean => {
   if (storedTheme === 'dark') return true
   if (storedTheme === 'light') return false
   return window.matchMedia?.('(prefers-color-scheme: dark)').matches ?? false
+}
+
+const getInitialSidebarCollapsed = (): boolean => {
+  if (typeof window === 'undefined') return false
+  return localStorage.getItem(SIDEBAR_KEY) === 'true'
 }
 
 const getInitialActiveView = (): OrbitStore['activeView'] => {
@@ -32,8 +38,10 @@ interface OrbitStore {
   pendingConversationLlmConfigId: string | null
   editingThreadId: string | null
   editingTitle: string
+  sidebarCollapsed: boolean
 
   toggleTheme: () => void
+  toggleSidebar: () => void
   setActiveView: (view: 'chat' | 'model_configs') => void
   setDraft: (text: string) => void
   setShowAuth: (show: boolean) => void
@@ -72,12 +80,20 @@ export const useOrbitStore = create<OrbitStore>((set) => ({
   pendingConversationLlmConfigId: null,
   editingThreadId: null,
   editingTitle: '',
+  sidebarCollapsed: getInitialSidebarCollapsed(),
 
   toggleTheme: () =>
     set((state) => {
       const next = !state.isDark
       localStorage.setItem(THEME_KEY, next ? 'dark' : 'light')
       return { isDark: next }
+    }),
+
+  toggleSidebar: () =>
+    set((state) => {
+      const next = !state.sidebarCollapsed
+      localStorage.setItem(SIDEBAR_KEY, String(next))
+      return { sidebarCollapsed: next }
     }),
 
   setActiveView: (view) => set({ activeView: view }),
