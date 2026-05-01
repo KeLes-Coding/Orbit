@@ -22,6 +22,16 @@ class Message(Base):
     # sequence_no 由后端生成，保证同一会话内消息顺序稳定。
     sequence_no: Mapped[int] = mapped_column(Integer, nullable=False)
     langgraph_message_id: Mapped[str | None] = mapped_column(Text)
+    # parent_message_id 形成 message tree，指向当前路径上的上一条可见消息。
+    parent_message_id: Mapped[UUID | None] = mapped_column(ForeignKey("messages.id", ondelete="SET NULL"))
+    # active_child 是 branch 选择的真实状态，用来恢复每个分叉点选中的 child。
+    active_child_message_id: Mapped[UUID | None] = mapped_column(ForeignKey("messages.id", ondelete="SET NULL"))
+    # depth 保存节点深度，便于调试、排序和后续优化路径查询。
+    depth: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    # source_message_id 记录 edit/regenerate/fork copy 来源，便于审计和版本追溯。
+    source_message_id: Mapped[UUID | None] = mapped_column(ForeignKey("messages.id", ondelete="SET NULL"))
+    # revision_type 标记消息产生方式：normal/edit/regenerate/fork_copy。
+    revision_type: Mapped[str | None] = mapped_column(String(30))
     role: Mapped[str] = mapped_column(String(32), nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("''"))
     reasoning_content: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("''"))
@@ -35,13 +45,22 @@ class Message(Base):
     response_metadata: Mapped[dict] = mapped_column(JSONB, nullable=False, server_default=text("'{}'::jsonb"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
-    conversation = relationship("Conversation", back_populates="messages")
+    # Message 上有多个自引用外键，conversation 关系需要明确只使用 conversation_id。
+    conversation = relationship("Conversation", back_populates="messages", foreign_keys=[conversation_id])
     llm_config = relationship("LLMConfig", back_populates="messages")
 
 
 Index("idx_messages_conversation_created", Message.conversation_id, Message.created_at)
 # 读取聊天历史时优先按 conversation_id + sequence_no 排序。
 Index("idx_messages_conversation_sequence", Message.conversation_id, Message.sequence_no)
+Index("idx_messages_conversation_parent", Message.conversation_id, Message.parent_message_id)
+Index("idx_messages_conversation_active_child", Message.conversation_id, Message.active_child_message_id)
+Index("idx_messages_conversation_depth", Message.conversation_id, Message.depth)
+Index(
+    "idx_messages_source_message",
+    Message.source_message_id,
+    postgresql_where=Message.source_message_id.is_not(None),
+)
 Index(
     "idx_messages_langgraph_message_id",
     Message.langgraph_message_id,

@@ -11,10 +11,14 @@ from app.api.deps import get_current_user
 from app.db.session import get_db_session
 from app.models.user import User
 from app.schemas.conversation import (
+    BranchSwitchRead,
     ConversationCreate,
+    ConversationForkCreate,
+    ConversationForkRead,
     ConversationMessageCreate,
     ConversationRead,
     ConversationUpdate,
+    MessageEdit,
     MessageExchangeRead,
     MessageCreate,
     MessageRead,
@@ -183,6 +187,153 @@ async def stream_user_message(
             "Cache-Control": "no-cache",
             "X-Accel-Buffering": "no",
         },
+    )
+
+
+@router.post(
+    "/{conversation_id}/messages/{message_id}/regenerate",
+    response_model=MessageRead,
+    status_code=status.HTTP_201_CREATED,
+)
+async def regenerate_assistant(
+    conversation_id: UUID,
+    message_id: UUID,
+    current_user: Annotated[User, Depends(get_current_user)],
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+) -> MessageRead:
+    # 重发 assistant 时，在原 assistant 的 parent 下创建新的 assistant sibling。
+    return await ConversationService(session).regenerate_assistant(
+        user_id=current_user.id,
+        conversation_id=conversation_id,
+        message_id=message_id,
+    )
+
+
+@router.post(
+    "/{conversation_id}/messages/{message_id}/edit",
+    response_model=MessageExchangeRead,
+    status_code=status.HTTP_201_CREATED,
+)
+async def edit_user_message(
+    conversation_id: UUID,
+    message_id: UUID,
+    payload: MessageEdit,
+    current_user: Annotated[User, Depends(get_current_user)],
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+) -> MessageExchangeRead:
+    # 编辑 user 时创建新的 user sibling，并从新 user 继续生成 assistant。
+    return await ConversationService(session).edit_user_message(
+        user_id=current_user.id,
+        conversation_id=conversation_id,
+        message_id=message_id,
+        payload=payload,
+    )
+
+
+@router.post("/{conversation_id}/messages/{message_id}/regenerate/stream")
+async def stream_regenerate_assistant(
+    conversation_id: UUID,
+    message_id: UUID,
+    request: Request,
+    current_user: Annotated[User, Depends(get_current_user)],
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+) -> StreamingResponse:
+    service = ConversationService(session)
+    # 重发也走 SSE，避免 regenerate 和普通发送在前端体验上割裂。
+    stream_events = service.stream_regenerate_assistant(
+        user_id=current_user.id,
+        conversation_id=conversation_id,
+        message_id=message_id,
+        should_cancel=request.is_disconnected,
+    )
+    first_event = await anext(stream_events)
+
+    async def event_generator() -> AsyncIterator[str]:
+        yield encode_sse_event(first_event)
+        async for event in stream_events:
+            yield encode_sse_event(event)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@router.post("/{conversation_id}/messages/{message_id}/edit/stream")
+async def stream_edit_user_message(
+    conversation_id: UUID,
+    message_id: UUID,
+    payload: MessageEdit,
+    request: Request,
+    current_user: Annotated[User, Depends(get_current_user)],
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+) -> StreamingResponse:
+    service = ConversationService(session)
+    # 编辑 user 后会创建新的 user sibling，并流式生成新的 assistant child。
+    stream_events = service.stream_edit_user_message(
+        user_id=current_user.id,
+        conversation_id=conversation_id,
+        message_id=message_id,
+        payload=payload,
+        should_cancel=request.is_disconnected,
+    )
+    first_event = await anext(stream_events)
+
+    async def event_generator() -> AsyncIterator[str]:
+        yield encode_sse_event(first_event)
+        async for event in stream_events:
+            yield encode_sse_event(event)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@router.post(
+    "/{conversation_id}/messages/{message_id}/switch",
+    response_model=BranchSwitchRead,
+)
+async def switch_branch(
+    conversation_id: UUID,
+    message_id: UUID,
+    current_user: Annotated[User, Depends(get_current_user)],
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+) -> BranchSwitchRead:
+    # 切换 sibling 后，后端沿 active_child 链恢复该子树上次选择的 visible path。
+    return await ConversationService(session).switch_branch(
+        user_id=current_user.id,
+        conversation_id=conversation_id,
+        message_id=message_id,
+    )
+
+
+@router.post(
+    "/{conversation_id}/messages/{message_id}/fork",
+    response_model=ConversationForkRead,
+    status_code=status.HTTP_201_CREATED,
+)
+async def fork_conversation(
+    conversation_id: UUID,
+    message_id: UUID,
+    payload: ConversationForkCreate,
+    current_user: Annotated[User, Depends(get_current_user)],
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+) -> ConversationForkRead:
+    # v1 只复制当前 visible path 中 root -> target message 这一段。
+    return await ConversationService(session).fork_conversation(
+        user_id=current_user.id,
+        conversation_id=conversation_id,
+        message_id=message_id,
+        payload=payload,
     )
 
 

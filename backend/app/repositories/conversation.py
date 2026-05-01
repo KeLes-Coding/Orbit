@@ -24,13 +24,21 @@ class ConversationRepository:
         result = await self.session.execute(statement)
         return list(result.scalars().all())
 
-    async def get_active(self, *, user_id: UUID, conversation_id: UUID) -> Conversation | None:
+    async def get_active(
+        self,
+        *,
+        user_id: UUID,
+        conversation_id: UUID,
+        for_update: bool = False,
+    ) -> Conversation | None:
         # 会话读取带 user_id，确保用户只能访问自己的会话。
         statement = select(Conversation).where(
             Conversation.id == conversation_id,
             Conversation.user_id == user_id,
             Conversation.archived_at.is_(None),
         )
+        if for_update:
+            statement = statement.with_for_update()
         result = await self.session.execute(statement)
         return result.scalar_one_or_none()
 
@@ -42,6 +50,8 @@ class ConversationRepository:
         llm_config_id: UUID | None,
         chat_mode: str,
         metadata: dict,
+        forked_from_conversation_id: UUID | None = None,
+        forked_from_message_id: UUID | None = None,
     ) -> Conversation:
         # thread_id 由数据库默认生成，供后续 LangGraph checkpointer 使用。
         conversation = Conversation(
@@ -50,6 +60,8 @@ class ConversationRepository:
             llm_config_id=llm_config_id,
             chat_mode=chat_mode,
             metadata_=metadata,
+            forked_from_conversation_id=forked_from_conversation_id,
+            forked_from_message_id=forked_from_message_id,
         )
         self.session.add(conversation)
         await self.session.flush()
@@ -75,7 +87,7 @@ class MessageRepository:
         self.session = session
 
     async def list_by_conversation(self, conversation_id: UUID) -> list[Message]:
-        # 读取历史消息必须按 sequence_no 排序，避免时间戳并发写入导致顺序漂移。
+        # 管理类查询仍可读取整棵树；聊天 UI 默认使用 list_visible_path。
         statement = (
             select(Message)
             .where(Message.conversation_id == conversation_id)
@@ -83,6 +95,47 @@ class MessageRepository:
         )
         result = await self.session.execute(statement)
         return list(result.scalars().all())
+
+    async def list_visible_path(self, conversation: Conversation) -> list[Message]:
+        # active_leaf 是缓存；读取 visible path 时从 leaf 回溯到 root。
+        if conversation.active_leaf_message_id is None:
+            return []
+
+        messages_by_id: dict[UUID, Message] = {}
+        current_id: UUID | None = conversation.active_leaf_message_id
+        visited: set[UUID] = set()
+        while current_id is not None:
+            if current_id in visited:
+                break
+            visited.add(current_id)
+            message = await self.get_by_id(conversation_id=conversation.id, message_id=current_id)
+            if message is None:
+                break
+            messages_by_id[message.id] = message
+            current_id = message.parent_message_id
+
+        path = list(messages_by_id.values())
+        path.reverse()
+        return path
+
+    async def list_path_to_message(self, *, conversation_id: UUID, message_id: UUID) -> list[Message]:
+        # 生成上下文时常常需要 root -> 指定消息，而不一定是当前 active_leaf。
+        messages_by_id: dict[UUID, Message] = {}
+        current_id: UUID | None = message_id
+        visited: set[UUID] = set()
+        while current_id is not None:
+            if current_id in visited:
+                break
+            visited.add(current_id)
+            message = await self.get_by_id(conversation_id=conversation_id, message_id=current_id)
+            if message is None:
+                break
+            messages_by_id[message.id] = message
+            current_id = message.parent_message_id
+
+        path = list(messages_by_id.values())
+        path.reverse()
+        return path
 
     async def get_by_id(self, *, conversation_id: UUID, message_id: UUID) -> Message | None:
         statement = select(Message).where(
@@ -100,18 +153,34 @@ class MessageRepository:
         result = await self.session.execute(statement)
         return int(result.scalar_one())
 
-    async def create_user_message(self, *, conversation_id: UUID, content: str) -> Message:
-        # 用户消息写入后立即完成；assistant 消息会在模型调用阶段单独创建。
+    async def create_user_message(
+        self,
+        *,
+        conversation_id: UUID,
+        content: str,
+        parent_message: Message | None = None,
+        source_message_id: UUID | None = None,
+        revision_type: str = "normal",
+    ) -> Message:
+        # 用户消息写入后立即完成，并把 parent.active_child 切到这个新 sibling。
         sequence_no = await self.next_sequence_no(conversation_id)
         message = Message(
             conversation_id=conversation_id,
             sequence_no=sequence_no,
+            parent_message_id=parent_message.id if parent_message else None,
+            depth=(parent_message.depth + 1) if parent_message else 0,
+            source_message_id=source_message_id,
+            revision_type=revision_type,
             role="user",
             content=content,
             status="completed",
         )
         self.session.add(message)
         await self.session.flush()
+        if parent_message is not None:
+            # active_child 是分支选择源，创建新 child 时同步让父节点选中新分支。
+            parent_message.active_child_message_id = message.id
+            await self.session.flush()
         await self.session.refresh(message)
         return message
 
@@ -122,12 +191,19 @@ class MessageRepository:
         llm_config_id: UUID,
         provider: str,
         model: str,
+        parent_message: Message | None = None,
+        source_message_id: UUID | None = None,
+        revision_type: str = "normal",
     ) -> Message:
-        # 先写入 streaming 占位，后续无论成功或失败都有一条可追踪的 assistant 消息。
+        # 先写入 streaming 占位；它也是树上的普通 child，可被取消、重发或切换。
         sequence_no = await self.next_sequence_no(conversation_id)
         message = Message(
             conversation_id=conversation_id,
             sequence_no=sequence_no,
+            parent_message_id=parent_message.id if parent_message else None,
+            depth=(parent_message.depth + 1) if parent_message else 0,
+            source_message_id=source_message_id,
+            revision_type=revision_type,
             role="assistant",
             content="",
             status="streaming",
@@ -137,8 +213,105 @@ class MessageRepository:
         )
         self.session.add(message)
         await self.session.flush()
+        if parent_message is not None:
+            # assistant 生成后成为当前 user 节点选中的 child。
+            parent_message.active_child_message_id = message.id
+            await self.session.flush()
         await self.session.refresh(message)
         return message
+
+    async def set_conversation_active_leaf(self, *, conversation: Conversation, message: Message | None) -> None:
+        # active_leaf 只是路径终点缓存，便于快速加载和继续发送。
+        conversation.active_leaf_message_id = message.id if message else None
+        await self.session.flush()
+
+    async def resolve_active_leaf_from(self, *, conversation_id: UUID, message: Message) -> Message:
+        # active_child 是 branch 选择真实状态；沿这条链恢复该子树的当前 leaf。
+        current = message
+        visited: set[UUID] = set()
+        while current.active_child_message_id is not None:
+            if current.id in visited:
+                break
+            visited.add(current.id)
+            child = await self.get_by_id(
+                conversation_id=conversation_id,
+                message_id=current.active_child_message_id,
+            )
+            if child is None or child.parent_message_id != current.id:
+                break
+            current = child
+        return current
+
+    async def list_siblings(self, message: Message) -> list[Message]:
+        # sibling 是同一个 parent 下的 child，用 sequence_no 保持版本顺序稳定。
+        statement = (
+            select(Message)
+            .where(
+                Message.conversation_id == message.conversation_id,
+                Message.parent_message_id.is_(None)
+                if message.parent_message_id is None
+                else Message.parent_message_id == message.parent_message_id,
+            )
+            .order_by(Message.sequence_no.asc())
+        )
+        result = await self.session.execute(statement)
+        return list(result.scalars().all())
+
+    async def get_message_read_state(self, message: Message) -> dict[str, Any]:
+        # 给前端补充 1/n 和左右切换所需的 sibling 信息。
+        siblings = await self.list_siblings(message)
+        sibling_ids = [sibling.id for sibling in siblings]
+        try:
+            index = sibling_ids.index(message.id)
+        except ValueError:
+            return {
+                "sibling_index": 1,
+                "sibling_count": 1,
+                "previous_sibling_id": None,
+                "next_sibling_id": None,
+            }
+        return {
+            "sibling_index": index + 1,
+            "sibling_count": len(siblings),
+            "previous_sibling_id": sibling_ids[index - 1] if index > 0 else None,
+            "next_sibling_id": sibling_ids[index + 1] if index + 1 < len(sibling_ids) else None,
+        }
+
+    async def clone_message_to_conversation(
+        self,
+        *,
+        source: Message,
+        target_conversation_id: UUID,
+        parent_message: Message | None,
+    ) -> Message:
+        # Fork v1 只复制 visible path，复制出的消息重新建立 parent/active_child 链。
+        sequence_no = await self.next_sequence_no(target_conversation_id)
+        clone = Message(
+            conversation_id=target_conversation_id,
+            sequence_no=sequence_no,
+            parent_message_id=parent_message.id if parent_message else None,
+            depth=(parent_message.depth + 1) if parent_message else 0,
+            source_message_id=source.id,
+            revision_type="fork_copy",
+            langgraph_message_id=source.langgraph_message_id,
+            role=source.role,
+            content=source.content,
+            reasoning_content=source.reasoning_content,
+            content_parts=source.content_parts,
+            status=source.status,
+            llm_config_id=source.llm_config_id,
+            provider=source.provider,
+            model=source.model,
+            token_usage=source.token_usage,
+            response_metadata=source.response_metadata,
+        )
+        self.session.add(clone)
+        await self.session.flush()
+        if parent_message is not None:
+            parent_message.active_child_message_id = clone.id
+            await self.session.flush()
+        await self.session.refresh(clone)
+        return clone
 
     async def complete_assistant_message(
         self,
