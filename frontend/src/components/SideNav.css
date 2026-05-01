@@ -192,6 +192,7 @@
 .sessions-toggle {
   flex: 0 0 26px;
   color: var(--ink-soft);
+  transition: opacity 180ms ease;
 }
 
 .sessions-toggle:hover {
@@ -210,11 +211,7 @@
 }
 
 .drawer-toggle:not(:checked) ~ .drawer-side .account-button {
-  border-radius: 12px;
-}
-
-.drawer-toggle:not(:checked) ~ .drawer-side .avatar {
-  flex-basis: 32px;
+  border-radius: 9px;
 }
 
 .account-menu {

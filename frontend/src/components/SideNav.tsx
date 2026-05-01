@@ -175,14 +175,10 @@ export function SideNav() {
     toggleSidebar()
   }, [toggleSidebar])
 
-  const sidebarClass =
-    "side-nav orbit-side-panel is-drawer-close:w-[60px] is-drawer-open:w-[260px]"
-
   return (
     <>
       <aside
-        className={sidebarClass}
-        data-drawer-state={sidebarCollapsed ? "closed" : "open"}
+        className="side-nav orbit-side-panel"
         aria-label="Primary navigation"
         aria-expanded={!sidebarCollapsed}
       >

@@ -322,7 +322,10 @@ textarea:disabled {
   gap: 10px;
   padding: 12px 8px;
   border-bottom: 1px solid var(--line);
-  transition: border-color 180ms ease;
+  transition:
+    grid-template-columns 220ms var(--sidebar-ease),
+    gap 220ms var(--sidebar-ease),
+    border-color 180ms ease;
 }
 
 .brand-mark {
@@ -342,6 +345,7 @@ textarea:disabled {
   max-width: 132px;
   min-width: 0;
   opacity: 1;
+  overflow: hidden;
   transform: translateX(0);
   transition:
     opacity 180ms ease,
@@ -369,14 +373,15 @@ textarea:disabled {
 }
 
 .drawer-toggle:not(:checked) ~ .drawer-side .brand-panel {
-  grid-template-columns: 42px;
+  grid-template-columns: 42px 0fr;
   gap: 0;
 }
 
 .drawer-toggle:not(:checked) ~ .drawer-side .brand-mark,
 .drawer-toggle:not(:checked) ~ .drawer-side .brand-copy,
 .drawer-toggle:not(:checked) ~ .drawer-side .sidebar-label {
-  display: none;
+  opacity: 0;
+  pointer-events: none;
 }
 
 .brand-panel h1 {
@@ -585,7 +590,8 @@ textarea:disabled {
 }
 
 .drawer-toggle:not(:checked) ~ .drawer-side .sessions-toggle {
-  display: none;
+  opacity: 0;
+  pointer-events: none;
 }
 
 .thread-list {
@@ -616,7 +622,11 @@ textarea:disabled {
 }
 
 .drawer-toggle:not(:checked) ~ .drawer-side .thread-list {
-  display: none;
+  opacity: 0;
+  max-height: 0;
+  padding-top: 0;
+  padding-bottom: 0;
+  pointer-events: none;
 }
 
 .thread-list button {
@@ -650,12 +660,13 @@ textarea:disabled {
   display: flex;
   width: 100%;
   align-items: center;
-  gap: 12px;
-  min-height: 46px;
+  justify-content: flex-start;
+  gap: 8px;
+  min-height: 44px;
   margin: 0;
-  padding: 6px;
+  padding: 0 8px;
   border: 1px solid color-mix(in srgb, var(--line) 82%, transparent);
-  border-radius: 10px;
+  border-radius: 9px;
   background:
     linear-gradient(
       180deg,
@@ -670,6 +681,7 @@ textarea:disabled {
     background 180ms ease,
     box-shadow 180ms ease,
     transform 160ms ease;
+  overflow: hidden;
 }
 
 .account-button:hover {
@@ -702,15 +714,25 @@ textarea:disabled {
   font-size: 14px;
 }
 
+.account-button .avatar {
+  flex-basis: 28px;
+  width: 28px;
+  height: 28px;
+  font-size: 13px;
+}
+
 .account-copy {
   display: grid;
-  flex: 1;
+  flex: 1 1 auto;
+  max-width: 156px;
   min-width: 0;
   gap: 4px;
   opacity: 1;
+  overflow: hidden;
+  transform: translateX(0);
   transition:
     opacity 180ms ease,
-    transform 220ms ease;
+    transform 220ms var(--sidebar-ease);
 }
 
 .account-copy strong {
@@ -723,26 +745,28 @@ textarea:disabled {
 }
 
 .account-copy small {
+  overflow: hidden;
   color: var(--ink-soft);
   font-size: 10px;
   letter-spacing: 0.02em;
   text-transform: uppercase;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.drawer-toggle:not(:checked) ~ .drawer-side .account-button {
-  justify-content: center;
-  gap: 0;
-  padding: 5px;
-  transform: none;
-}
-
-.drawer-toggle:not(:checked) ~ .drawer-side .account-button:hover {
-  transform: none;
+.account-button > svg {
+  flex: 0 0 16px;
+  opacity: 1;
+  transform: translateX(0);
+  transition:
+    opacity 160ms ease,
+    transform 220ms var(--sidebar-ease);
 }
 
 .drawer-toggle:not(:checked) ~ .drawer-side .account-copy,
 .drawer-toggle:not(:checked) ~ .drawer-side .account-button > svg {
-  display: none;
+  opacity: 0;
+  pointer-events: none;
 }
 
 .chat-shell {
