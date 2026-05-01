@@ -138,7 +138,7 @@
   line-height: 1.4;
 }
 
-.side-nav.is-drawer-close .thread-edit-input {
+.drawer-toggle:not(:checked) ~ .drawer-side .thread-edit-input {
   display: none;
 }
 
@@ -170,8 +170,8 @@
 /* ---- Sidebar toggle button ---- */
 .sidebar-toggle {
   position: static;
-  flex: 0 0 40px;
-  width: 40px;
+  flex: 0 0 42px;
+  width: 42px;
   height: 40px;
   min-height: 40px;
   color: var(--ink-muted);
@@ -189,28 +189,6 @@
   color: var(--ink);
 }
 
-.side-nav.is-drawer-close .sidebar-toggle {
-  position: absolute;
-  left: 50%;
-  top: 50%;
-  opacity: 0;
-  pointer-events: none;
-  transform: translate(-50%, -50%) scale(0.96);
-}
-
-.side-nav.is-drawer-close .brand-panel:hover .sidebar-toggle,
-.side-nav.is-drawer-close .brand-panel:focus-within .sidebar-toggle {
-  opacity: 1;
-  pointer-events: auto;
-  transform: translate(-50%, -50%) scale(1);
-}
-
-.side-nav.is-drawer-close .brand-panel:hover .brand-mark,
-.side-nav.is-drawer-close .brand-panel:focus-within .brand-mark {
-  opacity: 0;
-  transform: scale(0.96);
-}
-
 .sessions-toggle {
   flex: 0 0 26px;
   color: var(--ink-soft);
@@ -224,34 +202,18 @@
 .account-section {
   position: relative;
   margin-top: auto;
-  padding-top: 8px;
+  padding: 8px 8px 16px;
 }
 
-.side-nav.is-drawer-close .account-section {
+.drawer-toggle:not(:checked) ~ .drawer-side .account-section {
   width: 100%;
-  border-top: 1px solid var(--line);
 }
 
-.side-nav.is-drawer-close .account-button {
-  width: 42px;
-  min-width: 42px;
-  justify-content: center;
-  margin: 8px auto 16px;
-  padding: 5px;
+.drawer-toggle:not(:checked) ~ .drawer-side .account-button {
   border-radius: 12px;
-  transform: none;
 }
 
-.side-nav.is-drawer-close .account-button:hover {
-  transform: none;
-}
-
-.side-nav.is-drawer-close .account-copy,
-.side-nav.is-drawer-close .account-button > svg {
-  display: none;
-}
-
-.side-nav.is-drawer-close .avatar {
+.drawer-toggle:not(:checked) ~ .drawer-side .avatar {
   flex-basis: 32px;
 }
 
@@ -268,7 +230,7 @@
   z-index: 30;
 }
 
-.side-nav.is-drawer-close .account-menu {
+.drawer-toggle:not(:checked) ~ .drawer-side .account-menu {
   left: 100%;
   right: auto;
   bottom: 50px;

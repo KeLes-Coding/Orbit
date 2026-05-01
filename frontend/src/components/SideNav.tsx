@@ -175,7 +175,8 @@ export function SideNav() {
     toggleSidebar()
   }, [toggleSidebar])
 
-  const sidebarClass = `side-nav ${sidebarCollapsed ? "is-drawer-close collapsed" : "is-drawer-open"}`
+  const sidebarClass =
+    "side-nav orbit-side-panel is-drawer-close:w-[60px] is-drawer-open:w-[260px]"
 
   return (
     <>
@@ -187,12 +188,6 @@ export function SideNav() {
       >
         {/* ---- Brand + Toggle ---- */}
         <div className="brand-panel">
-          <div className="brand-mark">
-            <OrbitIcon size={28} />
-            <div className="brand-copy">
-              <h1>Orbit</h1>
-            </div>
-          </div>
           <Tooltip delayDuration={300}>
             <TooltipTrigger asChild>
               <button
@@ -212,6 +207,14 @@ export function SideNav() {
               {sidebarCollapsed ? "展开侧边栏" : "折叠侧边栏"}
             </TooltipContent>
           </Tooltip>
+          <div className="brand-mark">
+            <span className="side-icon-slot brand-icon-slot" aria-hidden="true">
+              <OrbitIcon size={28} />
+            </span>
+            <div className="brand-copy">
+              <h1>Orbit</h1>
+            </div>
+          </div>
         </div>
 
         {/* ---- New Chat ---- */}
@@ -224,7 +227,9 @@ export function SideNav() {
                 onClick={handleNewThread}
                 aria-label="New Chat"
               >
-                <Plus className="h-4 w-4" />
+                <span className="side-icon-slot" aria-hidden="true">
+                  <Plus className="h-4 w-4" />
+                </span>
                 <span className="sidebar-label">New Chat</span>
               </Button>
             </TooltipTrigger>
@@ -240,7 +245,9 @@ export function SideNav() {
             <Tooltip delayDuration={300}>
               <TooltipTrigger asChild>
                 <div className="thread-section-title" aria-label="Chats">
-                  <MessageCircle className="thread-section-icon h-4 w-4" aria-hidden="true" />
+                  <span className="side-icon-slot" aria-hidden="true">
+                    <MessageCircle className="thread-section-icon h-4 w-4" />
+                  </span>
                   <span className="sidebar-label">Chats</span>
                 </div>
               </TooltipTrigger>

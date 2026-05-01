@@ -42,6 +42,7 @@ interface OrbitStore {
 
   toggleTheme: () => void
   toggleSidebar: () => void
+  setSidebarCollapsed: (collapsed: boolean) => void
   setActiveView: (view: 'chat' | 'model_configs') => void
   setDraft: (text: string) => void
   setShowAuth: (show: boolean) => void
@@ -94,6 +95,12 @@ export const useOrbitStore = create<OrbitStore>((set) => ({
       const next = !state.sidebarCollapsed
       localStorage.setItem(SIDEBAR_KEY, String(next))
       return { sidebarCollapsed: next }
+    }),
+
+  setSidebarCollapsed: (collapsed) =>
+    set(() => {
+      localStorage.setItem(SIDEBAR_KEY, String(collapsed))
+      return { sidebarCollapsed: collapsed }
     }),
 
   setActiveView: (view) => set({ activeView: view }),
