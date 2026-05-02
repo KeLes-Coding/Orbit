@@ -1133,6 +1133,18 @@ textarea:disabled {
   word-break: break-word;
 }
 
+.message-user-wrap {
+  display: flex;
+  max-width: min(78%, 620px);
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.message-user-wrap .user-bubble {
+  max-width: 100%;
+}
+
 .assistant-mark {
   display: grid;
   flex: 0 0 32px;
@@ -1159,6 +1171,73 @@ textarea:disabled {
 
 .assistant-copy strong {
   font-weight: 700;
+}
+
+.message-toolbar {
+  display: flex;
+  min-height: 28px;
+  align-items: center;
+  gap: 6px;
+  margin-top: 10px;
+  color: var(--ink-soft);
+}
+
+.assistant-tools {
+  justify-content: flex-start;
+}
+
+.user-tools {
+  justify-content: flex-end;
+  margin-top: 0;
+}
+
+.message-action {
+  display: inline-grid;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ink-soft);
+  cursor: pointer;
+  transition: background 140ms ease, border-color 140ms ease, color 140ms ease;
+}
+
+.message-action svg {
+  width: 15px;
+  height: 15px;
+}
+
+.message-action:hover:not(:disabled) {
+  border-color: var(--line);
+  background: var(--surface-low);
+  color: var(--ink);
+}
+
+.message-action:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+.branch-switcher {
+  display: inline-flex;
+  height: 28px;
+  align-items: center;
+  gap: 4px;
+  padding: 0 4px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--surface) 72%, transparent);
+}
+
+.branch-count {
+  min-width: 38px;
+  color: var(--ink-muted);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1;
+  text-align: center;
 }
 
 .reasoning-block {
@@ -1523,6 +1602,14 @@ textarea:disabled {
     max-width: 92%;
     padding: 13px 16px;
     font-size: 15px;
+  }
+
+  .message-user-wrap {
+    max-width: 92%;
+  }
+
+  .message-user-wrap .user-bubble {
+    max-width: 100%;
   }
 
   .assistant-copy {

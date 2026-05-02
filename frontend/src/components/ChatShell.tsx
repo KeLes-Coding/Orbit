@@ -34,6 +34,10 @@ export function ChatShell() {
     selectConversation,
     createNewThread,
     sendMessage,
+    regenerateAssistant,
+    editUserMessage,
+    switchBranch,
+    forkConversation,
     stopGeneration,
     switchConversationLlm,
     selectPendingConversationLlm,
@@ -123,6 +127,30 @@ export function ChatShell() {
     sendMessage()
   }, [configs.length, navigate, openAuth, sendMessage, setActiveView, setErrorMessage, user])
 
+  const handleEditMessage = useCallback(
+    (messageId: string, currentContent: string) => {
+      const nextContent = window.prompt("Edit message", currentContent)
+      if (nextContent === null) return
+      const trimmed = nextContent.trim()
+      if (!trimmed || trimmed === currentContent.trim()) return
+      void editUserMessage(messageId, trimmed)
+    },
+    [editUserMessage],
+  )
+
+  const handleForkMessage = useCallback(
+    async (messageId: string) => {
+      const title = window.prompt("New conversation title", activeConversation?.title || "")
+      if (title === null) return
+      const newConversationId = await forkConversation(messageId, title.trim() || null)
+      if (newConversationId) {
+        navigate(`/conversations/${newConversationId}`)
+        toast.success("Forked into a new conversation")
+      }
+    },
+    [activeConversation?.title, forkConversation, navigate],
+  )
+
   const isEmpty = !isBooting && !isLoadingMessages && messages.length === 0
 
   return (
@@ -176,7 +204,14 @@ export function ChatShell() {
         ) : isEmpty ? (
           <EmptyChatState variant="greeting" />
         ) : (
-          <MessageList messages={messages} isSending={isSending} />
+          <MessageList
+            messages={messages}
+            isSending={isSending}
+            onRegenerate={regenerateAssistant}
+            onEdit={handleEditMessage}
+            onSwitchBranch={switchBranch}
+            onFork={handleForkMessage}
+          />
         )}
       </section>
 

@@ -6,10 +6,22 @@ import { MessageBubble } from "./MessageBubble"
 interface MessageListProps {
   messages: (Message & { paragraphs?: string[] })[]
   onRetry?: (messageId: string) => void
+  onRegenerate?: (messageId: string) => void
+  onEdit?: (messageId: string, currentContent: string) => void
+  onSwitchBranch?: (messageId: string) => void
+  onFork?: (messageId: string) => void
   isSending?: boolean
 }
 
-export function MessageList({ messages, onRetry, isSending }: MessageListProps) {
+export function MessageList({
+  messages,
+  onRetry,
+  onRegenerate,
+  onEdit,
+  onSwitchBranch,
+  onFork,
+  isSending,
+}: MessageListProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const scrollParentRef = useRef<HTMLElement | null>(null)
   const messageRefs = useRef<Map<string, HTMLDivElement>>(new Map())
@@ -188,7 +200,15 @@ export function MessageList({ messages, onRetry, isSending }: MessageListProps) 
               }
             }}
           >
-            <MessageBubble message={message} onRetry={onRetry} />
+            <MessageBubble
+              message={message}
+              onRetry={onRetry}
+              onRegenerate={onRegenerate}
+              onEdit={onEdit}
+              onSwitchBranch={onSwitchBranch}
+              onFork={onFork}
+              actionsDisabled={isSending}
+            />
           </div>
         ))}
       </div>

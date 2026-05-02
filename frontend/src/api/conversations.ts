@@ -1,8 +1,10 @@
 import apiClient, { API_BASE_URL, clearStoredToken, getStoredToken } from './client'
 import type {
   Conversation,
+  BranchSwitchResponse,
   CreateConversationMessagePayload,
   CreateConversationPayload,
+  ForkConversationResponse,
   Message,
   SendMessageResponse,
   StreamMessageEvent,
@@ -150,6 +152,62 @@ export const conversationApi = {
     yield* parseSseStream(response.body)
   },
 
+  async *streamRegenerateAssistant(
+    conversationId: string,
+    messageId: string,
+    signal?: AbortSignal,
+  ): AsyncGenerator<StreamMessageEvent> {
+    const response = await fetch(
+      resolveApiUrl(`/conversations/${conversationId}/messages/${messageId}/regenerate/stream`),
+      {
+        method: 'POST',
+        headers: createHeaders(),
+        signal,
+      },
+    )
+
+    if (response.status === 401) {
+      clearStoredToken()
+    }
+    if (!response.ok) {
+      throw new Error(await parseStreamError(response))
+    }
+    if (!response.body) {
+      throw new Error('Streaming response is not readable')
+    }
+
+    yield* parseSseStream(response.body)
+  },
+
+  async *streamEditUserMessage(
+    conversationId: string,
+    messageId: string,
+    content: string,
+    signal?: AbortSignal,
+  ): AsyncGenerator<StreamMessageEvent> {
+    const response = await fetch(
+      resolveApiUrl(`/conversations/${conversationId}/messages/${messageId}/edit/stream`),
+      {
+        method: 'POST',
+        headers: createHeaders(),
+        body: JSON.stringify({ content }),
+        signal,
+      },
+    )
+
+    if (response.status === 401) {
+      clearStoredToken()
+    }
+    if (!response.ok) {
+      throw new Error(await parseStreamError(response))
+    }
+    if (!response.body) {
+      throw new Error('Streaming response is not readable')
+    }
+
+    yield* parseSseStream(response.body)
+  },
+
   async *streamNewConversationMessage(
     payload: CreateConversationMessagePayload,
     signal?: AbortSignal,
@@ -177,5 +235,17 @@ export const conversationApi = {
   async cancelMessage(conversationId: string, messageId: string): Promise<Message> {
     // 取消接口返回的是当前消息快照；最终状态仍以后端流协程落库为准。
     return apiClient.post(`/conversations/${conversationId}/messages/${messageId}/cancel`)
+  },
+
+  switchBranch(conversationId: string, messageId: string): Promise<BranchSwitchResponse> {
+    return apiClient.post(`/conversations/${conversationId}/messages/${messageId}/switch`)
+  },
+
+  forkConversation(
+    conversationId: string,
+    messageId: string,
+    title?: string | null,
+  ): Promise<ForkConversationResponse> {
+    return apiClient.post(`/conversations/${conversationId}/messages/${messageId}/fork`, { title })
   },
 }

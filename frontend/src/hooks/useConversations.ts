@@ -2,7 +2,7 @@ import { useMemo, useCallback, useRef, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { conversationApi } from '@/api/conversations'
 import { useOrbitStore } from '@/stores/useOrbitStore'
-import type { Conversation, Message } from '@/api/types'
+import type { Conversation, Message, StreamMessageEvent } from '@/api/types'
 
 interface NormalizedMessage extends Message {
   paragraphs: string[]
@@ -37,6 +37,20 @@ function upsertMessage(messages: Message[], nextMessage: Message): Message[] {
   return sortMessages(
     messages.map((message) => (message.id === nextMessage.id ? { ...message, ...nextMessage } : message)),
   )
+}
+
+function replaceVisibleTail(
+  messages: Message[],
+  userMessage: Message | undefined,
+  assistantMessage: Message,
+): Message[] {
+  const withoutLocal = messages.filter((message) => !String(message.id).startsWith('local-'))
+  const parentId = userMessage?.parent_message_id ?? assistantMessage.parent_message_id
+  const parentIndex = parentId
+    ? withoutLocal.findIndex((message) => message.id === parentId)
+    : -1
+  const base = parentIndex >= 0 ? withoutLocal.slice(0, parentIndex + 1) : []
+  return userMessage ? [...base, userMessage, assistantMessage] : [...base, assistantMessage]
 }
 
 function appendMessageDelta(messages: Message[], messageId: string, delta: string): Message[] {
@@ -137,6 +151,49 @@ export function useConversations(hasUser: boolean) {
     [],
   )
 
+  const applyStreamEvent = useCallback(
+    (conversationId: string, streamEvent: StreamMessageEvent, controller: AbortController) => {
+      if (streamEvent.event === 'conversation.created') {
+        return
+      }
+
+      if (streamEvent.event === 'message.created') {
+        activeStreamRef.current = {
+          conversationId,
+          messageId: streamEvent.data.assistant_message.id,
+          controller,
+        }
+        queryClient.setQueryData<Message[]>(['messages', conversationId], (old = []) => {
+          return replaceVisibleTail(
+            old,
+            streamEvent.data.user_message,
+            streamEvent.data.assistant_message,
+          )
+        })
+        return
+      }
+
+      if (streamEvent.event === 'message.delta') {
+        queryClient.setQueryData<Message[]>(['messages', conversationId], (old = []) =>
+          appendMessageDelta(old, streamEvent.data.message_id, streamEvent.data.delta),
+        )
+        return
+      }
+
+      if (streamEvent.event === 'message.reasoning_delta') {
+        queryClient.setQueryData<Message[]>(['messages', conversationId], (old = []) =>
+          appendMessageReasoningDelta(old, streamEvent.data.message_id, streamEvent.data.delta),
+        )
+        return
+      }
+
+      queryClient.setQueryData<Message[]>(['messages', conversationId], (old = []) =>
+        upsertMessage(old, streamEvent.data.message),
+      )
+    },
+    [queryClient],
+  )
+
   const selectConversation = useCallback(
     (conversationId: string) => {
       setActiveView('chat')
@@ -184,43 +241,7 @@ export function useConversations(hasUser: boolean) {
           content,
           controller.signal,
         )) {
-          if (streamEvent.event === 'conversation.created') {
-            continue
-          }
-
-          if (streamEvent.event === 'message.created') {
-            activeStreamRef.current = {
-              conversationId,
-              messageId: streamEvent.data.assistant_message.id,
-              controller,
-            }
-            queryClient.setQueryData<Message[]>(['messages', conversationId], (old = []) =>
-              replaceLocalExchange(
-                old,
-                streamEvent.data.user_message,
-                streamEvent.data.assistant_message,
-              ),
-            )
-            continue
-          }
-
-          if (streamEvent.event === 'message.delta') {
-            queryClient.setQueryData<Message[]>(['messages', conversationId], (old = []) =>
-              appendMessageDelta(old, streamEvent.data.message_id, streamEvent.data.delta),
-            )
-            continue
-          }
-
-          if (streamEvent.event === 'message.reasoning_delta') {
-            queryClient.setQueryData<Message[]>(['messages', conversationId], (old = []) =>
-              appendMessageReasoningDelta(old, streamEvent.data.message_id, streamEvent.data.delta),
-            )
-            continue
-          }
-
-          queryClient.setQueryData<Message[]>(['messages', conversationId], (old = []) =>
-            upsertMessage(old, streamEvent.data.message),
-          )
+          applyStreamEvent(conversationId, streamEvent, controller)
         }
         queryClient.invalidateQueries({ queryKey: ['conversations'] })
       } catch (error) {
@@ -234,7 +255,7 @@ export function useConversations(hasUser: boolean) {
         setIsStreaming(false)
       }
     },
-    [queryClient, setErrorMessage],
+    [applyStreamEvent, queryClient, setErrorMessage],
   )
 
   const streamNewConversationMessage = useCallback(
@@ -275,6 +296,7 @@ export function useConversations(hasUser: boolean) {
               messageId: streamEvent.data.assistant_message.id,
               controller,
             }
+            if (!streamEvent.data.user_message) continue
             queryClient.setQueryData<Message[]>(['messages', conversationId], () =>
               replaceLocalExchange(
                 [],
@@ -353,6 +375,116 @@ export function useConversations(hasUser: boolean) {
     setDraft,
     setErrorMessage,
   ])
+
+  const regenerateAssistant = useCallback(
+    async (messageId: string) => {
+      if (!activeConversationId || isStreaming) return
+      const controller = new AbortController()
+      setIsStreaming(true)
+      setErrorMessage('')
+      activeStreamRef.current = { conversationId: activeConversationId, messageId: null, controller }
+
+      try {
+        for await (const streamEvent of conversationApi.streamRegenerateAssistant(
+          activeConversationId,
+          messageId,
+          controller.signal,
+        )) {
+          applyStreamEvent(activeConversationId, streamEvent, controller)
+        }
+        queryClient.invalidateQueries({ queryKey: ['conversations'] })
+      } catch (error) {
+        if (error instanceof DOMException && error.name === 'AbortError') {
+          return
+        }
+        setErrorMessage(error instanceof Error ? error.message : 'Regenerate request failed.')
+      } finally {
+        activeStreamRef.current = null
+        setIsStreaming(false)
+      }
+    },
+    [activeConversationId, applyStreamEvent, isStreaming, queryClient, setErrorMessage],
+  )
+
+  const editUserMessage = useCallback(
+    async (messageId: string, content: string) => {
+      if (!activeConversationId || isStreaming) return
+      const controller = new AbortController()
+      setIsStreaming(true)
+      setErrorMessage('')
+      activeStreamRef.current = { conversationId: activeConversationId, messageId: null, controller }
+
+      try {
+        for await (const streamEvent of conversationApi.streamEditUserMessage(
+          activeConversationId,
+          messageId,
+          content,
+          controller.signal,
+        )) {
+          applyStreamEvent(activeConversationId, streamEvent, controller)
+        }
+        queryClient.invalidateQueries({ queryKey: ['conversations'] })
+      } catch (error) {
+        if (error instanceof DOMException && error.name === 'AbortError') {
+          return
+        }
+        setErrorMessage(error instanceof Error ? error.message : 'Edit request failed.')
+      } finally {
+        activeStreamRef.current = null
+        setIsStreaming(false)
+      }
+    },
+    [activeConversationId, applyStreamEvent, isStreaming, queryClient, setErrorMessage],
+  )
+
+  const switchBranch = useCallback(
+    async (messageId: string) => {
+      if (!activeConversationId || isStreaming) return
+      try {
+        const response = await conversationApi.switchBranch(activeConversationId, messageId)
+        queryClient.setQueryData<Message[]>(['messages', activeConversationId], response.messages)
+        queryClient.setQueryData<Conversation[]>(['conversations'], (old = []) =>
+          old.map((conversation) =>
+            conversation.id === activeConversationId
+              ? { ...conversation, active_leaf_message_id: response.active_leaf_message_id ?? null }
+              : conversation,
+          ),
+        )
+      } catch (error) {
+        setErrorMessage(error instanceof Error ? error.message : 'Failed to switch branch.')
+      }
+    },
+    [activeConversationId, isStreaming, queryClient, setErrorMessage],
+  )
+
+  const forkConversation = useCallback(
+    async (messageId: string, title?: string | null) => {
+      if (!activeConversationId || isStreaming) return null
+      try {
+        const response = await conversationApi.forkConversation(activeConversationId, messageId, title)
+        queryClient.setQueryData<Conversation[]>(['conversations'], (old = []) => [
+          response.conversation,
+          ...old.filter((conversation) => conversation.id !== response.conversation.id),
+        ])
+        queryClient.setQueryData<Message[]>(['messages', response.conversation.id], response.messages)
+        setActiveConversationId(response.conversation.id)
+        setActiveView('chat')
+        queryClient.invalidateQueries({ queryKey: ['conversations'] })
+        return response.conversation.id
+      } catch (error) {
+        setErrorMessage(error instanceof Error ? error.message : 'Failed to fork conversation.')
+        return null
+      }
+    },
+    [
+      activeConversationId,
+      isStreaming,
+      queryClient,
+      setActiveConversationId,
+      setActiveView,
+      setErrorMessage,
+    ],
+  )
 
   const stopGeneration = useCallback(async () => {
     const activeStream = activeStreamRef.current
@@ -450,6 +582,10 @@ export function useConversations(hasUser: boolean) {
       setErrorMessage('')
     },
     sendMessage,
+    regenerateAssistant,
+    editUserMessage,
+    switchBranch,
+    forkConversation,
     stopGeneration,
     renameConversation: (id: string, title: string) => renameConversation.mutate({ id, title }),
     archiveConversation: (id: string) => archiveConversation.mutate(id),
