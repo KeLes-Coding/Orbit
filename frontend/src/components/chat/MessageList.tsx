@@ -30,6 +30,7 @@ export function MessageList({
   const activeRoundIdRef = useRef<string | null>(null)
   const [activeRoundId, setActiveRoundId] = useState<string | null>(null)
   const [isPinnedToBottom, setIsPinnedToBottom] = useState(true)
+  const seenIdsRef = useRef<Set<string>>(new Set())
 
   const rounds = useMemo(
     () =>
@@ -52,6 +53,8 @@ export function MessageList({
         latestMessage.reasoning_content?.length ?? 0,
       ].join(":")
     : "empty"
+
+  const isLatestStreaming = latestMessage?.status === "streaming"
 
   const getScrollParent = () => {
     if (scrollParentRef.current) return scrollParentRef.current
@@ -169,10 +172,36 @@ export function MessageList({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  /* Track which messages have been seen for staggered animation */
+  useEffect(() => {
+    for (const msg of messages) {
+      seenIdsRef.current.add(msg.id)
+    }
+  }, [messages])
+
+  /* Check if a round separator should be shown between two messages */
+  const shouldShowSeparator = (current: Message & { paragraphs?: string[] }, prev: Message & { paragraphs?: string[] } | null) => {
+    if (!prev) return false
+    if (current.role !== "user") return false
+    return prev.role === "assistant"
+  }
+
+  /* Determine if a message should animate in */
+  const shouldAnimateMessage = (msg: Message & { paragraphs?: string[] }) => {
+    if (isLatestStreaming && msg.id === latestMessage?.id) return false
+    if (msg.status === "streaming") return false
+    return true
+  }
+
+  const getRoundLabel = (roundIndex: number) => {
+    return `Round ${roundIndex}`
+  }
+
   return (
     <>
       {rounds.length > 1 && (
         <nav className="message-jump-nav" aria-label="Conversation rounds">
+          <span className="message-jump-rail" aria-hidden="true" />
           {rounds.map((round) => (
             <button
               key={round.id}
@@ -188,29 +217,46 @@ export function MessageList({
         </nav>
       )}
       <div className="chat-stream" ref={containerRef}>
-        {messages.map((message) => (
-          <div
-            key={message.id}
-            className="message-anchor"
-            ref={(node) => {
-              if (node) {
-                messageRefs.current.set(message.id, node)
-              } else {
-                messageRefs.current.delete(message.id)
-              }
-            }}
-          >
-            <MessageBubble
-              message={message}
-              onRetry={onRetry}
-              onRegenerate={onRegenerate}
-              onEdit={onEdit}
-              onSwitchBranch={onSwitchBranch}
-              onFork={onFork}
-              actionsDisabled={isSending}
-            />
-          </div>
-        ))}
+        {messages.map((message, idx) => {
+          const prev = idx > 0 ? messages[idx - 1] : null
+          const showSep = shouldShowSeparator(message, prev)
+          const roundIdx = idx === 0
+            ? 1
+            : messages.slice(0, idx).filter((m) => m.role === "user").length + 1
+
+          return (
+            <div key={message.id}>
+              {showSep && (
+                <div className="round-separator" aria-hidden="true">
+                  <span className="round-separator-label">
+                    {getRoundLabel(roundIdx)}
+                  </span>
+                </div>
+              )}
+              <div
+                className={`message-anchor${shouldAnimateMessage(message) ? " should-animate" : ""}`}
+                ref={(node) => {
+                  if (node) {
+                    messageRefs.current.set(message.id, node)
+                  } else {
+                    messageRefs.current.delete(message.id)
+                  }
+                }}
+              >
+                <MessageBubble
+                  message={message}
+                  onRetry={onRetry}
+                  onRegenerate={onRegenerate}
+                  onEdit={onEdit}
+                  onSwitchBranch={onSwitchBranch}
+                  onFork={onFork}
+                  actionsDisabled={isSending}
+                  shouldAnimate={shouldAnimateMessage(message)}
+                />
+              </div>
+            </div>
+          )
+        })}
       </div>
       {!isPinnedToBottom && messages.length > 0 && (
         <button
