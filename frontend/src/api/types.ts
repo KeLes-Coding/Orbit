@@ -28,12 +28,20 @@ export interface Conversation {
   summary_updated_at?: string | null
   summary_message_count?: number
   active_leaf_message_id?: string | null
+  active_stream_id?: string | null
+  active_stream_message_id?: string | null
   forked_from_conversation_id?: string | null
   forked_from_message_id?: string | null
   summary_leaf_message_id?: string | null
   metadata: Record<string, unknown>
   created_at: string
   updated_at: string
+}
+
+export interface StreamEnvelope {
+  stream_id: string
+  seq: number
+  event_id: string
 }
 
 export interface Message {
@@ -147,34 +155,34 @@ export interface ForkConversationResponse {
 export type StreamMessageEvent =
   | {
       event: 'conversation.created'
-      data: {
+      data: StreamEnvelope & {
         conversation: Conversation
       }
     }
   | {
       event: 'message.created'
-      data: {
+      data: StreamEnvelope & {
         user_message?: Message
         assistant_message: Message
       }
     }
   | {
       event: 'message.delta'
-      data: {
+      data: StreamEnvelope & {
         message_id: string
         delta: string
       }
     }
   | {
       event: 'message.reasoning_delta'
-      data: {
+      data: StreamEnvelope & {
         message_id: string
         delta: string
       }
     }
   | {
       event: 'message.completed' | 'message.failed' | 'message.cancelled'
-      data: {
+      data: StreamEnvelope & {
         message: Message
       }
     }

@@ -30,7 +30,6 @@ export function MessageList({
   const activeRoundIdRef = useRef<string | null>(null)
   const [activeRoundId, setActiveRoundId] = useState<string | null>(null)
   const [isPinnedToBottom, setIsPinnedToBottom] = useState(true)
-  const seenIdsRef = useRef<Set<string>>(new Set())
 
   const rounds = useMemo(
     () =>
@@ -53,8 +52,6 @@ export function MessageList({
         latestMessage.reasoning_content?.length ?? 0,
       ].join(":")
     : "empty"
-
-  const isLatestStreaming = latestMessage?.status === "streaming"
 
   const getScrollParent = () => {
     if (scrollParentRef.current) return scrollParentRef.current
@@ -172,25 +169,11 @@ export function MessageList({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  /* Track which messages have been seen for staggered animation */
-  useEffect(() => {
-    for (const msg of messages) {
-      seenIdsRef.current.add(msg.id)
-    }
-  }, [messages])
-
   /* Check if a round separator should be shown between two messages */
   const shouldShowSeparator = (current: Message & { paragraphs?: string[] }, prev: Message & { paragraphs?: string[] } | null) => {
     if (!prev) return false
     if (current.role !== "user") return false
     return prev.role === "assistant"
-  }
-
-  /* Determine if a message should animate in */
-  const shouldAnimateMessage = (msg: Message & { paragraphs?: string[] }) => {
-    if (isLatestStreaming && msg.id === latestMessage?.id) return false
-    if (msg.status === "streaming") return false
-    return true
   }
 
   const getRoundLabel = (roundIndex: number) => {
@@ -234,7 +217,7 @@ export function MessageList({
                 </div>
               )}
               <div
-                className={`message-anchor${shouldAnimateMessage(message) ? " should-animate" : ""}`}
+                className="message-anchor"
                 ref={(node) => {
                   if (node) {
                     messageRefs.current.set(message.id, node)
@@ -251,7 +234,6 @@ export function MessageList({
                   onSwitchBranch={onSwitchBranch}
                   onFork={onFork}
                   actionsDisabled={isSending}
-                  shouldAnimate={shouldAnimateMessage(message)}
                 />
               </div>
             </div>

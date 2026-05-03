@@ -3,7 +3,7 @@ from collections.abc import AsyncIterator
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Request, Response, status
+from fastapi import APIRouter, Depends, Query, Response, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -54,26 +54,23 @@ async def create_conversation(
 @router.post("/messages/stream")
 async def stream_new_conversation_message(
     payload: ConversationMessageCreate,
-    request: Request,
     current_user: Annotated[User, Depends(get_current_user)],
     session: Annotated[AsyncSession, Depends(get_db_session)],
 ) -> StreamingResponse:
     service = ConversationService(session)
-    # 首条消息入口：前端处于“未选中会话”的 New Chat 状态时走这里，
-    # 后端负责创建 conversation、生成标题，再继续复用 SSE 消息流。
-    stream_events = service.stream_new_conversation_message(
+    # 首条消息入口先创建 active stream，再把当前请求作为第一个订阅者挂上去。
+    conversation_id, stream_id = await service.start_stream_new_conversation_message(
         user_id=current_user.id,
         payload=payload,
-        should_cancel=request.is_disconnected,
     )
-    # 先预取第一条事件，让鉴权、模型配置、建会话等错误仍以普通 HTTP 错误返回，
-    # 避免 StreamingResponse 已开始后才暴露异常。
-    first_event = await anext(stream_events)
 
     async def event_generator() -> AsyncIterator[str]:
-        # 第一条通常是 conversation.created，前端收到后再把真实会话插入侧边栏。
-        yield encode_sse_event(first_event)
-        async for event in stream_events:
+        async for event in service.subscribe_stream(
+            user_id=current_user.id,
+            conversation_id=conversation_id,
+            stream_id=stream_id,
+            last_seq=0,
+        ):
             yield encode_sse_event(event)
 
     return StreamingResponse(
@@ -160,24 +157,24 @@ async def create_user_message(
 async def stream_user_message(
     conversation_id: UUID,
     payload: MessageCreate,
-    request: Request,
     current_user: Annotated[User, Depends(get_current_user)],
     session: Annotated[AsyncSession, Depends(get_db_session)],
 ) -> StreamingResponse:
     service = ConversationService(session)
-    # 先拉取第一条事件，确保鉴权、会话归属、模型配置等错误仍能返回普通 HTTP 错误。
-    stream_events = service.stream_user_message(
+    # 发送消息时先启动后台 producer，再把当前连接挂为订阅者。
+    stream_id = await service.start_stream_user_message(
         user_id=current_user.id,
         conversation_id=conversation_id,
         content=payload.content,
-        should_cancel=request.is_disconnected,
     )
-    first_event = await anext(stream_events)
 
     async def event_generator() -> AsyncIterator[str]:
-        # SSE MVP阶段输出 event/data。
-        yield encode_sse_event(first_event)
-        async for event in stream_events:
+        async for event in service.subscribe_stream(
+            user_id=current_user.id,
+            conversation_id=conversation_id,
+            stream_id=stream_id,
+            last_seq=0,
+        ):
             yield encode_sse_event(event)
 
     return StreamingResponse(
@@ -234,23 +231,24 @@ async def edit_user_message(
 async def stream_regenerate_assistant(
     conversation_id: UUID,
     message_id: UUID,
-    request: Request,
     current_user: Annotated[User, Depends(get_current_user)],
     session: Annotated[AsyncSession, Depends(get_db_session)],
 ) -> StreamingResponse:
     service = ConversationService(session)
-    # 重发也走 SSE，避免 regenerate 和普通发送在前端体验上割裂。
-    stream_events = service.stream_regenerate_assistant(
+    # 重发 assistant 时同样先创建 active stream，再把当前连接接到 replay/live 订阅上。
+    stream_id = await service.start_stream_regenerate_assistant(
         user_id=current_user.id,
         conversation_id=conversation_id,
         message_id=message_id,
-        should_cancel=request.is_disconnected,
     )
-    first_event = await anext(stream_events)
 
     async def event_generator() -> AsyncIterator[str]:
-        yield encode_sse_event(first_event)
-        async for event in stream_events:
+        async for event in service.subscribe_stream(
+            user_id=current_user.id,
+            conversation_id=conversation_id,
+            stream_id=stream_id,
+            last_seq=0,
+        ):
             yield encode_sse_event(event)
 
     return StreamingResponse(
@@ -268,24 +266,53 @@ async def stream_edit_user_message(
     conversation_id: UUID,
     message_id: UUID,
     payload: MessageEdit,
-    request: Request,
     current_user: Annotated[User, Depends(get_current_user)],
     session: Annotated[AsyncSession, Depends(get_db_session)],
 ) -> StreamingResponse:
     service = ConversationService(session)
-    # 编辑 user 后会创建新的 user sibling，并流式生成新的 assistant child。
-    stream_events = service.stream_edit_user_message(
+    # 编辑 user 后创建新的 user/assistant 分支，并订阅这条新 active stream。
+    stream_id = await service.start_stream_edit_user_message(
         user_id=current_user.id,
         conversation_id=conversation_id,
         message_id=message_id,
         payload=payload,
-        should_cancel=request.is_disconnected,
     )
-    first_event = await anext(stream_events)
 
     async def event_generator() -> AsyncIterator[str]:
-        yield encode_sse_event(first_event)
-        async for event in stream_events:
+        async for event in service.subscribe_stream(
+            user_id=current_user.id,
+            conversation_id=conversation_id,
+            stream_id=stream_id,
+            last_seq=0,
+        ):
+            yield encode_sse_event(event)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@router.get("/{conversation_id}/stream")
+async def subscribe_active_stream(
+    conversation_id: UUID,
+    current_user: Annotated[User, Depends(get_current_user)],
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+    last_seq: int = Query(default=0, ge=0),
+) -> StreamingResponse:
+    service = ConversationService(session)
+
+    async def event_generator() -> AsyncIterator[str]:
+        # 页面刷新或网络重连后，前端带上 last_seq 从这里继续 replay + live 订阅。
+        async for event in service.subscribe_active_stream(
+            user_id=current_user.id,
+            conversation_id=conversation_id,
+            last_seq=last_seq,
+        ):
             yield encode_sse_event(event)
 
     return StreamingResponse(
@@ -359,4 +386,9 @@ async def cancel_message_generation(
 def encode_sse_event(event: ConversationStreamEvent) -> str:
     # SSE 事件之间用空行分隔，data 使用紧凑 JSON 方便前端逐事件解析。
     data = json.dumps(event.data, ensure_ascii=False, separators=(",", ":"))
-    return f"event: {event.event}\ndata: {data}\n\n"
+    sse_lines = []
+    if event.event_id:
+        sse_lines.append(f"id: {event.event_id}")
+    sse_lines.append(f"event: {event.event}")
+    sse_lines.append(f"data: {data}")
+    return "\n".join(sse_lines) + "\n\n"

@@ -783,7 +783,7 @@ textarea:disabled {
 
 .floating-actions {
   position: absolute;
-  top: 24px;
+  top: 12px;
   right: 32px;
   z-index: 20;
 }
@@ -912,9 +912,9 @@ textarea:disabled {
   z-index: 11;
   display: flex;
   flex: 0 0 auto;
-  min-height: 92px;
+  min-height: 64px;
   align-items: center;
-  padding: 24px 64px 16px;
+  padding: 10px 64px;
   background: color-mix(in srgb, var(--background) 85%, transparent);
   border-bottom: 1px solid color-mix(in srgb, var(--line) 40%, transparent);
   backdrop-filter: blur(24px);
@@ -931,10 +931,6 @@ textarea:disabled {
 
 .message-anchor {
   scroll-margin-top: 116px;
-}
-
-.message-anchor.should-animate {
-  animation: messageEnterStagger 520ms ease-out both;
 }
 
 .round-separator {
@@ -965,11 +961,12 @@ textarea:disabled {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  padding: 8px 0;
+  min-height: 40px;
+  padding: 4px 0;
   color: var(--ink);
   font-family: "Noto Serif", Georgia, serif;
-  font-size: 24px;
-  line-height: 1.4;
+  font-size: 20px;
+  line-height: 1.2;
   opacity: 0.82;
   transition: opacity 180ms ease;
 }
@@ -1252,7 +1249,6 @@ textarea:disabled {
   place-items: center;
   margin-top: 3px;
   color: var(--ink);
-  animation: avatarScaleIn 280ms ease-out both;
 }
 
 .user-mark {
@@ -1278,7 +1274,6 @@ textarea:disabled {
   font-family: var(--font-reader);
   font-size: 17.5px;
   line-height: 1.65;
-  animation: cardReveal 340ms ease-out both;
 }
 
 .assistant-copy p {
@@ -1306,7 +1301,6 @@ textarea:disabled {
   gap: 8px;
   margin-top: 14px;
   color: var(--ink-soft);
-  animation: toolbarFadeIn 280ms ease-out both;
 }
 
 .assistant-tools {
@@ -1758,13 +1752,6 @@ textarea:disabled {
   border-top: 1px solid var(--line);
 }
 
-/* Staggered paragraph reveal for animated messages */
-.markdown-body .stagger-paragraph {
-  display: block;
-  opacity: 1;
-  animation: paragraphFadeUp 320ms ease-out both;
-}
-
 /* Message row failed state */
 .message-row.failed .assistant-copy {
   opacity: 0.6;
@@ -1809,13 +1796,13 @@ textarea:disabled {
   }
 
   .floating-actions {
-    top: 76px;
+    top: 12px;
     right: 16px;
   }
 
   .canvas-bar {
-    min-height: 80px;
-    padding: 20px 24px 12px;
+    min-height: 64px;
+    padding: 10px 24px;
   }
 
   .chat-stream {
@@ -1894,7 +1881,8 @@ textarea:disabled {
   }
 
   .model-button {
-    font-size: 22px;
+    min-height: 36px;
+    font-size: 18px;
   }
 
   .chat-stream {

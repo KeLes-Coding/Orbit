@@ -97,6 +97,26 @@ async function* parseSseStream(body: ReadableStream<Uint8Array>): AsyncGenerator
   }
 }
 
+async function* fetchSse(
+  input: string,
+  init: RequestInit,
+): AsyncGenerator<StreamMessageEvent> {
+  // 所有 SSE 接口都走同一层 fetch 封装，避免重复处理鉴权和错误解析。
+  const response = await fetch(resolveApiUrl(input), init)
+
+  if (response.status === 401) {
+    clearStoredToken()
+  }
+  if (!response.ok) {
+    throw new Error(await parseStreamError(response))
+  }
+  if (!response.body) {
+    throw new Error('Streaming response is not readable')
+  }
+
+  yield* parseSseStream(response.body)
+}
+
 export const conversationApi = {
   list(): Promise<Conversation[]> {
     return apiClient.get('/conversations')
@@ -132,24 +152,12 @@ export const conversationApi = {
     signal?: AbortSignal,
   ): AsyncGenerator<StreamMessageEvent> {
     // 流式接口不能走 axios 的 JSON 解析，直接使用 fetch 读取 SSE 字节流。
-    const response = await fetch(resolveApiUrl(`/conversations/${conversationId}/messages/stream`), {
+    yield* fetchSse(`/conversations/${conversationId}/messages/stream`, {
       method: 'POST',
       headers: createHeaders(),
       body: JSON.stringify({ content }),
       signal,
     })
-
-    if (response.status === 401) {
-      clearStoredToken()
-    }
-    if (!response.ok) {
-      throw new Error(await parseStreamError(response))
-    }
-    if (!response.body) {
-      throw new Error('Streaming response is not readable')
-    }
-
-    yield* parseSseStream(response.body)
   },
 
   async *streamRegenerateAssistant(
@@ -157,26 +165,11 @@ export const conversationApi = {
     messageId: string,
     signal?: AbortSignal,
   ): AsyncGenerator<StreamMessageEvent> {
-    const response = await fetch(
-      resolveApiUrl(`/conversations/${conversationId}/messages/${messageId}/regenerate/stream`),
-      {
-        method: 'POST',
-        headers: createHeaders(),
-        signal,
-      },
-    )
-
-    if (response.status === 401) {
-      clearStoredToken()
-    }
-    if (!response.ok) {
-      throw new Error(await parseStreamError(response))
-    }
-    if (!response.body) {
-      throw new Error('Streaming response is not readable')
-    }
-
-    yield* parseSseStream(response.body)
+    yield* fetchSse(`/conversations/${conversationId}/messages/${messageId}/regenerate/stream`, {
+      method: 'POST',
+      headers: createHeaders(),
+      signal,
+    })
   },
 
   async *streamEditUserMessage(
@@ -185,51 +178,38 @@ export const conversationApi = {
     content: string,
     signal?: AbortSignal,
   ): AsyncGenerator<StreamMessageEvent> {
-    const response = await fetch(
-      resolveApiUrl(`/conversations/${conversationId}/messages/${messageId}/edit/stream`),
-      {
-        method: 'POST',
-        headers: createHeaders(),
-        body: JSON.stringify({ content }),
-        signal,
-      },
-    )
-
-    if (response.status === 401) {
-      clearStoredToken()
-    }
-    if (!response.ok) {
-      throw new Error(await parseStreamError(response))
-    }
-    if (!response.body) {
-      throw new Error('Streaming response is not readable')
-    }
-
-    yield* parseSseStream(response.body)
+    yield* fetchSse(`/conversations/${conversationId}/messages/${messageId}/edit/stream`, {
+      method: 'POST',
+      headers: createHeaders(),
+      body: JSON.stringify({ content }),
+      signal,
+    })
   },
 
   async *streamNewConversationMessage(
     payload: CreateConversationMessagePayload,
     signal?: AbortSignal,
   ): AsyncGenerator<StreamMessageEvent> {
-    const response = await fetch(resolveApiUrl('/conversations/messages/stream'), {
+    yield* fetchSse('/conversations/messages/stream', {
       method: 'POST',
       headers: createHeaders(),
       body: JSON.stringify(payload),
       signal,
     })
+  },
 
-    if (response.status === 401) {
-      clearStoredToken()
-    }
-    if (!response.ok) {
-      throw new Error(await parseStreamError(response))
-    }
-    if (!response.body) {
-      throw new Error('Streaming response is not readable')
-    }
-
-    yield* parseSseStream(response.body)
+  async *resumeStream(
+    conversationId: string,
+    lastSeq: number,
+    signal?: AbortSignal,
+  ): AsyncGenerator<StreamMessageEvent> {
+    // 恢复订阅接口只关心会话和 last_seq；具体 active stream 由后端按会话指针解析。
+    const query = new URLSearchParams({ last_seq: String(lastSeq) })
+    yield* fetchSse(`/conversations/${conversationId}/stream?${query.toString()}`, {
+      method: 'GET',
+      headers: createHeaders(),
+      signal,
+    })
   },
 
   async cancelMessage(conversationId: string, messageId: string): Promise<Message> {

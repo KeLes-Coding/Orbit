@@ -34,6 +34,8 @@ class ConversationRead(BaseModel):
     summary_updated_at: datetime | None
     summary_message_count: int
     active_leaf_message_id: UUID | None
+    active_stream_id: str | None
+    active_stream_message_id: UUID | None
     forked_from_conversation_id: UUID | None
     forked_from_message_id: UUID | None
     summary_leaf_message_id: UUID | None

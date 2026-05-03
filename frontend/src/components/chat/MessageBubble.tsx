@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react"
+import { memo, useEffect, useMemo, useState } from "react"
 import type { ReactNode } from "react"
 import { Copy, GitFork, Pencil, RotateCcw, User } from "lucide-react"
 import ReactMarkdown from "react-markdown"
@@ -39,7 +39,6 @@ interface MessageBubbleProps {
   onSwitchBranch?: (messageId: string) => void
   onFork?: (messageId: string) => void
   actionsDisabled?: boolean
-  shouldAnimate?: boolean
 }
 
 function MessageAction({
@@ -71,7 +70,7 @@ function MessageAction({
   )
 }
 
-export function MessageBubble({
+export const MessageBubble = memo(function MessageBubble({
   message,
   onRetry,
   onRegenerate,
@@ -79,7 +78,6 @@ export function MessageBubble({
   onSwitchBranch,
   onFork,
   actionsDisabled,
-  shouldAnimate = false,
 }: MessageBubbleProps) {
   const isAssistant = message.role === "assistant"
   const isUser = message.role === "user"
@@ -112,27 +110,6 @@ export function MessageBubble({
       setIsReasoningOpen(false)
     }
   }, [hasContent, hasReasoning, isStreaming])
-
-  const paragraphCounterRef = useRef(0)
-  paragraphCounterRef.current = 0
-
-  const markdownComponents = useMemo(
-    () => ({
-      p({ children }: { children?: ReactNode }) {
-        if (!shouldAnimate) return <p>{children}</p>
-        const idx = paragraphCounterRef.current++
-        return (
-          <p
-            className="stagger-paragraph"
-            style={{ animationDelay: `${idx * 48}ms` }}
-          >
-            {children}
-          </p>
-        )
-      },
-    }),
-    [shouldAnimate],
-  )
 
   const branchDots = useMemo(() => {
     if (siblingCount <= 1) return null
@@ -252,7 +229,7 @@ export function MessageBubble({
             <TypingIndicator />
           ) : (
             <div className="markdown-body">
-              <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+              <ReactMarkdown remarkPlugins={[remarkGfm]}>
                 {message.content}
               </ReactMarkdown>
             </div>
@@ -303,4 +280,4 @@ export function MessageBubble({
       )}
     </article>
   )
-}
+})

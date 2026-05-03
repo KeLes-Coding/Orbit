@@ -1,4 +1,4 @@
-import { useMemo, useCallback, useRef, useState } from 'react'
+import { useMemo, useCallback, useEffect, useRef, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { conversationApi } from '@/api/conversations'
 import { useOrbitStore } from '@/stores/useOrbitStore'
@@ -93,8 +93,11 @@ export function useConversations(hasUser: boolean) {
   const activeStreamRef = useRef<{
     conversationId: string | null
     messageId: string | null
+    streamId: string | null
+    lastSeq: number
     controller: AbortController
   } | null>(null)
+  const streamCursorRef = useRef<Record<string, { streamId: string | null; lastSeq: number }>>({})
 
   const conversationsQuery = useQuery({
     queryKey: ['conversations'],
@@ -143,7 +146,8 @@ export function useConversations(hasUser: boolean) {
     [conversations, activeConversationId],
   )
 
-  const isLoadingMessages = messagesQuery.isLoading || messagesQuery.isFetching
+  // 只有首次没有任何缓存消息时才显示 loading，切页返回时保留现有内容避免闪烁。
+  const isLoadingMessages = rawMessages.length === 0 && (messagesQuery.isLoading || messagesQuery.isFetching)
 
   const formatConversationTitle = useCallback(
     (conversation: Conversation) =>
@@ -151,9 +155,46 @@ export function useConversations(hasUser: boolean) {
     [],
   )
 
+  const updateStreamCursor = useCallback((conversationId: string, streamId: string, seq: number) => {
+    // 前端只需要记住每个会话最近收到的 seq，恢复时把它回传给后端即可。
+    const current = streamCursorRef.current[conversationId]
+    if (!current || current.streamId !== streamId || seq > current.lastSeq) {
+      streamCursorRef.current[conversationId] = { streamId, lastSeq: seq }
+    }
+  }, [])
+
+  const clearStreamCursor = useCallback((conversationId: string) => {
+    delete streamCursorRef.current[conversationId]
+  }, [])
+
+  const markConversationStreamState = useCallback(
+    (conversationId: string, streamId: string | null, messageId: string | null) => {
+      queryClient.setQueryData<Conversation[]>(['conversations'], (old = []) =>
+        old.map((conversation) =>
+          conversation.id === conversationId
+            ? {
+                ...conversation,
+                active_stream_id: streamId,
+                active_stream_message_id: messageId,
+              }
+            : conversation,
+        ),
+      )
+    },
+    [queryClient],
+  )
+
   const applyStreamEvent = useCallback(
     (conversationId: string, streamEvent: StreamMessageEvent, controller: AbortController) => {
+      updateStreamCursor(conversationId, streamEvent.data.stream_id, streamEvent.data.seq)
+
       if (streamEvent.event === 'conversation.created') {
+        // New Chat 的首条事件里也带 stream 元信息，先把游标和会话状态记下来。
+        markConversationStreamState(
+          streamEvent.data.conversation.id,
+          streamEvent.data.stream_id,
+          streamEvent.data.conversation.active_stream_message_id ?? null,
+        )
         return
       }
 
@@ -161,8 +202,15 @@ export function useConversations(hasUser: boolean) {
         activeStreamRef.current = {
           conversationId,
           messageId: streamEvent.data.assistant_message.id,
+          streamId: streamEvent.data.stream_id,
+          lastSeq: streamEvent.data.seq,
           controller,
         }
+        markConversationStreamState(
+          conversationId,
+          streamEvent.data.stream_id,
+          streamEvent.data.assistant_message.id,
+        )
         queryClient.setQueryData<Message[]>(['messages', conversationId], (old = []) => {
           return replaceVisibleTail(
             old,
@@ -187,11 +235,20 @@ export function useConversations(hasUser: boolean) {
         return
       }
 
+      if (
+        streamEvent.event === 'message.completed' ||
+        streamEvent.event === 'message.failed' ||
+        streamEvent.event === 'message.cancelled'
+      ) {
+        markConversationStreamState(conversationId, null, null)
+        clearStreamCursor(conversationId)
+      }
+
       queryClient.setQueryData<Message[]>(['messages', conversationId], (old = []) =>
         upsertMessage(old, streamEvent.data.message),
       )
     },
-    [queryClient],
+    [clearStreamCursor, markConversationStreamState, queryClient, updateStreamCursor],
   )
 
   const selectConversation = useCallback(
@@ -233,7 +290,7 @@ export function useConversations(hasUser: boolean) {
       ])
 
       setIsStreaming(true)
-      activeStreamRef.current = { conversationId, messageId: null, controller }
+      activeStreamRef.current = { conversationId, messageId: null, streamId: null, lastSeq: 0, controller }
 
       try {
         for await (const streamEvent of conversationApi.streamMessage(
@@ -265,7 +322,7 @@ export function useConversations(hasUser: boolean) {
 
       setIsStreaming(true)
       setIsCreatingConversationTitle(true)
-      activeStreamRef.current = { conversationId: null, messageId: null, controller }
+      activeStreamRef.current = { conversationId: null, messageId: null, streamId: null, lastSeq: 0, controller }
 
       try {
         for await (const streamEvent of conversationApi.streamNewConversationMessage(
@@ -275,7 +332,13 @@ export function useConversations(hasUser: boolean) {
           if (streamEvent.event === 'conversation.created') {
             const conversation = streamEvent.data.conversation
             conversationId = conversation.id
-            activeStreamRef.current = { conversationId, messageId: null, controller }
+            activeStreamRef.current = {
+              conversationId,
+              messageId: null,
+              streamId: streamEvent.data.stream_id,
+              lastSeq: streamEvent.data.seq,
+              controller,
+            }
             setIsCreatingConversationTitle(false)
             queryClient.setQueryData<Conversation[]>(['conversations'], (old = []) => [
               conversation,
@@ -294,13 +357,16 @@ export function useConversations(hasUser: boolean) {
             activeStreamRef.current = {
               conversationId,
               messageId: streamEvent.data.assistant_message.id,
+              streamId: streamEvent.data.stream_id,
+              lastSeq: streamEvent.data.seq,
               controller,
             }
-            if (!streamEvent.data.user_message) continue
+            const userMessage = streamEvent.data.user_message
+            if (!userMessage) continue
             queryClient.setQueryData<Message[]>(['messages', conversationId], () =>
               replaceLocalExchange(
                 [],
-                streamEvent.data.user_message,
+                userMessage,
                 streamEvent.data.assistant_message,
               ),
             )
@@ -382,7 +448,13 @@ export function useConversations(hasUser: boolean) {
       const controller = new AbortController()
       setIsStreaming(true)
       setErrorMessage('')
-      activeStreamRef.current = { conversationId: activeConversationId, messageId: null, controller }
+      activeStreamRef.current = {
+        conversationId: activeConversationId,
+        messageId: null,
+        streamId: null,
+        lastSeq: 0,
+        controller,
+      }
 
       try {
         for await (const streamEvent of conversationApi.streamRegenerateAssistant(
@@ -412,7 +484,13 @@ export function useConversations(hasUser: boolean) {
       const controller = new AbortController()
       setIsStreaming(true)
       setErrorMessage('')
-      activeStreamRef.current = { conversationId: activeConversationId, messageId: null, controller }
+      activeStreamRef.current = {
+        conversationId: activeConversationId,
+        messageId: null,
+        streamId: null,
+        lastSeq: 0,
+        controller,
+      }
 
       try {
         for await (const streamEvent of conversationApi.streamEditUserMessage(
@@ -516,6 +594,66 @@ export function useConversations(hasUser: boolean) {
       setIsStreaming(false)
     }
   }, [queryClient, setErrorMessage, setIsCreatingConversationTitle])
+
+  useEffect(() => {
+    if (!hasUser || !activeConversationId || !activeConversation?.active_stream_id) return
+    if (messagesQuery.isLoading || messagesQuery.isFetching) return
+
+    const currentStream = activeStreamRef.current
+    if (currentStream?.conversationId === activeConversationId) return
+
+    const savedCursor = streamCursorRef.current[activeConversationId]
+    const lastSeq =
+      savedCursor && savedCursor.streamId === activeConversation.active_stream_id ? savedCursor.lastSeq : 0
+    const controller = new AbortController()
+
+    // 刷新页面或重新进入会话后，如果后端仍有 active stream，就自动从 last_seq 继续追平。
+    activeStreamRef.current = {
+      conversationId: activeConversationId,
+      messageId: activeConversation.active_stream_message_id ?? null,
+      streamId: activeConversation.active_stream_id,
+      lastSeq,
+      controller,
+    }
+    setIsStreaming(true)
+
+    void (async () => {
+      try {
+        for await (const streamEvent of conversationApi.resumeStream(
+          activeConversationId,
+          lastSeq,
+          controller.signal,
+        )) {
+          applyStreamEvent(activeConversationId, streamEvent, controller)
+        }
+        queryClient.invalidateQueries({ queryKey: ['conversations'] })
+      } catch (error) {
+        if (error instanceof DOMException && error.name === 'AbortError') {
+          return
+        }
+        setErrorMessage(error instanceof Error ? error.message : 'Resume stream request failed.')
+      } finally {
+        if (activeStreamRef.current?.controller === controller) {
+          activeStreamRef.current = null
+        }
+        setIsStreaming(false)
+      }
+    })()
+
+    return () => {
+      controller.abort()
+    }
+  }, [
+    activeConversation?.active_stream_id,
+    activeConversation?.active_stream_message_id,
+    activeConversationId,
+    applyStreamEvent,
+    hasUser,
+    messagesQuery.isFetching,
+    messagesQuery.isLoading,
+    queryClient,
+    setErrorMessage,
+  ])
 
   const renameConversation = useMutation({
     mutationFn: ({ id, title }: { id: string; title: string }) =>
