@@ -26,6 +26,7 @@ export function MessageList({
   const scrollParentRef = useRef<HTMLElement | null>(null)
   const messageRefs = useRef<Map<string, HTMLDivElement>>(new Map())
   const isPinnedToBottomRef = useRef(true)
+  const isProgrammaticScrollRef = useRef(false)
   const rafIdRef = useRef<number | null>(null)
   const activeRoundIdRef = useRef<string | null>(null)
   const [activeRoundId, setActiveRoundId] = useState<string | null>(null)
@@ -73,11 +74,15 @@ export function MessageList({
   const scrollToBottom = (smooth = false) => {
     const el = getScrollParent()
     if (!el) return
+    isProgrammaticScrollRef.current = true
     if (smooth) {
       el.scrollTo({ top: el.scrollHeight, behavior: "smooth" })
     } else {
       el.scrollTop = el.scrollHeight
     }
+    requestAnimationFrame(() => {
+      isProgrammaticScrollRef.current = false
+    })
   }
 
   const setActiveRound = (roundId: string | null) => {
@@ -129,6 +134,10 @@ export function MessageList({
     const scrollParent = getScrollParent()
     if (!scrollParent) return
     const handleScroll = () => {
+      if (isProgrammaticScrollRef.current) {
+        updateActiveRound()
+        return
+      }
       updatePinnedState()
       updateActiveRound()
     }
@@ -246,9 +255,9 @@ export function MessageList({
           className="scroll-bottom-btn"
           aria-label="Scroll to bottom"
           onClick={() => {
-            scrollToBottom(true)
             isPinnedToBottomRef.current = true
             setIsPinnedToBottom(true)
+            scrollToBottom()
           }}
         >
           <ArrowDown className="h-4 w-4" />

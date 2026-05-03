@@ -47,7 +47,7 @@ export function SideNav() {
     createNewThread,
     renameConversation,
     archiveConversation,
-  } = useConversations(hasUser)
+  } = useConversations(hasUser, { enableStreamResume: false })
 
   const setActiveView = useOrbitStore((s) => s.setActiveView)
   const sidebarCollapsed = useOrbitStore((s) => s.sidebarCollapsed)

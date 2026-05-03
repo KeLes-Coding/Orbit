@@ -4,6 +4,10 @@ import { conversationApi } from '@/api/conversations'
 import { useOrbitStore } from '@/stores/useOrbitStore'
 import type { Conversation, Message, StreamMessageEvent } from '@/api/types'
 
+interface UseConversationsOptions {
+  enableStreamResume?: boolean
+}
+
 interface NormalizedMessage extends Message {
   paragraphs: string[]
 }
@@ -77,7 +81,11 @@ function appendMessageReasoningDelta(messages: Message[], messageId: string, del
   )
 }
 
-export function useConversations(hasUser: boolean) {
+export function useConversations(
+  hasUser: boolean,
+  options: UseConversationsOptions = {},
+) {
+  const { enableStreamResume = true } = options
   const activeConversationId = useOrbitStore((s) => s.activeConversationId)
   const pendingConversationLlmConfigId = useOrbitStore((s) => s.pendingConversationLlmConfigId)
   const draft = useOrbitStore((s) => s.draft)
@@ -184,6 +192,16 @@ export function useConversations(hasUser: boolean) {
     [queryClient],
   )
 
+  const upsertConversation = useCallback(
+    (conversation: Conversation) => {
+      queryClient.setQueryData<Conversation[]>(['conversations'], (old = []) => [
+        conversation,
+        ...old.filter((item) => item.id !== conversation.id),
+      ])
+    },
+    [queryClient],
+  )
+
   const applyStreamEvent = useCallback(
     (conversationId: string, streamEvent: StreamMessageEvent, controller: AbortController) => {
       updateStreamCursor(conversationId, streamEvent.data.stream_id, streamEvent.data.seq)
@@ -195,6 +213,12 @@ export function useConversations(hasUser: boolean) {
           streamEvent.data.stream_id,
           streamEvent.data.conversation.active_stream_message_id ?? null,
         )
+        upsertConversation(streamEvent.data.conversation)
+        return
+      }
+
+      if (streamEvent.event === 'conversation.updated') {
+        upsertConversation(streamEvent.data.conversation)
         return
       }
 
@@ -248,7 +272,7 @@ export function useConversations(hasUser: boolean) {
         upsertMessage(old, streamEvent.data.message),
       )
     },
-    [clearStreamCursor, markConversationStreamState, queryClient, updateStreamCursor],
+    [clearStreamCursor, markConversationStreamState, queryClient, updateStreamCursor, upsertConversation],
   )
 
   const selectConversation = useCallback(
@@ -351,6 +375,11 @@ export function useConversations(hasUser: boolean) {
             continue
           }
 
+          if (streamEvent.event === 'conversation.updated') {
+            upsertConversation(streamEvent.data.conversation)
+            continue
+          }
+
           if (!conversationId) continue
 
           if (streamEvent.event === 'message.created') {
@@ -410,6 +439,7 @@ export function useConversations(hasUser: boolean) {
       setErrorMessage,
       setIsCreatingConversationTitle,
       setPendingConversationLlmConfigId,
+      upsertConversation,
     ],
   )
 
@@ -596,6 +626,7 @@ export function useConversations(hasUser: boolean) {
   }, [queryClient, setErrorMessage, setIsCreatingConversationTitle])
 
   useEffect(() => {
+    if (!enableStreamResume) return
     if (!hasUser || !activeConversationId || !activeConversation?.active_stream_id) return
     if (messagesQuery.isLoading || messagesQuery.isFetching) return
 
@@ -648,6 +679,7 @@ export function useConversations(hasUser: boolean) {
     activeConversation?.active_stream_message_id,
     activeConversationId,
     applyStreamEvent,
+    enableStreamResume,
     hasUser,
     messagesQuery.isFetching,
     messagesQuery.isLoading,

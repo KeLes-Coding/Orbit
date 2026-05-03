@@ -24,7 +24,7 @@ export function MobileDrawer({ onOpenChange }: MobileDrawerProps) {
     formatConversationTitle,
     selectConversation,
     createNewThread,
-  } = useConversations(hasUser)
+  } = useConversations(hasUser, { enableStreamResume: false })
 
   const setActiveView = useOrbitStore((s) => s.setActiveView)
   const navigate = useNavigate()

@@ -128,10 +128,8 @@ class ConversationService:
                 detail="当前会话的模型配置不可用",
             )
 
-        title = await self.title_generator.generate(
-            user_message=payload.content,
-            fallback_config=llm_config,
-        )
+        # 先用本地 fallback title 落库，让首轮流式响应不再被标题模型阻塞。
+        title = self.title_generator.fallback_title(payload.content)
         conversation = await self.conversations.create(
             user_id=user_id,
             title=title,
@@ -184,6 +182,12 @@ class ConversationService:
             ],
         )
         self._spawn_stream_producer(stream_id=stream_id, conversation_id=conversation.id)
+        self._spawn_title_producer(
+            conversation_id=conversation.id,
+            user_id=user_id,
+            user_message=payload.content,
+            expected_title=title,
+        )
         return conversation.id, stream_id
 
     async def start_stream_regenerate_assistant(
@@ -971,6 +975,24 @@ class ConversationService:
         )
         task.add_done_callback(self._handle_stream_producer_result)
 
+    def _spawn_title_producer(
+        self,
+        *,
+        conversation_id: UUID,
+        user_id: UUID,
+        user_message: str,
+        expected_title: str,
+    ) -> None:
+        task = asyncio.create_task(
+            self._run_title_producer(
+                conversation_id=conversation_id,
+                user_id=user_id,
+                user_message=user_message,
+                expected_title=expected_title,
+            )
+        )
+        task.add_done_callback(self._handle_stream_producer_result)
+
     def _handle_stream_producer_result(self, task: asyncio.Task) -> None:
         # 后台任务异常不能静默吞掉，否则 active_stream 可能长期卡住且难排查。
         try:
@@ -993,6 +1015,77 @@ class ConversationService:
                     conversation_id=conversation_id,
                     error=str(exc),
                 )
+
+    async def _run_title_producer(
+        self,
+        *,
+        conversation_id: UUID,
+        user_id: UUID,
+        user_message: str,
+        expected_title: str,
+    ) -> None:
+        # 标题生成与主回复解耦，避免 New Chat 首轮等待额外的 LLM 请求。
+        async with AsyncSessionLocal() as session:
+            worker = ConversationService(session)
+            await worker._produce_conversation_title(
+                conversation_id=conversation_id,
+                user_id=user_id,
+                user_message=user_message,
+                expected_title=expected_title,
+            )
+
+    async def _produce_conversation_title(
+        self,
+        *,
+        conversation_id: UUID,
+        user_id: UUID,
+        user_message: str,
+        expected_title: str,
+    ) -> None:
+        conversation = await self._get_conversation_by_id(conversation_id)
+        if conversation is None or conversation.user_id != user_id:
+            return
+        if conversation.title != expected_title:
+            return
+
+        llm_config = None
+        if conversation.llm_config_id is not None:
+            llm_config = await self.llm_configs.get_active(
+                user_id=user_id,
+                config_id=conversation.llm_config_id,
+            )
+
+        title = await self.title_generator.generate(
+            user_message=user_message,
+            fallback_config=llm_config,
+        )
+        if not title or title == expected_title:
+            return
+
+        # 只在标题仍保持初始 fallback 时覆盖，避免异步任务把用户手动重命名冲掉。
+        conversation = await self._get_conversation_by_id(conversation_id)
+        if conversation is None or conversation.title != expected_title:
+            return
+
+        conversation.title = title
+        await self.session.commit()
+        await self.session.refresh(conversation)
+
+        stream_id = conversation.active_stream_id
+        if not stream_id:
+            return
+
+        try:
+            await conversation_stream_store.append_event(
+                stream_id,
+                event="conversation.updated",
+                data={
+                    "conversation": ConversationRead.model_validate(conversation).model_dump(mode="json")
+                },
+            )
+        except KeyError:
+            # replay 窗口过期时只保留数据库更新，前端后续列表刷新仍能拿到新标题。
+            return
 
     async def _produce_stream(self, *, stream_id: str, conversation_id: UUID) -> None:
         stream = await conversation_stream_store.get_stream(stream_id)

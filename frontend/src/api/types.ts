@@ -160,6 +160,12 @@ export type StreamMessageEvent =
       }
     }
   | {
+      event: 'conversation.updated'
+      data: StreamEnvelope & {
+        conversation: Conversation
+      }
+    }
+  | {
       event: 'message.created'
       data: StreamEnvelope & {
         user_message?: Message
