@@ -81,6 +81,14 @@ function appendMessageReasoningDelta(messages: Message[], messageId: string, del
   )
 }
 
+function createIdempotencyKey(prefix: string): string {
+  // 前端每次显式生成幂等键，让重复点击/重试优先命中后端复用逻辑而不是重复落树。
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return `${prefix}-${crypto.randomUUID()}`
+  }
+  return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
+}
+
 export function useConversations(
   hasUser: boolean,
   options: UseConversationsOptions = {},
@@ -96,6 +104,8 @@ export function useConversations(
   const setErrorMessage = useOrbitStore((s) => s.setErrorMessage)
   const setActiveView = useOrbitStore((s) => s.setActiveView)
   const setIsCreatingConversationTitle = useOrbitStore((s) => s.setIsCreatingConversationTitle)
+  const markConversationCompletedOffscreen = useOrbitStore((s) => s.markConversationCompletedOffscreen)
+  const clearConversationCompletionNotice = useOrbitStore((s) => s.clearConversationCompletionNotice)
   const queryClient = useQueryClient()
   const [isStreaming, setIsStreaming] = useState(false)
   const activeStreamRef = useRef<{
@@ -106,6 +116,11 @@ export function useConversations(
     controller: AbortController
   } | null>(null)
   const streamCursorRef = useRef<Record<string, { streamId: string | null; lastSeq: number }>>({})
+  const activeConversationIdRef = useRef(activeConversationId)
+
+  useEffect(() => {
+    activeConversationIdRef.current = activeConversationId
+  }, [activeConversationId])
 
   const conversationsQuery = useQuery({
     queryKey: ['conversations'],
@@ -176,7 +191,12 @@ export function useConversations(
   }, [])
 
   const markConversationStreamState = useCallback(
-    (conversationId: string, streamId: string | null, messageId: string | null) => {
+    (
+      conversationId: string,
+      streamId: string | null,
+      messageId: string | null,
+      hasActiveRun?: boolean,
+    ) => {
       queryClient.setQueryData<Conversation[]>(['conversations'], (old = []) =>
         old.map((conversation) =>
           conversation.id === conversationId
@@ -184,6 +204,12 @@ export function useConversations(
                 ...conversation,
                 active_stream_id: streamId,
                 active_stream_message_id: messageId,
+                has_active_run:
+                  typeof hasActiveRun === 'boolean'
+                    ? hasActiveRun
+                    : streamId
+                      ? true
+                      : conversation.has_active_run,
               }
             : conversation,
         ),
@@ -219,6 +245,29 @@ export function useConversations(
 
       if (streamEvent.event === 'conversation.updated') {
         upsertConversation(streamEvent.data.conversation)
+        return
+      }
+
+      if (streamEvent.event === 'conversation.run_state_changed') {
+        // 会话级 has_active_run 只是 UI 缓存；真正停止动画要跟随后端显式广播。
+        queryClient.setQueryData<Conversation[]>(['conversations'], (old = []) =>
+          old.map((conversation) =>
+            conversation.id === streamEvent.data.conversation_id
+              ? {
+                  ...conversation,
+                  has_active_run: streamEvent.data.has_active_run,
+                  active_stream_id: streamEvent.data.has_active_run ? conversation.active_stream_id : null,
+                  active_stream_message_id: streamEvent.data.has_active_run
+                    ? conversation.active_stream_message_id
+                    : null,
+                }
+              : conversation,
+          ),
+        )
+        if (!streamEvent.data.has_active_run) {
+          markConversationStreamState(conversationId, null, null, false)
+          clearStreamCursor(conversationId)
+        }
         return
       }
 
@@ -264,30 +313,55 @@ export function useConversations(
         streamEvent.event === 'message.failed' ||
         streamEvent.event === 'message.cancelled'
       ) {
-        markConversationStreamState(conversationId, null, null)
+        markConversationStreamState(conversationId, null, null, false)
         clearStreamCursor(conversationId)
+        if (
+          streamEvent.event === 'message.completed' &&
+          activeConversationIdRef.current !== conversationId
+        ) {
+          markConversationCompletedOffscreen(conversationId)
+        }
       }
 
       queryClient.setQueryData<Message[]>(['messages', conversationId], (old = []) =>
         upsertMessage(old, streamEvent.data.message),
       )
     },
-    [clearStreamCursor, markConversationStreamState, queryClient, updateStreamCursor, upsertConversation],
+    [
+      clearStreamCursor,
+      markConversationCompletedOffscreen,
+      markConversationStreamState,
+      queryClient,
+      updateStreamCursor,
+      upsertConversation,
+    ],
   )
 
   const selectConversation = useCallback(
     (conversationId: string) => {
       setActiveView('chat')
       setActiveConversationId(conversationId)
+      clearConversationCompletionNotice(conversationId)
       setErrorMessage('')
     },
-    [setActiveView, setActiveConversationId, setErrorMessage],
+    [
+      clearConversationCompletionNotice,
+      setActiveView,
+      setActiveConversationId,
+      setErrorMessage,
+    ],
   )
 
   const streamMessage = useCallback(
     async (conversationId: string, content: string) => {
       await queryClient.cancelQueries({ queryKey: ['messages', conversationId] })
       const previousMessages = queryClient.getQueryData<Message[]>(['messages', conversationId]) || []
+      const conversation = queryClient
+        .getQueryData<Conversation[]>(['conversations'])
+        ?.find((item) => item.id === conversationId)
+      // 普通发送不再默认绑定“唯一活跃流”，而是显式把当前可见 leaf 作为 base message 传给后端。
+      const parentMessageId = conversation?.active_leaf_message_id ?? null
+      const idempotencyKey = createIdempotencyKey('msg')
       const localId = Date.now()
       const controller = new AbortController()
 
@@ -319,7 +393,11 @@ export function useConversations(
       try {
         for await (const streamEvent of conversationApi.streamMessage(
           conversationId,
-          content,
+          {
+            content,
+            parent_message_id: parentMessageId,
+            idempotency_key: idempotencyKey,
+          },
           controller.signal,
         )) {
           applyStreamEvent(conversationId, streamEvent, controller)
@@ -350,7 +428,13 @@ export function useConversations(
 
       try {
         for await (const streamEvent of conversationApi.streamNewConversationMessage(
-          { content, llm_config_id: llmConfigId, chat_mode: 'chat', metadata: {} },
+          {
+            content,
+            llm_config_id: llmConfigId,
+            chat_mode: 'chat',
+            metadata: {},
+            idempotency_key: createIdempotencyKey('new-chat'),
+          },
           controller.signal,
         )) {
           if (streamEvent.event === 'conversation.created') {
@@ -375,50 +459,8 @@ export function useConversations(
             continue
           }
 
-          if (streamEvent.event === 'conversation.updated') {
-            upsertConversation(streamEvent.data.conversation)
-            continue
-          }
-
           if (!conversationId) continue
-
-          if (streamEvent.event === 'message.created') {
-            activeStreamRef.current = {
-              conversationId,
-              messageId: streamEvent.data.assistant_message.id,
-              streamId: streamEvent.data.stream_id,
-              lastSeq: streamEvent.data.seq,
-              controller,
-            }
-            const userMessage = streamEvent.data.user_message
-            if (!userMessage) continue
-            queryClient.setQueryData<Message[]>(['messages', conversationId], () =>
-              replaceLocalExchange(
-                [],
-                userMessage,
-                streamEvent.data.assistant_message,
-              ),
-            )
-            continue
-          }
-
-          if (streamEvent.event === 'message.delta') {
-            queryClient.setQueryData<Message[]>(['messages', conversationId], (old = []) =>
-              appendMessageDelta(old, streamEvent.data.message_id, streamEvent.data.delta),
-            )
-            continue
-          }
-
-          if (streamEvent.event === 'message.reasoning_delta') {
-            queryClient.setQueryData<Message[]>(['messages', conversationId], (old = []) =>
-              appendMessageReasoningDelta(old, streamEvent.data.message_id, streamEvent.data.delta),
-            )
-            continue
-          }
-
-          queryClient.setQueryData<Message[]>(['messages', conversationId], (old = []) =>
-            upsertMessage(old, streamEvent.data.message),
-          )
+          applyStreamEvent(conversationId, streamEvent, controller)
         }
         queryClient.invalidateQueries({ queryKey: ['conversations'] })
       } catch (error) {
@@ -433,13 +475,13 @@ export function useConversations(
       }
     },
     [
+      applyStreamEvent,
       queryClient,
       setActiveConversationId,
       setActiveView,
       setErrorMessage,
       setIsCreatingConversationTitle,
       setPendingConversationLlmConfigId,
-      upsertConversation,
     ],
   )
 
@@ -490,6 +532,7 @@ export function useConversations(
         for await (const streamEvent of conversationApi.streamRegenerateAssistant(
           activeConversationId,
           messageId,
+          createIdempotencyKey('regen'),
           controller.signal,
         )) {
           applyStreamEvent(activeConversationId, streamEvent, controller)
@@ -526,7 +569,10 @@ export function useConversations(
         for await (const streamEvent of conversationApi.streamEditUserMessage(
           activeConversationId,
           messageId,
-          content,
+          {
+            content,
+            idempotency_key: createIdempotencyKey('edit'),
+          },
           controller.signal,
         )) {
           applyStreamEvent(activeConversationId, streamEvent, controller)
@@ -627,31 +673,43 @@ export function useConversations(
 
   useEffect(() => {
     if (!enableStreamResume) return
-    if (!hasUser || !activeConversationId || !activeConversation?.active_stream_id) return
+    if (!hasUser || !activeConversationId || !activeConversation?.has_active_run) return
     if (messagesQuery.isLoading || messagesQuery.isFetching) return
 
+    const visibleLeafMessageId =
+      activeConversation.active_leaf_message_id ?? rawMessages[rawMessages.length - 1]?.id ?? null
+    if (!visibleLeafMessageId) return
+
     const currentStream = activeStreamRef.current
-    if (currentStream?.conversationId === activeConversationId) return
-
-    const savedCursor = streamCursorRef.current[activeConversationId]
-    const lastSeq =
-      savedCursor && savedCursor.streamId === activeConversation.active_stream_id ? savedCursor.lastSeq : 0
-    const controller = new AbortController()
-
-    // 刷新页面或重新进入会话后，如果后端仍有 active stream，就自动从 last_seq 继续追平。
-    activeStreamRef.current = {
-      conversationId: activeConversationId,
-      messageId: activeConversation.active_stream_message_id ?? null,
-      streamId: activeConversation.active_stream_id,
-      lastSeq,
-      controller,
+    if (currentStream?.conversationId === activeConversationId && currentStream.messageId === visibleLeafMessageId) {
+      return
     }
-    setIsStreaming(true)
+
+    const controller = new AbortController()
 
     void (async () => {
       try {
-        for await (const streamEvent of conversationApi.resumeStream(
+        const activeStream = await conversationApi.getMessageActiveStream(
           activeConversationId,
+          visibleLeafMessageId,
+        )
+        const savedCursor = streamCursorRef.current[activeConversationId]
+        const lastSeq =
+          savedCursor && savedCursor.streamId === activeStream.stream_id ? savedCursor.lastSeq : 0
+
+        // 刷新页面、重新进入会话或切 branch 后，先锁定当前 visible branch，再恢复它对应的流。
+        activeStreamRef.current = {
+          conversationId: activeConversationId,
+          messageId: activeStream.assistant_message_id,
+          streamId: activeStream.stream_id,
+          lastSeq,
+          controller,
+        }
+        setIsStreaming(true)
+
+        for await (const streamEvent of conversationApi.resumeStreamById(
+          activeConversationId,
+          activeStream.stream_id,
           lastSeq,
           controller.signal,
         )) {
@@ -662,7 +720,10 @@ export function useConversations(
         if (error instanceof DOMException && error.name === 'AbortError') {
           return
         }
-        setErrorMessage(error instanceof Error ? error.message : 'Resume stream request failed.')
+        const message = error instanceof Error ? error.message : 'Resume stream request failed.'
+        if (message !== '当前分支没有活跃流') {
+          setErrorMessage(message)
+        }
       } finally {
         if (activeStreamRef.current?.controller === controller) {
           activeStreamRef.current = null
@@ -675,8 +736,8 @@ export function useConversations(
       controller.abort()
     }
   }, [
-    activeConversation?.active_stream_id,
-    activeConversation?.active_stream_message_id,
+    activeConversation?.active_leaf_message_id,
+    activeConversation?.has_active_run,
     activeConversationId,
     applyStreamEvent,
     enableStreamResume,
@@ -684,6 +745,7 @@ export function useConversations(
     messagesQuery.isFetching,
     messagesQuery.isLoading,
     queryClient,
+    rawMessages,
     setErrorMessage,
   ])
 

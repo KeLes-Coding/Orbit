@@ -52,6 +52,7 @@ export function SideNav() {
   const setActiveView = useOrbitStore((s) => s.setActiveView)
   const sidebarCollapsed = useOrbitStore((s) => s.sidebarCollapsed)
   const toggleSidebar = useOrbitStore((s) => s.toggleSidebar)
+  const completedOffscreenConversationIds = useOrbitStore((s) => s.completedOffscreenConversationIds)
   const navigate = useNavigate()
 
   const editingThreadId = useOrbitStore((s) => s.editingThreadId)
@@ -272,10 +273,14 @@ export function SideNav() {
           >
             {sortedConversations.map((conversation) => {
               const isPendingTitle = Boolean(conversation.metadata?.pendingTitle)
+              const hasActiveRun = Boolean(conversation.has_active_run)
+              const isActiveConversation = conversation.id === activeConversationId
+              const hasCompletionNotice =
+                !isActiveConversation && Boolean(completedOffscreenConversationIds[conversation.id])
               return (
                 <div
                   key={conversation.id}
-                  className={`thread-item${conversation.id === activeConversationId ? " active" : ""}${isPendingTitle ? " pending" : ""}`}
+                  className={`thread-item${isActiveConversation ? " active" : ""}${isPendingTitle ? " pending" : ""}${hasActiveRun ? " running" : ""}${hasCompletionNotice ? " has-completion-notice" : ""}`}
                 >
                   {editingThreadId === conversation.id ? (
                     <input
@@ -299,7 +304,15 @@ export function SideNav() {
                         onClick={() => handleSelectConversation(conversation.id)}
                         aria-label={formatConversationTitle(conversation)}
                       >
+                        <span className="thread-status-slot" aria-hidden="true">
+                          {hasCompletionNotice && !hasActiveRun && !isPendingTitle && (
+                            <span className="thread-completion-dot" />
+                          )}
+                        </span>
                         <span className="thread-title">{formatConversationTitle(conversation)}</span>
+                        {hasActiveRun && !isPendingTitle && (
+                          <span className="thread-running-indicator" aria-label="Conversation has an active run" />
+                        )}
                       </button>
                       {!isPendingTitle && (
                       <div className="thread-actions">

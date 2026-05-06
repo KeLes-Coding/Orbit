@@ -1,5 +1,6 @@
 import asyncio
 from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any
 from uuid import UUID
@@ -12,6 +13,7 @@ from app.models.conversation import Conversation
 from app.repositories.conversation import ConversationRepository, MessageRepository
 from app.repositories.llm_config import LLMConfigRepository
 from app.schemas.conversation import (
+    ActiveStreamRead,
     BranchSwitchRead,
     ConversationCreate,
     ConversationForkCreate,
@@ -26,6 +28,9 @@ from app.schemas.conversation import (
 from app.services.generation.title import ConversationTitleGenerator
 from app.services.llm_client import LLMClient, LLMClientError
 from app.services.streaming import StreamEventRecord, conversation_stream_store
+
+_base_message_locks: dict[str, asyncio.Lock] = {}
+_base_message_locks_guard = asyncio.Lock()
 
 
 @dataclass(frozen=True)
@@ -48,43 +53,81 @@ class ConversationService:
         self.llm_client = LLMClient()
         self.title_generator = ConversationTitleGenerator()
 
+    @asynccontextmanager
+    async def _acquire_base_message_lock(self, lock_key: str) -> AsyncIterator[None]:
+        # 当前阶段 runtime 仍是单进程内存实现，base_message 写锁也先保持同一粒度。
+        async with _base_message_locks_guard:
+            lock = _base_message_locks.setdefault(lock_key, asyncio.Lock())
+        async with lock:
+            yield
+
     async def start_stream_user_message(
         self,
         *,
         user_id: UUID,
         conversation_id: UUID,
         content: str,
+        parent_message_id: UUID | None = None,
+        idempotency_key: str | None = None,
     ) -> str:
         # 启动流时只负责写入消息和注册 active stream，真正生成放到后台 producer。
-        conversation = await self._get_owned_conversation(
-            user_id=user_id,
+        conversation = await self._get_owned_conversation(user_id=user_id, conversation_id=conversation_id)
+        parent_message = await self._resolve_parent_message(
             conversation_id=conversation_id,
-            for_update=True,
+            conversation=conversation,
+            parent_message_id=parent_message_id,
         )
-        self._ensure_no_active_stream(conversation)
-        llm_config = await self._get_usable_llm_config(user_id=user_id, conversation=conversation)
+        lock_key = self._base_message_lock_key(
+            conversation_id=conversation_id,
+            parent_message_id=parent_message.id if parent_message else None,
+        )
 
-        parent_message = await self._get_active_leaf(conversation)
-        user_message = await self.messages.create_user_message(
-            conversation_id=conversation_id,
-            content=content,
-            parent_message=parent_message,
-        )
-        await self.messages.set_conversation_active_leaf(conversation=conversation, message=user_message)
-        assistant_message = await self.messages.create_assistant_placeholder(
-            conversation_id=conversation_id,
-            llm_config_id=llm_config.id,
-            provider=llm_config.provider,
-            model=llm_config.model,
-            parent_message=user_message,
-        )
-        await self.messages.set_conversation_active_leaf(conversation=conversation, message=assistant_message)
-        stream_id = self._build_stream_id(assistant_message.id)
-        # 会话级 active_stream 指针负责告诉前端“当前有一条可恢复的活跃流”。
-        conversation.active_stream_id = stream_id
-        conversation.active_stream_message_id = assistant_message.id
-        await self.conversations.touch(conversation_id)
-        await self.session.commit()
+        async with self._acquire_base_message_lock(lock_key):
+            conversation = await self._get_owned_conversation(user_id=user_id, conversation_id=conversation_id)
+            parent_message = await self._resolve_parent_message(
+                conversation_id=conversation_id,
+                conversation=conversation,
+                parent_message_id=parent_message.id if parent_message else None,
+            )
+
+            existing_exchange = await self._find_idempotent_exchange(
+                conversation_id=conversation_id,
+                parent_message_id=parent_message.id if parent_message else None,
+                idempotency_key=idempotency_key,
+            )
+            if existing_exchange is not None:
+                _, assistant_message = existing_exchange
+                stream = await conversation_stream_store.get_stream_by_message_id(assistant_message.id)
+                if stream is not None:
+                    return stream.stream_id
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="幂等请求已存在，请刷新当前分支消息状态",
+                )
+
+            llm_config = await self._get_usable_llm_config(user_id=user_id, conversation=conversation)
+            user_message = await self.messages.create_user_message(
+                conversation_id=conversation_id,
+                content=content,
+                parent_message=parent_message,
+                idempotency_key=idempotency_key,
+            )
+            await self.messages.set_conversation_active_leaf(conversation=conversation, message=user_message)
+            assistant_message = await self.messages.create_assistant_placeholder(
+                conversation_id=conversation_id,
+                llm_config_id=llm_config.id,
+                provider=llm_config.provider,
+                model=llm_config.model,
+                parent_message=user_message,
+            )
+            await self.messages.set_conversation_active_leaf(conversation=conversation, message=assistant_message)
+            stream_id = self._build_stream_id(assistant_message.id)
+            # 会话级 active_stream 指针只是兼容字段；真正恢复入口已下沉到 message/stream 级。
+            conversation.active_stream_id = stream_id
+            conversation.active_stream_message_id = assistant_message.id
+            conversation.has_active_run = True
+            await self.conversations.touch(conversation_id)
+            await self.session.commit()
 
         # 先写入 created 事件，再启动 producer；这样首个订阅者一定能先收到占位消息。
         await self._create_runtime_stream(
@@ -140,6 +183,7 @@ class ConversationService:
         user_message = await self.messages.create_user_message(
             conversation_id=conversation.id,
             content=payload.content,
+            idempotency_key=payload.idempotency_key,
         )
         await self.messages.set_conversation_active_leaf(conversation=conversation, message=user_message)
         assistant_message = await self.messages.create_assistant_placeholder(
@@ -153,6 +197,7 @@ class ConversationService:
         stream_id = self._build_stream_id(assistant_message.id)
         conversation.active_stream_id = stream_id
         conversation.active_stream_message_id = assistant_message.id
+        conversation.has_active_run = True
         await self.conversations.touch(conversation.id)
         await self.session.commit()
         await self.session.refresh(conversation)
@@ -196,39 +241,62 @@ class ConversationService:
         user_id: UUID,
         conversation_id: UUID,
         message_id: UUID,
+        idempotency_key: str | None = None,
     ) -> str:
-        conversation = await self._get_owned_conversation(
-            user_id=user_id,
-            conversation_id=conversation_id,
-            for_update=True,
-        )
-        self._ensure_no_active_stream(conversation)
+        conversation = await self._get_owned_conversation(user_id=user_id, conversation_id=conversation_id)
         target = await self.messages.get_by_id(conversation_id=conversation_id, message_id=message_id)
         if target is None or target.role != "assistant" or target.parent_message_id is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="消息不存在")
-        parent = await self.messages.get_by_id(
+        lock_key = self._base_message_lock_key(
             conversation_id=conversation_id,
-            message_id=target.parent_message_id,
+            parent_message_id=target.parent_message_id,
         )
-        if parent is None:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="无法找到重发上下文")
 
-        llm_config = await self._get_usable_llm_config(user_id=user_id, conversation=conversation)
-        assistant_message = await self.messages.create_assistant_placeholder(
-            conversation_id=conversation_id,
-            llm_config_id=llm_config.id,
-            provider=llm_config.provider,
-            model=llm_config.model,
-            parent_message=parent,
-            source_message_id=target.id,
-            revision_type="regenerate",
-        )
-        await self.messages.set_conversation_active_leaf(conversation=conversation, message=assistant_message)
-        stream_id = self._build_stream_id(assistant_message.id)
-        conversation.active_stream_id = stream_id
-        conversation.active_stream_message_id = assistant_message.id
-        await self.conversations.touch(conversation_id)
-        await self.session.commit()
+        async with self._acquire_base_message_lock(lock_key):
+            conversation = await self._get_owned_conversation(user_id=user_id, conversation_id=conversation_id)
+            target = await self.messages.get_by_id(conversation_id=conversation_id, message_id=message_id)
+            if target is None or target.role != "assistant" or target.parent_message_id is None:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="消息不存在")
+            parent = await self.messages.get_by_id_for_update(
+                conversation_id=conversation_id,
+                message_id=target.parent_message_id,
+            )
+            if parent is None:
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="无法找到重发上下文")
+
+            existing_assistant = await self._find_idempotent_regenerate_message(
+                conversation_id=conversation_id,
+                parent_message_id=parent.id,
+                source_message_id=target.id,
+                idempotency_key=idempotency_key,
+            )
+            if existing_assistant is not None:
+                stream = await conversation_stream_store.get_stream_by_message_id(existing_assistant.id)
+                if stream is not None:
+                    return stream.stream_id
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="幂等请求已存在，请刷新当前分支消息状态",
+                )
+
+            llm_config = await self._get_usable_llm_config(user_id=user_id, conversation=conversation)
+            assistant_message = await self.messages.create_assistant_placeholder(
+                conversation_id=conversation_id,
+                llm_config_id=llm_config.id,
+                provider=llm_config.provider,
+                model=llm_config.model,
+                parent_message=parent,
+                source_message_id=target.id,
+                revision_type="regenerate",
+                idempotency_key=idempotency_key,
+            )
+            await self.messages.set_conversation_active_leaf(conversation=conversation, message=assistant_message)
+            stream_id = self._build_stream_id(assistant_message.id)
+            conversation.active_stream_id = stream_id
+            conversation.active_stream_message_id = assistant_message.id
+            conversation.has_active_run = True
+            await self.conversations.touch(conversation_id)
+            await self.session.commit()
 
         await self._create_runtime_stream(
             stream_id=stream_id,
@@ -257,47 +325,68 @@ class ConversationService:
         message_id: UUID,
         payload: MessageEdit,
     ) -> str:
-        conversation = await self._get_owned_conversation(
-            user_id=user_id,
-            conversation_id=conversation_id,
-            for_update=True,
-        )
-        self._ensure_no_active_stream(conversation)
+        conversation = await self._get_owned_conversation(user_id=user_id, conversation_id=conversation_id)
         target = await self.messages.get_by_id(conversation_id=conversation_id, message_id=message_id)
         if target is None or target.role != "user":
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="消息不存在")
+        lock_key = self._base_message_lock_key(
+            conversation_id=conversation_id,
+            parent_message_id=target.parent_message_id,
+        )
 
-        parent = None
-        if target.parent_message_id is not None:
-            parent = await self.messages.get_by_id(
+        async with self._acquire_base_message_lock(lock_key):
+            conversation = await self._get_owned_conversation(user_id=user_id, conversation_id=conversation_id)
+            target = await self.messages.get_by_id(conversation_id=conversation_id, message_id=message_id)
+            if target is None or target.role != "user":
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="消息不存在")
+
+            parent = None
+            if target.parent_message_id is not None:
+                parent = await self.messages.get_by_id_for_update(
+                    conversation_id=conversation_id,
+                    message_id=target.parent_message_id,
+                )
+                if parent is None:
+                    raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="无法找到编辑上下文")
+
+            llm_config = await self._get_usable_llm_config(user_id=user_id, conversation=conversation)
+            existing_exchange = await self._find_idempotent_exchange(
                 conversation_id=conversation_id,
-                message_id=target.parent_message_id,
+                parent_message_id=parent.id if parent else None,
+                idempotency_key=payload.idempotency_key,
             )
-            if parent is None:
-                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="无法找到编辑上下文")
-
-        llm_config = await self._get_usable_llm_config(user_id=user_id, conversation=conversation)
-        user_message = await self.messages.create_user_message(
-            conversation_id=conversation_id,
-            content=payload.content,
-            parent_message=parent,
-            source_message_id=target.id,
-            revision_type="edit",
-        )
-        await self.messages.set_conversation_active_leaf(conversation=conversation, message=user_message)
-        assistant_message = await self.messages.create_assistant_placeholder(
-            conversation_id=conversation_id,
-            llm_config_id=llm_config.id,
-            provider=llm_config.provider,
-            model=llm_config.model,
-            parent_message=user_message,
-        )
-        await self.messages.set_conversation_active_leaf(conversation=conversation, message=assistant_message)
-        stream_id = self._build_stream_id(assistant_message.id)
-        conversation.active_stream_id = stream_id
-        conversation.active_stream_message_id = assistant_message.id
-        await self.conversations.touch(conversation_id)
-        await self.session.commit()
+            if existing_exchange is not None:
+                _, assistant_message = existing_exchange
+                stream = await conversation_stream_store.get_stream_by_message_id(assistant_message.id)
+                if stream is not None:
+                    return stream.stream_id
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="幂等请求已存在，请刷新当前分支消息状态",
+                )
+            user_message = await self.messages.create_user_message(
+                conversation_id=conversation_id,
+                content=payload.content,
+                parent_message=parent,
+                source_message_id=target.id,
+                revision_type="edit",
+                idempotency_key=payload.idempotency_key,
+            )
+            await self.messages.set_conversation_active_leaf(conversation=conversation, message=user_message)
+            assistant_message = await self.messages.create_assistant_placeholder(
+                conversation_id=conversation_id,
+                llm_config_id=llm_config.id,
+                provider=llm_config.provider,
+                model=llm_config.model,
+                parent_message=user_message,
+            )
+            await self.messages.set_conversation_active_leaf(conversation=conversation, message=assistant_message)
+            stream_id = self._build_stream_id(assistant_message.id)
+            conversation.active_stream_id = stream_id
+            conversation.active_stream_message_id = assistant_message.id
+            conversation.has_active_run = True
+            await self.conversations.touch(conversation_id)
+            await self.session.commit()
 
         await self._create_runtime_stream(
             stream_id=stream_id,
@@ -361,6 +450,19 @@ class ConversationService:
 
         async for record in conversation_stream_store.subscribe(stream_id, last_seq=last_seq):
             yield self._to_stream_event(record)
+
+    async def get_message_active_stream(
+        self,
+        *,
+        user_id: UUID,
+        conversation_id: UUID,
+        message_id: UUID,
+    ) -> ActiveStreamRead:
+        await self._get_owned_conversation(user_id=user_id, conversation_id=conversation_id)
+        return await self._resolve_message_active_stream(
+            conversation_id=conversation_id,
+            message_id=message_id,
+        )
 
     async def list_conversations(self, user_id: UUID) -> list[ConversationRead]:
         # 会话列表只返回未归档会话，并按 updated_at 倒序排列。
@@ -451,37 +553,64 @@ class ConversationService:
         user_id: UUID,
         conversation_id: UUID,
         content: str,
+        parent_message_id: UUID | None = None,
+        idempotency_key: str | None = None,
     ) -> MessageExchangeRead:
         # 本接口完成“一问一答”：写入用户消息、创建 assistant 占位、调用模型并落库结果。
-        conversation = await self._get_owned_conversation(
-            user_id=user_id,
+        conversation = await self._get_owned_conversation(user_id=user_id, conversation_id=conversation_id)
+        parent_message = await self._resolve_parent_message(
             conversation_id=conversation_id,
-            for_update=True,
+            conversation=conversation,
+            parent_message_id=parent_message_id,
         )
-        llm_config = await self._get_usable_llm_config(user_id=user_id, conversation=conversation)
+        lock_key = self._base_message_lock_key(
+            conversation_id=conversation_id,
+            parent_message_id=parent_message.id if parent_message else None,
+        )
 
-        parent_message = await self._get_active_leaf(conversation)
-        user_message = await self.messages.create_user_message(
-            conversation_id=conversation_id,
-            content=content,
-            parent_message=parent_message,
-        )
-        await self.messages.set_conversation_active_leaf(conversation=conversation, message=user_message)
-        history_messages = await self.messages.list_path_to_message(
-            conversation_id=conversation_id,
-            message_id=user_message.id,
-        )
-        assistant_message = await self.messages.create_assistant_placeholder(
-            conversation_id=conversation_id,
-            llm_config_id=llm_config.id,
-            provider=llm_config.provider,
-            model=llm_config.model,
-            parent_message=user_message,
-        )
-        await self.messages.set_conversation_active_leaf(conversation=conversation, message=assistant_message)
-        # 先提交占位消息，长时间模型调用时数据库里也能看到 streaming 状态。
-        await self.conversations.touch(conversation_id)
-        await self.session.commit()
+        async with self._acquire_base_message_lock(lock_key):
+            conversation = await self._get_owned_conversation(user_id=user_id, conversation_id=conversation_id)
+            parent_message = await self._resolve_parent_message(
+                conversation_id=conversation_id,
+                conversation=conversation,
+                parent_message_id=parent_message.id if parent_message else None,
+            )
+            existing_exchange = await self._find_idempotent_exchange(
+                conversation_id=conversation_id,
+                parent_message_id=parent_message.id if parent_message else None,
+                idempotency_key=idempotency_key,
+            )
+            if existing_exchange is not None:
+                user_message, assistant_message = existing_exchange
+                return MessageExchangeRead(
+                    user_message=await self._message_read(user_message),
+                    assistant_message=await self._message_read(assistant_message),
+                )
+
+            llm_config = await self._get_usable_llm_config(user_id=user_id, conversation=conversation)
+            user_message = await self.messages.create_user_message(
+                conversation_id=conversation_id,
+                content=content,
+                parent_message=parent_message,
+                idempotency_key=idempotency_key,
+            )
+            await self.messages.set_conversation_active_leaf(conversation=conversation, message=user_message)
+            history_messages = await self.messages.list_path_to_message(
+                conversation_id=conversation_id,
+                message_id=user_message.id,
+            )
+            assistant_message = await self.messages.create_assistant_placeholder(
+                conversation_id=conversation_id,
+                llm_config_id=llm_config.id,
+                provider=llm_config.provider,
+                model=llm_config.model,
+                parent_message=user_message,
+            )
+            await self.messages.set_conversation_active_leaf(conversation=conversation, message=assistant_message)
+            conversation.has_active_run = True
+            # 先提交占位消息，长时间模型调用时数据库里也能看到 streaming 状态。
+            await self.conversations.touch(conversation_id)
+            await self.session.commit()
 
         try:
             completion = await self.llm_client.generate(
@@ -494,6 +623,7 @@ class ConversationService:
                 message=assistant_message,
                 error=str(exc),
             )
+            await self.conversations.recompute_has_active_run(conversation_id)
             await self.conversations.touch(conversation_id)
             await self.session.commit()
             return MessageExchangeRead(
@@ -508,6 +638,7 @@ class ConversationService:
             token_usage=completion.token_usage,
             response_metadata=completion.response_metadata,
         )
+        await self.conversations.recompute_has_active_run(conversation_id)
         await self.conversations.touch(conversation_id)
         await self.session.commit()
         return MessageExchangeRead(
@@ -521,41 +652,59 @@ class ConversationService:
         user_id: UUID,
         conversation_id: UUID,
         message_id: UUID,
+        idempotency_key: str | None = None,
     ) -> MessageRead:
         # Regenerate 不覆盖旧 assistant，而是在同一个 user parent 下创建 assistant sibling。
-        conversation = await self._get_owned_conversation(
-            user_id=user_id,
-            conversation_id=conversation_id,
-            for_update=True,
-        )
+        conversation = await self._get_owned_conversation(user_id=user_id, conversation_id=conversation_id)
         target = await self.messages.get_by_id(conversation_id=conversation_id, message_id=message_id)
         if target is None or target.role != "assistant" or target.parent_message_id is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="消息不存在")
-        parent = await self.messages.get_by_id(
+        lock_key = self._base_message_lock_key(
             conversation_id=conversation_id,
-            message_id=target.parent_message_id,
+            parent_message_id=target.parent_message_id,
         )
-        if parent is None:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="无法找到重发上下文")
 
-        llm_config = await self._get_usable_llm_config(user_id=user_id, conversation=conversation)
-        history_messages = await self.messages.list_path_to_message(
-            conversation_id=conversation_id,
-            message_id=parent.id,
-        )
-        # 新 assistant 创建时会把 parent.active_child 切到新版本。
-        assistant_message = await self.messages.create_assistant_placeholder(
-            conversation_id=conversation_id,
-            llm_config_id=llm_config.id,
-            provider=llm_config.provider,
-            model=llm_config.model,
-            parent_message=parent,
-            source_message_id=target.id,
-            revision_type="regenerate",
-        )
-        await self.messages.set_conversation_active_leaf(conversation=conversation, message=assistant_message)
-        await self.conversations.touch(conversation_id)
-        await self.session.commit()
+        async with self._acquire_base_message_lock(lock_key):
+            conversation = await self._get_owned_conversation(user_id=user_id, conversation_id=conversation_id)
+            target = await self.messages.get_by_id(conversation_id=conversation_id, message_id=message_id)
+            if target is None or target.role != "assistant" or target.parent_message_id is None:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="消息不存在")
+            parent = await self.messages.get_by_id_for_update(
+                conversation_id=conversation_id,
+                message_id=target.parent_message_id,
+            )
+            if parent is None:
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="无法找到重发上下文")
+
+            existing_assistant = await self._find_idempotent_regenerate_message(
+                conversation_id=conversation_id,
+                parent_message_id=parent.id,
+                source_message_id=target.id,
+                idempotency_key=idempotency_key,
+            )
+            if existing_assistant is not None:
+                return await self._message_read(existing_assistant)
+
+            llm_config = await self._get_usable_llm_config(user_id=user_id, conversation=conversation)
+            history_messages = await self.messages.list_path_to_message(
+                conversation_id=conversation_id,
+                message_id=parent.id,
+            )
+            # 新 assistant 创建时会把 parent.active_child 切到新版本。
+            assistant_message = await self.messages.create_assistant_placeholder(
+                conversation_id=conversation_id,
+                llm_config_id=llm_config.id,
+                provider=llm_config.provider,
+                model=llm_config.model,
+                parent_message=parent,
+                source_message_id=target.id,
+                revision_type="regenerate",
+                idempotency_key=idempotency_key,
+            )
+            await self.messages.set_conversation_active_leaf(conversation=conversation, message=assistant_message)
+            conversation.has_active_run = True
+            await self.conversations.touch(conversation_id)
+            await self.session.commit()
 
         try:
             completion = await self.llm_client.generate(
@@ -568,6 +717,7 @@ class ConversationService:
                 message=assistant_message,
                 error=str(exc),
             )
+            await self.conversations.recompute_has_active_run(conversation_id)
             await self.conversations.touch(conversation_id)
             await self.session.commit()
             return await self._message_read(assistant_message)
@@ -579,6 +729,7 @@ class ConversationService:
             token_usage=completion.token_usage,
             response_metadata=completion.response_metadata,
         )
+        await self.conversations.recompute_has_active_run(conversation_id)
         await self.conversations.touch(conversation_id)
         await self.session.commit()
         return await self._message_read(assistant_message)
@@ -592,48 +743,67 @@ class ConversationService:
         payload: MessageEdit,
     ) -> MessageExchangeRead:
         # Edit 不修改旧 user，而是在原 parent 下创建新的 user sibling。
-        conversation = await self._get_owned_conversation(
-            user_id=user_id,
-            conversation_id=conversation_id,
-            for_update=True,
-        )
+        conversation = await self._get_owned_conversation(user_id=user_id, conversation_id=conversation_id)
         target = await self.messages.get_by_id(conversation_id=conversation_id, message_id=message_id)
         if target is None or target.role != "user":
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="消息不存在")
+        lock_key = self._base_message_lock_key(
+            conversation_id=conversation_id,
+            parent_message_id=target.parent_message_id,
+        )
 
-        parent = None
-        if target.parent_message_id is not None:
-            parent = await self.messages.get_by_id(
+        async with self._acquire_base_message_lock(lock_key):
+            conversation = await self._get_owned_conversation(user_id=user_id, conversation_id=conversation_id)
+            target = await self.messages.get_by_id(conversation_id=conversation_id, message_id=message_id)
+            if target is None or target.role != "user":
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="消息不存在")
+
+            parent = None
+            if target.parent_message_id is not None:
+                parent = await self.messages.get_by_id_for_update(
+                    conversation_id=conversation_id,
+                    message_id=target.parent_message_id,
+                )
+                if parent is None:
+                    raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="无法找到编辑上下文")
+
+            llm_config = await self._get_usable_llm_config(user_id=user_id, conversation=conversation)
+            existing_exchange = await self._find_idempotent_exchange(
                 conversation_id=conversation_id,
-                message_id=target.parent_message_id,
+                parent_message_id=parent.id if parent else None,
+                idempotency_key=payload.idempotency_key,
             )
-            if parent is None:
-                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="无法找到编辑上下文")
-
-        llm_config = await self._get_usable_llm_config(user_id=user_id, conversation=conversation)
-        user_message = await self.messages.create_user_message(
-            conversation_id=conversation_id,
-            content=payload.content,
-            parent_message=parent,
-            source_message_id=target.id,
-            revision_type="edit",
-        )
-        await self.messages.set_conversation_active_leaf(conversation=conversation, message=user_message)
-        history_messages = await self.messages.list_path_to_message(
-            conversation_id=conversation_id,
-            message_id=user_message.id,
-        )
-        # 编辑后的 user 会继续生成一个新的 assistant child，形成新的 visible path。
-        assistant_message = await self.messages.create_assistant_placeholder(
-            conversation_id=conversation_id,
-            llm_config_id=llm_config.id,
-            provider=llm_config.provider,
-            model=llm_config.model,
-            parent_message=user_message,
-        )
-        await self.messages.set_conversation_active_leaf(conversation=conversation, message=assistant_message)
-        await self.conversations.touch(conversation_id)
-        await self.session.commit()
+            if existing_exchange is not None:
+                user_message, assistant_message = existing_exchange
+                return MessageExchangeRead(
+                    user_message=await self._message_read(user_message),
+                    assistant_message=await self._message_read(assistant_message),
+                )
+            user_message = await self.messages.create_user_message(
+                conversation_id=conversation_id,
+                content=payload.content,
+                parent_message=parent,
+                source_message_id=target.id,
+                revision_type="edit",
+                idempotency_key=payload.idempotency_key,
+            )
+            await self.messages.set_conversation_active_leaf(conversation=conversation, message=user_message)
+            history_messages = await self.messages.list_path_to_message(
+                conversation_id=conversation_id,
+                message_id=user_message.id,
+            )
+            # 编辑后的 user 会继续生成一个新的 assistant child，形成新的 visible path。
+            assistant_message = await self.messages.create_assistant_placeholder(
+                conversation_id=conversation_id,
+                llm_config_id=llm_config.id,
+                provider=llm_config.provider,
+                model=llm_config.model,
+                parent_message=user_message,
+            )
+            await self.messages.set_conversation_active_leaf(conversation=conversation, message=assistant_message)
+            conversation.has_active_run = True
+            await self.conversations.touch(conversation_id)
+            await self.session.commit()
 
         try:
             completion = await self.llm_client.generate(
@@ -646,6 +816,7 @@ class ConversationService:
                 message=assistant_message,
                 error=str(exc),
             )
+            await self.conversations.recompute_has_active_run(conversation_id)
             await self.conversations.touch(conversation_id)
             await self.session.commit()
             return MessageExchangeRead(
@@ -660,6 +831,7 @@ class ConversationService:
             token_usage=completion.token_usage,
             response_metadata=completion.response_metadata,
         )
+        await self.conversations.recompute_has_active_run(conversation_id)
         await self.conversations.touch(conversation_id)
         await self.session.commit()
         return MessageExchangeRead(
@@ -673,12 +845,14 @@ class ConversationService:
         user_id: UUID,
         conversation_id: UUID,
         message_id: UUID,
+        idempotency_key: str | None = None,
     ) -> AsyncIterator[ConversationStreamEvent]:
         # Regenerate 的产品语义是重发 assistant，因此也必须走流式生成。
         stream_id = await self.start_stream_regenerate_assistant(
             user_id=user_id,
             conversation_id=conversation_id,
             message_id=message_id,
+            idempotency_key=idempotency_key,
         )
         async for event in self.subscribe_stream(
             user_id=user_id,
@@ -870,6 +1044,7 @@ class ConversationService:
             token_usage=message.token_usage,
             response_metadata=message.response_metadata,
         )
+        await self.conversations.recompute_has_active_run(conversation_id)
         await self.conversations.touch(conversation_id)
         await self.session.commit()
         return await self._message_read(message)
@@ -902,6 +1077,114 @@ class ConversationService:
             return None
         return message
 
+    async def _resolve_parent_message(
+        self,
+        *,
+        conversation_id: UUID,
+        conversation: Conversation,
+        parent_message_id: UUID | None,
+    ):
+        # 并行阶段允许显式指定 base message；未传时暂时兼容旧 active_leaf 语义。
+        if parent_message_id is None:
+            return await self._get_active_leaf(conversation)
+
+        parent_message = await self.messages.get_by_id(
+            conversation_id=conversation_id,
+            message_id=parent_message_id,
+        )
+        if parent_message is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="父消息不存在")
+        return parent_message
+
+    def _base_message_lock_key(self, *, conversation_id: UUID, parent_message_id: UUID | None) -> str:
+        if parent_message_id is None:
+            return f"conversation:{conversation_id}:root"
+        return f"message:{parent_message_id}"
+
+    async def _find_idempotent_exchange(
+        self,
+        *,
+        conversation_id: UUID,
+        parent_message_id: UUID | None,
+        idempotency_key: str | None,
+    ) -> tuple[Any, Any] | None:
+        if not idempotency_key:
+            return None
+
+        user_message = await self.messages.find_user_message_by_idempotency(
+            conversation_id=conversation_id,
+            parent_message_id=parent_message_id,
+            idempotency_key=idempotency_key,
+        )
+        if user_message is None:
+            return None
+
+        assistant_message = None
+        if user_message.active_child_message_id is not None:
+            assistant_message = await self.messages.get_by_id(
+                conversation_id=conversation_id,
+                message_id=user_message.active_child_message_id,
+            )
+        if assistant_message is None or assistant_message.parent_message_id != user_message.id:
+            assistant_message = await self.messages.get_first_assistant_child(
+                conversation_id=conversation_id,
+                parent_message_id=user_message.id,
+            )
+        if assistant_message is None:
+            return None
+        return user_message, assistant_message
+
+    async def _find_idempotent_regenerate_message(
+        self,
+        *,
+        conversation_id: UUID,
+        parent_message_id: UUID,
+        source_message_id: UUID,
+        idempotency_key: str | None,
+    ):
+        # regenerate 的幂等作用域不是“任意 assistant child”，
+        # 而是“同一个 parent 下、针对同一个 source assistant 的同一次重发”。
+        if not idempotency_key:
+            return None
+        return await self.messages.find_assistant_message_by_idempotency(
+            conversation_id=conversation_id,
+            parent_message_id=parent_message_id,
+            source_message_id=source_message_id,
+            revision_type="regenerate",
+            idempotency_key=idempotency_key,
+        )
+
+    async def _resolve_message_active_stream(
+        self,
+        *,
+        conversation_id: UUID,
+        message_id: UUID,
+    ) -> ActiveStreamRead:
+        message = await self.messages.get_by_id(conversation_id=conversation_id, message_id=message_id)
+        if message is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="消息不存在")
+
+        candidate = message
+        if message.role != "assistant":
+            candidate = await self.messages.resolve_active_leaf_from(
+                conversation_id=conversation_id,
+                message=message,
+            )
+
+        if candidate.role != "assistant" or candidate.status != "streaming":
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="当前分支没有活跃流")
+
+        stream = await conversation_stream_store.get_stream_by_message_id(candidate.id)
+        if stream is None or stream.conversation_id != conversation_id:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="流不存在或已过期")
+
+        return ActiveStreamRead(
+            conversation_id=conversation_id,
+            message_id=message_id,
+            assistant_message_id=candidate.id,
+            stream_id=stream.stream_id,
+        )
+
     async def _get_usable_llm_config(self, *, user_id: UUID, conversation: Conversation):
         llm_config_id = conversation.llm_config_id or await self._get_default_llm_config_id(user_id)
         if llm_config_id is None:
@@ -932,11 +1215,6 @@ class ConversationService:
             if config.is_default and config.is_enabled:
                 return config.id
         return None
-
-    def _ensure_no_active_stream(self, conversation: Conversation) -> None:
-        # 当前阶段同一会话只允许一条 active stream，避免多条回复同时争用 active_leaf。
-        if conversation.active_stream_id:
-            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="当前会话已有活跃流")
 
     def _build_stream_id(self, message_id: UUID) -> str:
         # 先复用 assistant message_id 生成稳定 stream_id，后续如引入 stream attempt 再扩展。
@@ -1328,6 +1606,29 @@ class ConversationService:
             retention_seconds=self.STREAM_RETENTION_SECONDS,
         )
 
+    async def _emit_run_state_changed_if_needed(
+        self,
+        *,
+        stream_id: str,
+        conversation_id: UUID,
+        previous_has_active_run: bool,
+        has_active_run: bool,
+    ) -> None:
+        # 只有 run_state 真正发生跳变时才发事件，避免前端在并行流场景下反复收到噪音广播。
+        if previous_has_active_run == has_active_run:
+            return
+        try:
+            await conversation_stream_store.append_event(
+                stream_id,
+                event="conversation.run_state_changed",
+                data={
+                    "conversation_id": str(conversation_id),
+                    "has_active_run": has_active_run,
+                },
+            )
+        except KeyError:
+            return
+
     async def _finalize_stream_conversation_state(
         self,
         *,
@@ -1336,11 +1637,19 @@ class ConversationService:
         message_id: UUID,
     ) -> None:
         # 只在当前 active_stream 仍指向本条流时清空，避免误伤更晚启动的新流。
+        previous_has_active_run = bool(conversation.has_active_run)
         if conversation.active_stream_id == stream_id and conversation.active_stream_message_id == message_id:
             conversation.active_stream_id = None
             conversation.active_stream_message_id = None
+        has_active_run = await self.conversations.recompute_has_active_run(conversation.id)
         await self.conversations.touch(conversation.id)
         await self.session.commit()
+        await self._emit_run_state_changed_if_needed(
+            stream_id=stream_id,
+            conversation_id=conversation.id,
+            previous_has_active_run=previous_has_active_run,
+            has_active_run=has_active_run,
+        )
 
     def _to_stream_event(self, record: StreamEventRecord) -> ConversationStreamEvent:
         # 对外统一补齐 stream_id / seq / event_id，前端恢复时只需要保存 last_seq。

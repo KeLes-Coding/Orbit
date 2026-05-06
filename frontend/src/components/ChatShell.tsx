@@ -206,6 +206,8 @@ export function ChatShell() {
         ) : (
           <MessageList
             messages={messages}
+            currentLeafMessageId={activeConversation?.active_leaf_message_id ?? null}
+            hasActiveRun={activeConversation?.has_active_run ?? false}
             isSending={isSending}
             onRegenerate={regenerateAssistant}
             onEdit={handleEditMessage}

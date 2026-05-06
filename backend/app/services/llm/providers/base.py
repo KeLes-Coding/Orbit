@@ -149,7 +149,7 @@ class BaseLLMProvider(ABC):
     def supports_native_stream(self, config: LLMRuntimeConfig) -> bool:
         return False
 
-    async def stream_chat(
+    def stream_chat(
         self,
         *,
         config: LLMRuntimeConfig,

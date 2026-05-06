@@ -33,6 +33,8 @@ function ChevronRightIcon() {
 
 interface MessageBubbleProps {
   message: Message & { paragraphs?: string[] }
+  isCurrentBranchLeaf?: boolean
+  isCurrentBranchRunning?: boolean
   onRetry?: (messageId: string) => void
   onRegenerate?: (messageId: string) => void
   onEdit?: (messageId: string, currentContent: string) => void
@@ -72,6 +74,8 @@ function MessageAction({
 
 export const MessageBubble = memo(function MessageBubble({
   message,
+  isCurrentBranchLeaf,
+  isCurrentBranchRunning,
   onRetry,
   onRegenerate,
   onEdit,
@@ -153,6 +157,18 @@ export const MessageBubble = memo(function MessageBubble({
     </div>
   ) : null
 
+  // 当前可见 branch 的 leaf 节点单独打标，方便用户区分“这条正在生成”而不是只看会话级动画。
+  const branchStateBadge =
+    isCurrentBranchLeaf && isCurrentBranchRunning ? (
+      <span className="branch-state-badge" aria-label="Current branch is running">
+        Live branch
+      </span>
+    ) : isCurrentBranchLeaf ? (
+      <span className="branch-state-badge idle" aria-label="Current branch leaf">
+        Current leaf
+      </span>
+    ) : null
+
   return (
     <article
       className={`message-row ${message.role}${isStreaming ? " pending" : ""}${isFailed ? " failed" : ""}`}
@@ -167,6 +183,7 @@ export const MessageBubble = memo(function MessageBubble({
         <>
           <div className="message-user-wrap">
             <div className="user-bubble">{message.content}</div>
+            {branchStateBadge && <div className="branch-state-row user">{branchStateBadge}</div>}
             <div className="message-toolbar user-tools" aria-label="Message actions">
               <MessageAction label="Copy" onClick={handleCopy}>
                 <Copy />
@@ -194,6 +211,7 @@ export const MessageBubble = memo(function MessageBubble({
         </>
       ) : (
         <div className="assistant-copy">
+          {branchStateBadge && <div className="branch-state-row">{branchStateBadge}</div>}
           {hasReasoning && (
             <section
               className={`reasoning-block${isReasoningOpen ? " open" : ""}`}

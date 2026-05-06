@@ -1,11 +1,13 @@
 import apiClient, { API_BASE_URL, clearStoredToken, getStoredToken } from './client'
 import type {
+  ActiveStreamResponse,
   Conversation,
   BranchSwitchResponse,
   CreateConversationMessagePayload,
   CreateConversationPayload,
   ForkConversationResponse,
   Message,
+  SendMessagePayload,
   SendMessageResponse,
   StreamMessageEvent,
   UpdateConversationPayload,
@@ -142,20 +144,20 @@ export const conversationApi = {
     return apiClient.get(`/conversations/${conversationId}/messages`)
   },
 
-  sendMessage(conversationId: string, content: string): Promise<SendMessageResponse> {
-    return apiClient.post(`/conversations/${conversationId}/messages`, { content })
+  sendMessage(conversationId: string, payload: SendMessagePayload): Promise<SendMessageResponse> {
+    return apiClient.post(`/conversations/${conversationId}/messages`, payload)
   },
 
   async *streamMessage(
     conversationId: string,
-    content: string,
+    payload: SendMessagePayload,
     signal?: AbortSignal,
   ): AsyncGenerator<StreamMessageEvent> {
     // 流式接口不能走 axios 的 JSON 解析，直接使用 fetch 读取 SSE 字节流。
     yield* fetchSse(`/conversations/${conversationId}/messages/stream`, {
       method: 'POST',
       headers: createHeaders(),
-      body: JSON.stringify({ content }),
+      body: JSON.stringify(payload),
       signal,
     })
   },
@@ -163,11 +165,13 @@ export const conversationApi = {
   async *streamRegenerateAssistant(
     conversationId: string,
     messageId: string,
+    idempotencyKey?: string | null,
     signal?: AbortSignal,
   ): AsyncGenerator<StreamMessageEvent> {
     yield* fetchSse(`/conversations/${conversationId}/messages/${messageId}/regenerate/stream`, {
       method: 'POST',
       headers: createHeaders(),
+      body: JSON.stringify({ idempotency_key: idempotencyKey ?? null }),
       signal,
     })
   },
@@ -175,13 +179,13 @@ export const conversationApi = {
   async *streamEditUserMessage(
     conversationId: string,
     messageId: string,
-    content: string,
+    payload: SendMessagePayload,
     signal?: AbortSignal,
   ): AsyncGenerator<StreamMessageEvent> {
     yield* fetchSse(`/conversations/${conversationId}/messages/${messageId}/edit/stream`, {
       method: 'POST',
       headers: createHeaders(),
-      body: JSON.stringify({ content }),
+      body: JSON.stringify(payload),
       signal,
     })
   },
@@ -198,14 +202,20 @@ export const conversationApi = {
     })
   },
 
-  async *resumeStream(
+  getMessageActiveStream(conversationId: string, messageId: string): Promise<ActiveStreamResponse> {
+    // 先按当前可见 branch 的 message 查活跃流，再按 stream_id 做精确恢复。
+    return apiClient.get(`/conversations/${conversationId}/messages/${messageId}/active-stream`)
+  },
+
+  async *resumeStreamById(
     conversationId: string,
+    streamId: string,
     lastSeq: number,
     signal?: AbortSignal,
   ): AsyncGenerator<StreamMessageEvent> {
-    // 恢复订阅接口只关心会话和 last_seq；具体 active stream 由后端按会话指针解析。
+    // replay/live 订阅已经下沉到具体 stream_id，避免并行 branch 互相串流。
     const query = new URLSearchParams({ last_seq: String(lastSeq) })
-    yield* fetchSse(`/conversations/${conversationId}/stream?${query.toString()}`, {
+    yield* fetchSse(`/conversations/${conversationId}/streams/${streamId}?${query.toString()}`, {
       method: 'GET',
       headers: createHeaders(),
       signal,

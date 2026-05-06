@@ -33,6 +33,8 @@ class ConversationRead(BaseModel):
     summary: str | None
     summary_updated_at: datetime | None
     summary_message_count: int
+    has_active_run: bool
+    next_message_sequence_no: int
     active_leaf_message_id: UUID | None
     active_stream_id: str | None
     active_stream_message_id: UUID | None
@@ -47,11 +49,20 @@ class ConversationRead(BaseModel):
 class MessageCreate(BaseModel):
     # 当前阶段只接收纯文本用户消息，多模态内容后续放入 content_parts。
     content: str = Field(min_length=1)
+    # 并行阶段允许显式指定 base message；旧前端未传时仍可回退到 active_leaf。
+    parent_message_id: UUID | None = None
+    idempotency_key: str | None = Field(default=None, min_length=1, max_length=120)
 
 
 class MessageEdit(BaseModel):
     # 编辑历史 user 消息时创建新的 sibling user message。
     content: str = Field(min_length=1)
+    idempotency_key: str | None = Field(default=None, min_length=1, max_length=120)
+
+
+class MessageRegenerate(BaseModel):
+    # 重发 assistant 时允许前端传幂等键，避免重复点击生成多个 sibling。
+    idempotency_key: str | None = Field(default=None, min_length=1, max_length=120)
 
 
 class ConversationForkCreate(BaseModel):
@@ -101,6 +112,14 @@ class MessageExchangeRead(BaseModel):
     # 发送消息接口返回本轮写入的 user 消息和 assistant 生成结果。
     user_message: MessageRead
     assistant_message: MessageRead
+
+
+class ActiveStreamRead(BaseModel):
+    # branch 级恢复入口：先查当前 message 所关联的活跃流，再按 stream_id 订阅。
+    conversation_id: UUID
+    message_id: UUID
+    assistant_message_id: UUID
+    stream_id: str
 
 
 class BranchSwitchRead(BaseModel):

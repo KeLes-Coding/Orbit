@@ -39,6 +39,7 @@ interface OrbitStore {
   editingThreadId: string | null
   editingTitle: string
   sidebarCollapsed: boolean
+  completedOffscreenConversationIds: Record<string, boolean>
 
   toggleTheme: () => void
   toggleSidebar: () => void
@@ -59,6 +60,8 @@ interface OrbitStore {
   setPendingConversationLlmConfigId: (id: string | null) => void
   setEditingThreadId: (id: string | null) => void
   setEditingTitle: (title: string) => void
+  markConversationCompletedOffscreen: (id: string) => void
+  clearConversationCompletionNotice: (id: string) => void
   logout: () => void
 }
 
@@ -82,6 +85,7 @@ export const useOrbitStore = create<OrbitStore>((set) => ({
   editingThreadId: null,
   editingTitle: '',
   sidebarCollapsed: getInitialSidebarCollapsed(),
+  completedOffscreenConversationIds: {},
 
   toggleTheme: () =>
     set((state) => {
@@ -120,6 +124,19 @@ export const useOrbitStore = create<OrbitStore>((set) => ({
   setPendingConversationLlmConfigId: (id) => set({ pendingConversationLlmConfigId: id }),
   setEditingThreadId: (id) => set({ editingThreadId: id }),
   setEditingTitle: (title) => set({ editingTitle: title }),
+  markConversationCompletedOffscreen: (id) =>
+    set((state) => ({
+      completedOffscreenConversationIds: {
+        ...state.completedOffscreenConversationIds,
+        [id]: true,
+      },
+    })),
+  clearConversationCompletionNotice: (id) =>
+    set((state) => {
+      if (!state.completedOffscreenConversationIds[id]) return state
+      const { [id]: _removed, ...remaining } = state.completedOffscreenConversationIds
+      return { completedOffscreenConversationIds: remaining }
+    }),
 
   logout: () =>
     set({
@@ -129,6 +146,7 @@ export const useOrbitStore = create<OrbitStore>((set) => ({
       isCreatingConversationTitle: false,
       editingThreadId: null,
       editingTitle: '',
+      completedOffscreenConversationIds: {},
       authForm: { ...defaultAuthForm },
       activeView: 'chat',
     }),

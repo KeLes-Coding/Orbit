@@ -1,10 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from "react"
+import type { CSSProperties } from "react"
 import { ArrowDown } from "lucide-react"
 import type { Message } from "@/api/types"
 import { MessageBubble } from "./MessageBubble"
 
 interface MessageListProps {
   messages: (Message & { paragraphs?: string[] })[]
+  currentLeafMessageId?: string | null
+  hasActiveRun?: boolean
   onRetry?: (messageId: string) => void
   onRegenerate?: (messageId: string) => void
   onEdit?: (messageId: string, currentContent: string) => void
@@ -15,6 +18,8 @@ interface MessageListProps {
 
 export function MessageList({
   messages,
+  currentLeafMessageId,
+  hasActiveRun,
   onRetry,
   onRegenerate,
   onEdit,
@@ -39,6 +44,8 @@ export function MessageList({
         .map((message, index) => ({
           id: message.id,
           index: index + 1,
+          siblingIndex: message.sibling_index ?? 1,
+          siblingCount: message.sibling_count ?? 1,
           preview: (message.content || "New message").replace(/\s+/g, " ").trim().slice(0, 150),
         })),
     [messages],
@@ -192,7 +199,11 @@ export function MessageList({
   return (
     <>
       {rounds.length > 1 && (
-        <nav className="message-jump-nav" aria-label="Conversation rounds">
+        <nav
+          className="message-jump-nav"
+          aria-label="Conversation rounds"
+          style={{ "--message-jump-count": rounds.length } as CSSProperties}
+        >
           <span className="message-jump-rail" aria-hidden="true" />
           {rounds.map((round) => (
             <button
@@ -203,6 +214,11 @@ export function MessageList({
               onClick={() => scrollToRound(round.id)}
             >
               <span className="message-jump-index">{round.index}</span>
+              {round.siblingCount > 1 && (
+                <span className="message-jump-branch-count">
+                  {round.siblingIndex}/{round.siblingCount}
+                </span>
+              )}
               <span className="message-jump-preview">{round.preview}</span>
             </button>
           ))}
@@ -237,6 +253,8 @@ export function MessageList({
               >
                 <MessageBubble
                   message={message}
+                  isCurrentBranchLeaf={message.id === currentLeafMessageId}
+                  isCurrentBranchRunning={message.id === currentLeafMessageId && !!hasActiveRun}
                   onRetry={onRetry}
                   onRegenerate={onRegenerate}
                   onEdit={onEdit}

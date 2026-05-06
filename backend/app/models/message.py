@@ -32,6 +32,8 @@ class Message(Base):
     source_message_id: Mapped[UUID | None] = mapped_column(ForeignKey("messages.id", ondelete="SET NULL"))
     # revision_type 标记消息产生方式：normal/edit/regenerate/fork_copy。
     revision_type: Mapped[str | None] = mapped_column(String(30))
+    # 幂等键按 (conversation_id, parent_message_id, idempotency_key) 作用域复用请求。
+    idempotency_key: Mapped[str | None] = mapped_column(String(120))
     role: Mapped[str] = mapped_column(String(32), nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("''"))
     reasoning_content: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("''"))
@@ -54,6 +56,21 @@ Index("idx_messages_conversation_created", Message.conversation_id, Message.crea
 # 读取聊天历史时优先按 conversation_id + sequence_no 排序。
 Index("idx_messages_conversation_sequence", Message.conversation_id, Message.sequence_no)
 Index("idx_messages_conversation_parent", Message.conversation_id, Message.parent_message_id)
+Index(
+    "uq_messages_conversation_parent_idempotency",
+    Message.conversation_id,
+    Message.parent_message_id,
+    Message.idempotency_key,
+    unique=True,
+    postgresql_where=Message.idempotency_key.is_not(None),
+)
+Index(
+    "uq_messages_conversation_root_idempotency",
+    Message.conversation_id,
+    Message.idempotency_key,
+    unique=True,
+    postgresql_where=Message.idempotency_key.is_not(None) & Message.parent_message_id.is_(None),
+)
 Index("idx_messages_conversation_active_child", Message.conversation_id, Message.active_child_message_id)
 Index("idx_messages_conversation_depth", Message.conversation_id, Message.depth)
 Index(

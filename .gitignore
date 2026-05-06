@@ -59,6 +59,7 @@ temp/
 *.bak
 
 .codex
+.claude
 doc/
 config_text.txt
 backend/orbit_backend.egg-info

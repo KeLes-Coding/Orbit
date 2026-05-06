@@ -27,6 +27,8 @@ export interface Conversation {
   summary?: string | null
   summary_updated_at?: string | null
   summary_message_count?: number
+  has_active_run?: boolean
+  next_message_sequence_no?: number
   active_leaf_message_id?: string | null
   active_stream_id?: string | null
   active_stream_message_id?: string | null
@@ -124,6 +126,7 @@ export interface CreateConversationMessagePayload {
   llm_config_id?: string | null
   chat_mode?: string
   metadata?: Record<string, unknown>
+  idempotency_key?: string | null
 }
 
 export interface UpdateConversationPayload {
@@ -135,6 +138,8 @@ export interface UpdateConversationPayload {
 
 export interface SendMessagePayload {
   content: string
+  parent_message_id?: string | null
+  idempotency_key?: string | null
 }
 
 export interface SendMessageResponse {
@@ -152,6 +157,13 @@ export interface ForkConversationResponse {
   messages: Message[]
 }
 
+export interface ActiveStreamResponse {
+  conversation_id: string
+  message_id: string
+  assistant_message_id: string
+  stream_id: string
+}
+
 export type StreamMessageEvent =
   | {
       event: 'conversation.created'
@@ -163,6 +175,13 @@ export type StreamMessageEvent =
       event: 'conversation.updated'
       data: StreamEnvelope & {
         conversation: Conversation
+      }
+    }
+  | {
+      event: 'conversation.run_state_changed'
+      data: StreamEnvelope & {
+        conversation_id: string
+        has_active_run: boolean
       }
     }
   | {

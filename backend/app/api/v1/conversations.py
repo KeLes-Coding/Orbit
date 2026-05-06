@@ -11,6 +11,7 @@ from app.api.deps import get_current_user
 from app.db.session import get_db_session
 from app.models.user import User
 from app.schemas.conversation import (
+    ActiveStreamRead,
     BranchSwitchRead,
     ConversationCreate,
     ConversationForkCreate,
@@ -21,6 +22,7 @@ from app.schemas.conversation import (
     MessageEdit,
     MessageExchangeRead,
     MessageCreate,
+    MessageRegenerate,
     MessageRead,
 )
 from app.services.conversation import ConversationService, ConversationStreamEvent
@@ -150,6 +152,8 @@ async def create_user_message(
         user_id=current_user.id,
         conversation_id=conversation_id,
         content=payload.content,
+        parent_message_id=payload.parent_message_id,
+        idempotency_key=payload.idempotency_key,
     )
 
 
@@ -166,6 +170,8 @@ async def stream_user_message(
         user_id=current_user.id,
         conversation_id=conversation_id,
         content=payload.content,
+        parent_message_id=payload.parent_message_id,
+        idempotency_key=payload.idempotency_key,
     )
 
     async def event_generator() -> AsyncIterator[str]:
@@ -195,6 +201,8 @@ async def stream_user_message(
 async def regenerate_assistant(
     conversation_id: UUID,
     message_id: UUID,
+    *,
+    payload: MessageRegenerate | None = None,
     current_user: Annotated[User, Depends(get_current_user)],
     session: Annotated[AsyncSession, Depends(get_db_session)],
 ) -> MessageRead:
@@ -203,6 +211,7 @@ async def regenerate_assistant(
         user_id=current_user.id,
         conversation_id=conversation_id,
         message_id=message_id,
+        idempotency_key=payload.idempotency_key if payload else None,
     )
 
 
@@ -231,6 +240,8 @@ async def edit_user_message(
 async def stream_regenerate_assistant(
     conversation_id: UUID,
     message_id: UUID,
+    *,
+    payload: MessageRegenerate | None = None,
     current_user: Annotated[User, Depends(get_current_user)],
     session: Annotated[AsyncSession, Depends(get_db_session)],
 ) -> StreamingResponse:
@@ -240,6 +251,7 @@ async def stream_regenerate_assistant(
         user_id=current_user.id,
         conversation_id=conversation_id,
         message_id=message_id,
+        idempotency_key=payload.idempotency_key if payload else None,
     )
 
     async def event_generator() -> AsyncIterator[str]:
@@ -297,6 +309,51 @@ async def stream_edit_user_message(
     )
 
 
+@router.get("/{conversation_id}/messages/{message_id}/active-stream", response_model=ActiveStreamRead)
+async def get_message_active_stream(
+    conversation_id: UUID,
+    message_id: UUID,
+    current_user: Annotated[User, Depends(get_current_user)],
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+) -> ActiveStreamRead:
+    # branch 恢复先查当前 message 所关联的活跃流，再按 stream_id 做 replay/live 订阅。
+    return await ConversationService(session).get_message_active_stream(
+        user_id=current_user.id,
+        conversation_id=conversation_id,
+        message_id=message_id,
+    )
+
+
+@router.get("/{conversation_id}/streams/{stream_id}")
+async def subscribe_stream_by_id(
+    conversation_id: UUID,
+    stream_id: str,
+    current_user: Annotated[User, Depends(get_current_user)],
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+    last_seq: int = Query(default=0, ge=0),
+) -> StreamingResponse:
+    service = ConversationService(session)
+
+    async def event_generator() -> AsyncIterator[str]:
+        # 已知 stream_id 时，直接对这条运行实例做 replay + live 订阅。
+        async for event in service.subscribe_stream(
+            user_id=current_user.id,
+            conversation_id=conversation_id,
+            stream_id=stream_id,
+            last_seq=last_seq,
+        ):
+            yield encode_sse_event(event)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
 @router.get("/{conversation_id}/stream")
 async def subscribe_active_stream(
     conversation_id: UUID,
@@ -307,7 +364,7 @@ async def subscribe_active_stream(
     service = ConversationService(session)
 
     async def event_generator() -> AsyncIterator[str]:
-        # 页面刷新或网络重连后，前端带上 last_seq 从这里继续 replay + live 订阅。
+        # 旧入口暂时保留兼容，后续前端应切到 message -> stream_id 两段式恢复。
         async for event in service.subscribe_active_stream(
             user_id=current_user.id,
             conversation_id=conversation_id,
