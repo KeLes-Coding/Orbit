@@ -1363,17 +1363,6 @@ textarea:disabled {
   animation: thread-run-pulse 1.4s ease-in-out infinite;
 }
 
-.branch-state-badge.idle {
-  border-color: color-mix(in srgb, var(--line-strong) 42%, transparent);
-  background: color-mix(in srgb, var(--surface-low) 82%, transparent);
-}
-
-.branch-state-badge.idle::before {
-  background: var(--ink-soft);
-  box-shadow: none;
-  animation: none;
-}
-
 .assistant-mark {
   display: grid;
   flex: 0 0 32px;

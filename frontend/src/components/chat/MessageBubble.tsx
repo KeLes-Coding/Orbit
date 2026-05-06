@@ -157,15 +157,11 @@ export const MessageBubble = memo(function MessageBubble({
     </div>
   ) : null
 
-  // 当前可见 branch 的 leaf 节点单独打标，方便用户区分“这条正在生成”而不是只看会话级动画。
+  // 只在当前 branch 正在生成时打标，避免静态 leaf 状态占用阅读空间。
   const branchStateBadge =
     isCurrentBranchLeaf && isCurrentBranchRunning ? (
       <span className="branch-state-badge" aria-label="Current branch is running">
         Live branch
-      </span>
-    ) : isCurrentBranchLeaf ? (
-      <span className="branch-state-badge idle" aria-label="Current branch leaf">
-        Current leaf
       </span>
     ) : null
 

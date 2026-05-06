@@ -676,14 +676,14 @@ export function useConversations(
     if (!hasUser || !activeConversationId || !activeConversation?.has_active_run) return
     if (messagesQuery.isLoading || messagesQuery.isFetching) return
 
+    const currentStream = activeStreamRef.current
+    if (currentStream?.conversationId === activeConversationId) {
+      return
+    }
+
     const visibleLeafMessageId =
       activeConversation.active_leaf_message_id ?? rawMessages[rawMessages.length - 1]?.id ?? null
     if (!visibleLeafMessageId) return
-
-    const currentStream = activeStreamRef.current
-    if (currentStream?.conversationId === activeConversationId && currentStream.messageId === visibleLeafMessageId) {
-      return
-    }
 
     const controller = new AbortController()
 
