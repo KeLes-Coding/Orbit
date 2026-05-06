@@ -54,7 +54,29 @@ function replaceVisibleTail(
     ? withoutLocal.findIndex((message) => message.id === parentId)
     : -1
   const base = parentIndex >= 0 ? withoutLocal.slice(0, parentIndex + 1) : []
-  return userMessage ? [...base, userMessage, assistantMessage] : [...base, assistantMessage]
+  if (userMessage) {
+    return [...base, userMessage, assistantMessage]
+  }
+
+  const previousAssistant = parentId
+    ? [...withoutLocal]
+        .reverse()
+        .find((message) => message.role === 'assistant' && message.parent_message_id === parentId)
+    : null
+  const siblingCount = Math.max(
+    assistantMessage.sibling_count ?? 1,
+    (previousAssistant?.sibling_count ?? 1) + (previousAssistant ? 1 : 0),
+  )
+  const nextAssistant = previousAssistant
+    ? {
+        ...assistantMessage,
+        sibling_count: siblingCount,
+        sibling_index: assistantMessage.sibling_index ?? siblingCount,
+        previous_sibling_id: assistantMessage.previous_sibling_id ?? previousAssistant.id,
+      }
+    : assistantMessage
+
+  return [...base, nextAssistant]
 }
 
 function appendMessageDelta(messages: Message[], messageId: string, delta: string): Message[] {

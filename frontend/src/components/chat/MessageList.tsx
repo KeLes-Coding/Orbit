@@ -10,7 +10,7 @@ interface MessageListProps {
   hasActiveRun?: boolean
   onRetry?: (messageId: string) => void
   onRegenerate?: (messageId: string) => void
-  onEdit?: (messageId: string, currentContent: string) => void
+  onEdit?: (messageId: string, newContent: string) => void
   onSwitchBranch?: (messageId: string) => void
   onFork?: (messageId: string) => void
   isSending?: boolean
@@ -132,7 +132,7 @@ export function MessageList({
     const targetRect = target.getBoundingClientRect()
     scrollParent.scrollTo({
       top: scrollParent.scrollTop + targetRect.top - parentRect.top - 104,
-      behavior: "smooth",
+      behavior: "auto",
     })
     setActiveRound(roundId)
   }
@@ -227,10 +227,17 @@ export function MessageList({
       <div className="chat-stream" ref={containerRef}>
         {messages.map((message, idx) => {
           const prev = idx > 0 ? messages[idx - 1] : null
+          const next = idx < messages.length - 1 ? messages[idx + 1] : null
           const showSep = shouldShowSeparator(message, prev)
           const roundIdx = idx === 0
             ? 1
             : messages.slice(0, idx).filter((m) => m.role === "user").length + 1
+          const regenerateMessageId =
+            message.role === "user" &&
+            next?.role === "assistant" &&
+            next.parent_message_id === message.id
+              ? next.id
+              : null
 
           return (
             <div key={message.id}>
@@ -257,6 +264,7 @@ export function MessageList({
                   isCurrentBranchRunning={message.id === currentLeafMessageId && !!hasActiveRun}
                   onRetry={onRetry}
                   onRegenerate={onRegenerate}
+                  regenerateMessageId={regenerateMessageId}
                   onEdit={onEdit}
                   onSwitchBranch={onSwitchBranch}
                   onFork={onFork}

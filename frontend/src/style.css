@@ -1327,6 +1327,82 @@ textarea:disabled {
   max-width: 100%;
 }
 
+/* --- Inline edit --- */
+.message-user-wrap:has(.user-bubble.editing) {
+  width: 100%;
+}
+
+.user-bubble.editing {
+  width: 100%;
+  padding: 0;
+  border-color: var(--line-strong);
+  background: var(--surface);
+  box-shadow: var(--shadow-soft),
+              0 0 0 1px color-mix(in srgb, var(--ink) 7%, transparent);
+}
+
+.edit-textarea {
+  width: 100%;
+  min-width: 0;
+  padding: 14px 18px;
+  border: none;
+  border-radius: inherit;
+  background: transparent;
+  color: var(--ink);
+  font-family: var(--font-sans);
+  font-size: 15px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+  resize: none;
+  overflow-y: hidden;
+  outline: none;
+}
+
+.edit-textarea:focus {
+  outline: none;
+  box-shadow: none;
+}
+
+.edit-actions {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 6px;
+  padding: 0 14px 10px;
+}
+
+.edit-cancel-btn,
+.edit-save-btn {
+  padding: 5px 12px;
+  border: none;
+  border-radius: var(--radius-sm);
+  font-family: var(--font-sans);
+  font-size: 12.5px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 160ms ease, color 160ms ease, opacity 160ms ease;
+}
+
+.edit-cancel-btn {
+  background: transparent;
+  color: var(--ink-soft);
+}
+
+.edit-cancel-btn:hover {
+  background: var(--surface-low);
+  color: var(--ink);
+}
+
+.edit-save-btn {
+  background: var(--primary);
+  color: var(--on-primary);
+}
+
+.edit-save-btn:hover {
+  opacity: 0.88;
+}
+
 .branch-state-row {
   display: flex;
   margin-top: 6px;
@@ -1480,28 +1556,6 @@ textarea:disabled {
 .branch-switcher .message-action svg {
   width: 13px;
   height: 13px;
-}
-
-.branch-dots {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  padding: 0 4px;
-}
-
-.branch-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 999px;
-  background: var(--line-strong);
-  transition: background 160ms ease, transform 160ms ease;
-}
-
-.branch-dot.active {
-  width: 7px;
-  height: 7px;
-  background: var(--primary);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--primary) 16%, transparent);
 }
 
 .branch-count {

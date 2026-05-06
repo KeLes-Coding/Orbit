@@ -128,12 +128,8 @@ export function ChatShell() {
   }, [configs.length, navigate, openAuth, sendMessage, setActiveView, setErrorMessage, user])
 
   const handleEditMessage = useCallback(
-    (messageId: string, currentContent: string) => {
-      const nextContent = window.prompt("Edit message", currentContent)
-      if (nextContent === null) return
-      const trimmed = nextContent.trim()
-      if (!trimmed || trimmed === currentContent.trim()) return
-      void editUserMessage(messageId, trimmed)
+    (messageId: string, newContent: string) => {
+      void editUserMessage(messageId, newContent)
     },
     [editUserMessage],
   )

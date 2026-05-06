@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useState } from "react"
+import { memo, useEffect, useMemo, useRef, useState } from "react"
 import type { ReactNode } from "react"
 import { Copy, GitFork, Pencil, RotateCcw, User } from "lucide-react"
 import ReactMarkdown from "react-markdown"
@@ -37,7 +37,8 @@ interface MessageBubbleProps {
   isCurrentBranchRunning?: boolean
   onRetry?: (messageId: string) => void
   onRegenerate?: (messageId: string) => void
-  onEdit?: (messageId: string, currentContent: string) => void
+  regenerateMessageId?: string | null
+  onEdit?: (messageId: string, newContent: string) => void
   onSwitchBranch?: (messageId: string) => void
   onFork?: (messageId: string) => void
   actionsDisabled?: boolean
@@ -78,6 +79,7 @@ export const MessageBubble = memo(function MessageBubble({
   isCurrentBranchRunning,
   onRetry,
   onRegenerate,
+  regenerateMessageId,
   onEdit,
   onSwitchBranch,
   onFork,
@@ -105,6 +107,10 @@ export const MessageBubble = memo(function MessageBubble({
   const isReasoningOpenByDefault = isStreaming && hasReasoning && !hasContent
   const [isReasoningOpen, setIsReasoningOpen] = useState(isReasoningOpenByDefault)
 
+  const [isEditing, setIsEditing] = useState(false)
+  const [editContent, setEditContent] = useState("")
+  const editTextareaRef = useRef<HTMLTextAreaElement>(null)
+
   useEffect(() => {
     if (isStreaming && hasReasoning && !hasContent) {
       setIsReasoningOpen(true)
@@ -115,19 +121,58 @@ export const MessageBubble = memo(function MessageBubble({
     }
   }, [hasContent, hasReasoning, isStreaming])
 
-  const branchDots = useMemo(() => {
-    if (siblingCount <= 1) return null
-    return (
-      <div className="branch-dots">
-        {Array.from({ length: siblingCount }, (_, i) => (
-          <span
-            key={i}
-            className={`branch-dot${i + 1 === siblingIndex ? " active" : ""}`}
-          />
-        ))}
-      </div>
-    )
-  }, [siblingCount, siblingIndex])
+  useEffect(() => {
+    if (isEditing && editTextareaRef.current) {
+      const ta = editTextareaRef.current
+      ta.focus()
+      ta.selectionStart = ta.value.length
+      ta.selectionEnd = ta.value.length
+    }
+  }, [isEditing])
+
+  const handleStartEdit = () => {
+    setEditContent(message.content || "")
+    setIsEditing(true)
+  }
+
+  const handleSaveEdit = () => {
+    const trimmed = editContent.trim()
+    if (!trimmed) {
+      setIsEditing(false)
+      return
+    }
+    if (trimmed === (message.content || "").trim()) {
+      if (regenerateMessageId) {
+        onRegenerate?.(regenerateMessageId)
+      }
+      setIsEditing(false)
+      return
+    }
+    onEdit?.(message.id, trimmed)
+    setIsEditing(false)
+  }
+
+  const handleCancelEdit = () => {
+    setIsEditing(false)
+  }
+
+  const handleEditKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault()
+      handleSaveEdit()
+    } else if (e.key === "Escape") {
+      e.preventDefault()
+      handleCancelEdit()
+    }
+  }
+
+  useEffect(() => {
+    if (editTextareaRef.current) {
+      const ta = editTextareaRef.current
+      ta.style.height = "auto"
+      ta.style.height = ta.scrollHeight + "px"
+    }
+  }, [editContent])
 
   /* Copy message content to clipboard */
   const handleCopy = () => {
@@ -145,7 +190,6 @@ export const MessageBubble = memo(function MessageBubble({
       >
         <ChevronLeftIcon />
       </MessageAction>
-      {branchDots}
       <span className="branch-count">{siblingIndex}/{siblingCount}</span>
       <MessageAction
         label="Next version"
@@ -178,28 +222,59 @@ export const MessageBubble = memo(function MessageBubble({
       {isUser ? (
         <>
           <div className="message-user-wrap">
-            <div className="user-bubble">{message.content}</div>
+            {isEditing ? (
+              <div className="user-bubble editing">
+                <textarea
+                  ref={editTextareaRef}
+                  className="edit-textarea"
+                  value={editContent}
+                  onChange={(e) => setEditContent(e.target.value)}
+                  onKeyDown={handleEditKeyDown}
+                  rows={Math.min(editContent.split("\n").length, 10)}
+                />
+                <div className="edit-actions">
+                  <button
+                    type="button"
+                    className="edit-cancel-btn"
+                    onClick={handleCancelEdit}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    className="edit-save-btn"
+                    onClick={handleSaveEdit}
+                  >
+                    Save &amp; Submit
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="user-bubble">{message.content}</div>
+            )}
             {branchStateBadge && <div className="branch-state-row user">{branchStateBadge}</div>}
-            <div className="message-toolbar user-tools" aria-label="Message actions">
-              <MessageAction label="Copy" onClick={handleCopy}>
-                <Copy />
-              </MessageAction>
-              {branchNavigator}
-              <MessageAction
-                label="Edit message"
-                disabled={!canAct}
-                onClick={() => onEdit?.(message.id, message.content || "")}
-              >
-                <Pencil />
-              </MessageAction>
-              <MessageAction
-                label="Fork from here"
-                disabled={!canAct}
-                onClick={() => onFork?.(message.id)}
-              >
-                <GitFork />
-              </MessageAction>
-            </div>
+            {!isEditing && (
+              <div className="message-toolbar user-tools" aria-label="Message actions">
+                <MessageAction label="Copy" onClick={handleCopy}>
+                  <Copy />
+                </MessageAction>
+                {branchNavigator}
+                <MessageAction
+                  label="Edit message"
+                  disabled={!canAct}
+                  onClick={handleStartEdit}
+                >
+                  <Pencil />
+                </MessageAction>
+                <MessageAction
+                  label="Fork from here"
+                  disabled={!canAct}
+                  onClick={() => onFork?.(message.id)}
+                >
+                  <GitFork />
+                </MessageAction>
+              </div>
+            )}
           </div>
           <div className="user-mark" aria-hidden="true">
             <User />
