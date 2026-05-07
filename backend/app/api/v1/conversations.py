@@ -154,6 +154,7 @@ async def create_user_message(
         content=payload.content,
         parent_message_id=payload.parent_message_id,
         idempotency_key=payload.idempotency_key,
+        model=payload.model,
     )
 
 
@@ -172,6 +173,7 @@ async def stream_user_message(
         content=payload.content,
         parent_message_id=payload.parent_message_id,
         idempotency_key=payload.idempotency_key,
+        model=payload.model,
     )
 
     async def event_generator() -> AsyncIterator[str]:
@@ -212,6 +214,7 @@ async def regenerate_assistant(
         conversation_id=conversation_id,
         message_id=message_id,
         idempotency_key=payload.idempotency_key if payload else None,
+        model=payload.model if payload else None,
     )
 
 
@@ -233,6 +236,7 @@ async def edit_user_message(
         conversation_id=conversation_id,
         message_id=message_id,
         payload=payload,
+        model=payload.model,
     )
 
 
@@ -252,6 +256,7 @@ async def stream_regenerate_assistant(
         conversation_id=conversation_id,
         message_id=message_id,
         idempotency_key=payload.idempotency_key if payload else None,
+        model=payload.model if payload else None,
     )
 
     async def event_generator() -> AsyncIterator[str]:

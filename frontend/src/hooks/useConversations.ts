@@ -126,10 +126,12 @@ export function useConversations(
   const { enableStreamResume = true } = options
   const activeConversationId = useOrbitStore((s) => s.activeConversationId)
   const pendingConversationLlmConfigId = useOrbitStore((s) => s.pendingConversationLlmConfigId)
+  const pendingConversationLlmModel = useOrbitStore((s) => s.pendingConversationLlmModel)
   const draft = useOrbitStore((s) => s.draft)
   const isCreatingConversationTitle = useOrbitStore((s) => s.isCreatingConversationTitle)
   const setActiveConversationId = useOrbitStore((s) => s.setActiveConversationId)
   const setPendingConversationLlmConfigId = useOrbitStore((s) => s.setPendingConversationLlmConfigId)
+  const setPendingConversationLlmModel = useOrbitStore((s) => s.setPendingConversationLlmModel)
   const setDraft = useOrbitStore((s) => s.setDraft)
   const setErrorMessage = useOrbitStore((s) => s.setErrorMessage)
   const setActiveView = useOrbitStore((s) => s.setActiveView)
@@ -404,7 +406,7 @@ export function useConversations(
   )
 
   const streamMessage = useCallback(
-    async (conversationId: string, content: string) => {
+    async (conversationId: string, content: string, model?: string | null) => {
       await queryClient.cancelQueries({ queryKey: ['messages', conversationId] })
       const previousMessages = queryClient.getQueryData<Message[]>(['messages', conversationId]) || []
       const conversation = queryClient
@@ -454,6 +456,7 @@ export function useConversations(
             content,
             parent_message_id: parentMessageId,
             idempotency_key: idempotencyKey,
+            model: model ?? null,
           },
           controller.signal,
         )) {
@@ -477,7 +480,7 @@ export function useConversations(
   )
 
   const streamNewConversationMessage = useCallback(
-    async (content: string, llmConfigId: string | null) => {
+    async (content: string, llmConfigId: string | null, model?: string | null) => {
       const controller = new AbortController()
       let conversationId: string | null = null
 
@@ -493,6 +496,7 @@ export function useConversations(
             chat_mode: 'chat',
             metadata: {},
             idempotency_key: createIdempotencyKey('new-chat'),
+            model: model ?? null,
           },
           controller.signal,
         )) {
@@ -567,15 +571,16 @@ export function useConversations(
 
     const conversationId = activeConversationId
     if (!conversationId) {
-      void streamNewConversationMessage(content, pendingConversationLlmConfigId)
+      void streamNewConversationMessage(content, pendingConversationLlmConfigId, pendingConversationLlmModel)
       return
     }
 
-    void streamMessage(conversationId, content)
+    void streamMessage(conversationId, content, pendingConversationLlmModel)
   }, [
     draft,
     activeConversationId,
     pendingConversationLlmConfigId,
+    pendingConversationLlmModel,
     hasUser,
     isPendingNewConversationStream,
     streamingConversationIds,
@@ -586,7 +591,7 @@ export function useConversations(
   ])
 
   const regenerateAssistant = useCallback(
-    async (messageId: string) => {
+    async (messageId: string, model?: string | null) => {
       if (!activeConversationId || streamingConversationIds.has(activeConversationId)) return
       const controller = new AbortController()
       markConversationStreaming(activeConversationId, true)
@@ -600,11 +605,13 @@ export function useConversations(
       }
 
       try {
+        const idempotencyKey = createIdempotencyKey('regen')
         for await (const streamEvent of conversationApi.streamRegenerateAssistant(
           activeConversationId,
           messageId,
-          createIdempotencyKey('regen'),
+          idempotencyKey,
           controller.signal,
+          model ?? null,
         )) {
           applyStreamEvent(activeConversationId, streamEvent, controller)
         }
@@ -632,7 +639,7 @@ export function useConversations(
   )
 
   const editUserMessage = useCallback(
-    async (messageId: string, content: string) => {
+    async (messageId: string, content: string, model?: string | null) => {
       if (!activeConversationId || streamingConversationIds.has(activeConversationId)) return
       const controller = new AbortController()
       markConversationStreaming(activeConversationId, true)
@@ -652,6 +659,7 @@ export function useConversations(
           {
             content,
             idempotency_key: createIdempotencyKey('edit'),
+            model: model ?? null,
           },
           controller.signal,
         )) {
@@ -902,6 +910,7 @@ export function useConversations(
     activeConversation,
     activeConversationId,
     pendingConversationLlmConfigId,
+    pendingConversationLlmModel,
     messages,
     isLoadingMessages,
     isSending: isActiveConversationStreaming,
@@ -915,6 +924,7 @@ export function useConversations(
       setActiveView('chat')
       setActiveConversationId(null)
       setPendingConversationLlmConfigId(null)
+      setPendingConversationLlmModel(null)
       setIsCreatingConversationTitle(false)
       setErrorMessage('')
     },
@@ -928,6 +938,9 @@ export function useConversations(
     archiveConversation: (id: string) => archiveConversation.mutate(id),
     switchConversationLlm: (conversationId: string, configId: string) =>
       switchConversationLlm.mutateAsync({ conversationId, configId }),
-    selectPendingConversationLlm: (configId: string) => setPendingConversationLlmConfigId(configId),
+    selectPendingConversationLlm: (configId: string, model?: string | null) => {
+      setPendingConversationLlmConfigId(configId)
+      setPendingConversationLlmModel(model ?? null)
+    },
   }
 }

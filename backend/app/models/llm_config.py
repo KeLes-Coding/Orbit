@@ -17,7 +17,9 @@ class LLMConfig(Base):
     user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     name: Mapped[str] = mapped_column(String(100), nullable=False)
     provider: Mapped[str] = mapped_column(String(50), nullable=False)
-    model: Mapped[str] = mapped_column(String(120), nullable=False)
+    models: Mapped[list] = mapped_column(
+        JSONB, nullable=False, server_default=text("'[]'::jsonb")
+    )
     base_url: Mapped[str | None] = mapped_column(Text)
     # API Key 只保存加密后的密文，后续接口不能把明文返回给前端。
     api_key_ciphertext: Mapped[str | None] = mapped_column(Text)

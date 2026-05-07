@@ -69,6 +69,7 @@ class ConversationService:
         content: str,
         parent_message_id: UUID | None = None,
         idempotency_key: str | None = None,
+        model: str | None = None,
     ) -> str:
         # 启动流时只负责写入消息和注册 active stream，真正生成放到后台 producer。
         conversation = await self._get_owned_conversation(user_id=user_id, conversation_id=conversation_id)
@@ -106,6 +107,7 @@ class ConversationService:
                 )
 
             llm_config = await self._get_usable_llm_config(user_id=user_id, conversation=conversation)
+            resolved_model = model or (llm_config.models[0] if llm_config.models else None)
             user_message = await self.messages.create_user_message(
                 conversation_id=conversation_id,
                 content=content,
@@ -117,7 +119,7 @@ class ConversationService:
                 conversation_id=conversation_id,
                 llm_config_id=llm_config.id,
                 provider=llm_config.provider,
-                model=llm_config.model,
+                model=resolved_model or "",
                 parent_message=user_message,
             )
             await self.messages.set_conversation_active_leaf(conversation=conversation, message=assistant_message)
@@ -170,6 +172,7 @@ class ConversationService:
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="当前会话的模型配置不可用",
             )
+        resolved_model = payload.model or (llm_config.models[0] if llm_config.models else None)
 
         # 先用本地 fallback title 落库，让首轮流式响应不再被标题模型阻塞。
         title = self.title_generator.fallback_title(payload.content)
@@ -190,7 +193,7 @@ class ConversationService:
             conversation_id=conversation.id,
             llm_config_id=llm_config.id,
             provider=llm_config.provider,
-            model=llm_config.model,
+            model=resolved_model or "",
             parent_message=user_message,
         )
         await self.messages.set_conversation_active_leaf(conversation=conversation, message=assistant_message)
@@ -242,6 +245,7 @@ class ConversationService:
         conversation_id: UUID,
         message_id: UUID,
         idempotency_key: str | None = None,
+        model: str | None = None,
     ) -> str:
         conversation = await self._get_owned_conversation(user_id=user_id, conversation_id=conversation_id)
         target = await self.messages.get_by_id(conversation_id=conversation_id, message_id=message_id)
@@ -280,11 +284,12 @@ class ConversationService:
                 )
 
             llm_config = await self._get_usable_llm_config(user_id=user_id, conversation=conversation)
+            resolved_model = model or (llm_config.models[0] if llm_config.models else None)
             assistant_message = await self.messages.create_assistant_placeholder(
                 conversation_id=conversation_id,
                 llm_config_id=llm_config.id,
                 provider=llm_config.provider,
-                model=llm_config.model,
+                model=resolved_model or "",
                 parent_message=parent,
                 source_message_id=target.id,
                 revision_type="regenerate",
@@ -350,6 +355,7 @@ class ConversationService:
                     raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="无法找到编辑上下文")
 
             llm_config = await self._get_usable_llm_config(user_id=user_id, conversation=conversation)
+            resolved_model = getattr(payload, "model", None) or (llm_config.models[0] if llm_config.models else None)
             existing_exchange = await self._find_idempotent_exchange(
                 conversation_id=conversation_id,
                 parent_message_id=parent.id if parent else None,
@@ -377,7 +383,7 @@ class ConversationService:
                 conversation_id=conversation_id,
                 llm_config_id=llm_config.id,
                 provider=llm_config.provider,
-                model=llm_config.model,
+                model=resolved_model or "",
                 parent_message=user_message,
             )
             await self.messages.set_conversation_active_leaf(conversation=conversation, message=assistant_message)
@@ -555,6 +561,7 @@ class ConversationService:
         content: str,
         parent_message_id: UUID | None = None,
         idempotency_key: str | None = None,
+        model: str | None = None,
     ) -> MessageExchangeRead:
         # 本接口完成“一问一答”：写入用户消息、创建 assistant 占位、调用模型并落库结果。
         conversation = await self._get_owned_conversation(user_id=user_id, conversation_id=conversation_id)
@@ -588,6 +595,7 @@ class ConversationService:
                 )
 
             llm_config = await self._get_usable_llm_config(user_id=user_id, conversation=conversation)
+            resolved_model = model or (llm_config.models[0] if llm_config.models else None)
             user_message = await self.messages.create_user_message(
                 conversation_id=conversation_id,
                 content=content,
@@ -603,7 +611,7 @@ class ConversationService:
                 conversation_id=conversation_id,
                 llm_config_id=llm_config.id,
                 provider=llm_config.provider,
-                model=llm_config.model,
+                model=resolved_model or "",
                 parent_message=user_message,
             )
             await self.messages.set_conversation_active_leaf(conversation=conversation, message=assistant_message)
@@ -617,6 +625,7 @@ class ConversationService:
                 config=llm_config,
                 messages=history_messages,
                 summary=conversation.summary,
+                model=resolved_model or None,
             )
         except LLMClientError as exc:
             assistant_message = await self.messages.fail_assistant_message(
@@ -653,6 +662,7 @@ class ConversationService:
         conversation_id: UUID,
         message_id: UUID,
         idempotency_key: str | None = None,
+        model: str | None = None,
     ) -> MessageRead:
         # Regenerate 不覆盖旧 assistant，而是在同一个 user parent 下创建 assistant sibling。
         conversation = await self._get_owned_conversation(user_id=user_id, conversation_id=conversation_id)
@@ -686,6 +696,7 @@ class ConversationService:
                 return await self._message_read(existing_assistant)
 
             llm_config = await self._get_usable_llm_config(user_id=user_id, conversation=conversation)
+            resolved_model = model or (llm_config.models[0] if llm_config.models else None)
             history_messages = await self.messages.list_path_to_message(
                 conversation_id=conversation_id,
                 message_id=parent.id,
@@ -695,7 +706,7 @@ class ConversationService:
                 conversation_id=conversation_id,
                 llm_config_id=llm_config.id,
                 provider=llm_config.provider,
-                model=llm_config.model,
+                model=resolved_model or "",
                 parent_message=parent,
                 source_message_id=target.id,
                 revision_type="regenerate",
@@ -711,6 +722,7 @@ class ConversationService:
                 config=llm_config,
                 messages=history_messages,
                 summary=conversation.summary,
+                model=resolved_model or None,
             )
         except LLMClientError as exc:
             assistant_message = await self.messages.fail_assistant_message(
@@ -741,6 +753,7 @@ class ConversationService:
         conversation_id: UUID,
         message_id: UUID,
         payload: MessageEdit,
+        model: str | None = None,
     ) -> MessageExchangeRead:
         # Edit 不修改旧 user，而是在原 parent 下创建新的 user sibling。
         conversation = await self._get_owned_conversation(user_id=user_id, conversation_id=conversation_id)
@@ -768,6 +781,7 @@ class ConversationService:
                     raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="无法找到编辑上下文")
 
             llm_config = await self._get_usable_llm_config(user_id=user_id, conversation=conversation)
+            resolved_model = model or (llm_config.models[0] if llm_config.models else None)
             existing_exchange = await self._find_idempotent_exchange(
                 conversation_id=conversation_id,
                 parent_message_id=parent.id if parent else None,
@@ -797,7 +811,7 @@ class ConversationService:
                 conversation_id=conversation_id,
                 llm_config_id=llm_config.id,
                 provider=llm_config.provider,
-                model=llm_config.model,
+                model=resolved_model or "",
                 parent_message=user_message,
             )
             await self.messages.set_conversation_active_leaf(conversation=conversation, message=assistant_message)
@@ -810,6 +824,7 @@ class ConversationService:
                 config=llm_config,
                 messages=history_messages,
                 summary=conversation.summary,
+                model=resolved_model or None,
             )
         except LLMClientError as exc:
             assistant_message = await self.messages.fail_assistant_message(
@@ -1405,7 +1420,7 @@ class ConversationService:
         full_content_parts: list[str] = []
         full_reasoning_parts: list[str] = []
         token_usage: dict[str, Any] = {}
-        response_metadata: dict[str, Any] = {"provider": llm_config.provider, "model": llm_config.model}
+        response_metadata: dict[str, Any] = {"provider": llm_config.provider, "model": assistant_message.model or ""}
         finish_reason: str | None = None
 
         try:
@@ -1435,6 +1450,7 @@ class ConversationService:
                 config=llm_config,
                 messages=history_messages,
                 summary=conversation.summary,
+                model=assistant_message.model,
             ):
                 if await conversation_stream_store.is_cancelled(stream_id):
                     cancelled_message = await self._cancel_streaming_message(

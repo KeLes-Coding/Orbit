@@ -35,7 +35,12 @@ export function ConfigCard({ config, onEdit, onArchive, onSetDefault }: ConfigCa
           <strong>Provider:</strong> {config.provider}
         </span>
         <span>
-          <strong>Model:</strong> {config.model}
+          <strong>Models:</strong>{" "}
+          {config.models.length > 0
+            ? config.models.length === 1
+              ? config.models[0]
+              : `${config.models[0]} +${config.models.length - 1} more`
+            : "—"}
         </span>
         {config.base_url && (
           <span>

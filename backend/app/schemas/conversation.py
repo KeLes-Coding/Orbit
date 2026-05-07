@@ -52,17 +52,20 @@ class MessageCreate(BaseModel):
     # 并行阶段允许显式指定 base message；旧前端未传时仍可回退到 active_leaf。
     parent_message_id: UUID | None = None
     idempotency_key: str | None = Field(default=None, min_length=1, max_length=120)
+    model: str | None = Field(default=None, min_length=1, max_length=120)
 
 
 class MessageEdit(BaseModel):
     # 编辑历史 user 消息时创建新的 sibling user message。
     content: str = Field(min_length=1)
     idempotency_key: str | None = Field(default=None, min_length=1, max_length=120)
+    model: str | None = Field(default=None, min_length=1, max_length=120)
 
 
 class MessageRegenerate(BaseModel):
     # 重发 assistant 时允许前端传幂等键，避免重复点击生成多个 sibling。
     idempotency_key: str | None = Field(default=None, min_length=1, max_length=120)
+    model: str | None = Field(default=None, min_length=1, max_length=120)
 
 
 class ConversationForkCreate(BaseModel):

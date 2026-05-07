@@ -34,15 +34,20 @@ class GeminiProvider(BaseLLMProvider):
         api_key = self.require_api_key(config)
         client = genai.Client(api_key=api_key)
         models = await asyncio.to_thread(lambda: list(client.models.list()))
-        return [
-            LLMModelInfo(
-                id=self._normalize_model_id(model.name),
-                name=getattr(model, "display_name", None) or self._normalize_model_id(model.name),
-                description=getattr(model, "description", None),
+        result: list[LLMModelInfo] = []
+        for model in models:
+            model_name = getattr(model, "name", None)
+            if not model_name:
+                continue
+            normalized_id = self._normalize_model_id(model_name)
+            result.append(
+                LLMModelInfo(
+                    id=normalized_id,
+                    name=getattr(model, "display_name", None) or normalized_id,
+                    description=getattr(model, "description", None),
+                )
             )
-            for model in models
-            if getattr(model, "name", None)
-        ]
+        return result
 
     def _normalize_model_id(self, model_name: str) -> str:
         # Google 返回的模型名常带 models/ 前缀，前端配置时只需要短 ID。

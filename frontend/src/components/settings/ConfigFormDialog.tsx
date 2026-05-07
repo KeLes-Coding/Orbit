@@ -23,7 +23,7 @@ const FALLBACK_PROVIDERS: LlmProvider[] = [
 interface ConfigFormValues {
   name: string
   provider: string
-  model: string
+  models: string[]
   base_url: string
   api_key: string
   provider_options: string
@@ -33,7 +33,7 @@ interface ConfigFormValues {
 const defaultForm: ConfigFormValues = {
   name: "",
   provider: "",
-  model: "",
+  models: [],
   base_url: "",
   api_key: "",
   provider_options: "",
@@ -44,7 +44,6 @@ interface ConfigFormDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
   editingConfig: LlmConfig | null
-  configs: LlmConfig[]
   providers: LlmProvider[]
   isSaving: boolean
   onSave: (values: ConfigFormValues) => Promise<void>
@@ -54,7 +53,6 @@ export function ConfigFormDialog({
   open,
   onOpenChange,
   editingConfig,
-  configs,
   providers: apiProviders,
   isSaving,
   onSave,
@@ -88,7 +86,7 @@ export function ConfigFormDialog({
       setForm({
         name: editingConfig.name || "",
         provider: editingConfig.provider || "",
-        model: editingConfig.model || "",
+        models: editingConfig.models || [],
         base_url: editingConfig.base_url || "",
         api_key: "",
         provider_options: editingConfig.provider_options
@@ -122,7 +120,7 @@ export function ConfigFormDialog({
       setForm((prev) => ({
         ...prev,
         provider: providerId,
-        model: "",
+        models: [],
         base_url: nextProvider?.default_base_url || "",
       }))
     },
@@ -193,8 +191,8 @@ export function ConfigFormDialog({
       setFormError("Provider is required.")
       return
     }
-    if (!form.model.trim()) {
-      setFormError("Model is required.")
+    if (form.models.length === 0) {
+      setFormError("At least one model is required.")
       return
     }
     const providerOptions = parseProviderOptions()
@@ -297,12 +295,12 @@ export function ConfigFormDialog({
             />
           </div>
 
-          {/* Model */}
+          {/* Models */}
           <div className="flex flex-col gap-1.5">
-            <Label htmlFor="cfg-model">Model</Label>
+            <Label>Models</Label>
             <ModelPicker
-              value={form.model}
-              onChange={(v) => setForm((prev) => ({ ...prev, model: v }))}
+              selectedModels={form.models}
+              onChange={(models) => setForm((prev) => ({ ...prev, models }))}
               modelOptions={modelOptions}
               isLoading={isLoadingModels}
               statusMessage={modelStatus}

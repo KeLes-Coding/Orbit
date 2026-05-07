@@ -81,7 +81,7 @@ export interface LlmConfig {
   user_id: string
   name: string
   provider: string
-  model: string
+  models: string[]
   base_url?: string | null
   has_api_key: boolean
   provider_options?: Record<string, unknown> | null
@@ -102,6 +102,9 @@ export interface LlmProvider {
 
 export interface LlmModel {
   id: string
+  name?: string | null
+  description?: string | null
+  owned_by?: string | null
 }
 
 export interface LoginPayload {
@@ -124,6 +127,7 @@ export interface CreateConversationPayload {
 export interface CreateConversationMessagePayload {
   content: string
   llm_config_id?: string | null
+  model?: string | null
   chat_mode?: string
   metadata?: Record<string, unknown>
   idempotency_key?: string | null
@@ -140,6 +144,7 @@ export interface SendMessagePayload {
   content: string
   parent_message_id?: string | null
   idempotency_key?: string | null
+  model?: string | null
 }
 
 export interface SendMessageResponse {
@@ -222,7 +227,7 @@ export interface ProbeModelsPayload {
 export interface CreateLlmConfigPayload {
   name: string
   provider: string
-  model: string
+  models: string[]
   base_url?: string | null
   api_key?: string | null
   provider_options?: Record<string, unknown>
@@ -232,7 +237,7 @@ export interface CreateLlmConfigPayload {
 export interface UpdateLlmConfigPayload {
   name?: string
   provider?: string
-  model?: string
+  models?: string[]
   base_url?: string | null
   api_key?: string | null
   provider_options?: Record<string, unknown>

@@ -167,11 +167,12 @@ export const conversationApi = {
     messageId: string,
     idempotencyKey?: string | null,
     signal?: AbortSignal,
+    model?: string | null,
   ): AsyncGenerator<StreamMessageEvent> {
     yield* fetchSse(`/conversations/${conversationId}/messages/${messageId}/regenerate/stream`, {
       method: 'POST',
       headers: createHeaders(),
-      body: JSON.stringify({ idempotency_key: idempotencyKey ?? null }),
+      body: JSON.stringify({ idempotency_key: idempotencyKey ?? null, model: model ?? null }),
       signal,
     })
   },
@@ -179,7 +180,7 @@ export const conversationApi = {
   async *streamEditUserMessage(
     conversationId: string,
     messageId: string,
-    payload: SendMessagePayload,
+    payload: SendMessagePayload & { model?: string | null },
     signal?: AbortSignal,
   ): AsyncGenerator<StreamMessageEvent> {
     yield* fetchSse(`/conversations/${conversationId}/messages/${messageId}/edit/stream`, {
