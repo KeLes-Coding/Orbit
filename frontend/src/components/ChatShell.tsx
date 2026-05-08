@@ -41,6 +41,10 @@ export function ChatShell() {
     stopGeneration,
     switchConversationLlm,
     selectPendingConversationLlm,
+    pendingFiles,
+    isUploadingFiles,
+    addFiles,
+    removeFile,
   } = useConversations(hasUser)
 
   const { configs } = useLlmConfigs(hasUser)
@@ -88,6 +92,13 @@ export function ChatShell() {
     const activeConfig = configs.find((c) => c.id === currentLlmConfigId)
     return activeConfig?.models[0] || null
   }, [configs, currentLlmConfigId, pendingConversationLlmModel])
+
+  const showVisionHint = useMemo(() => {
+    const hasImage = pendingFiles.some((pf) => pf.file.type.startsWith("image/"))
+    if (!hasImage) return false
+    const activeConfig = configs.find((c) => c.id === currentLlmConfigId)
+    return activeConfig ? !activeConfig.supports_vision : false
+  }, [pendingFiles, configs, currentLlmConfigId])
 
   const selectModel = useCallback(
     async (configId: string, model: string) => {
@@ -234,6 +245,11 @@ export function ChatShell() {
         errorMessage={errorMessage}
         isAuthenticated={!!user}
         hasConfigs={configs.length > 0}
+        pendingFiles={pendingFiles}
+        onAddFiles={addFiles}
+        onRemoveFile={removeFile}
+        isUploading={isUploadingFiles}
+        showVisionHint={showVisionHint}
       />
     </main>
   )

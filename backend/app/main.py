@@ -1,3 +1,5 @@
+import asyncio
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -7,12 +9,39 @@ from app.api.v1.router import api_router
 from app.core.config import settings
 from app.db.schema_guard import run_startup_schema_guard
 
+logger = logging.getLogger(__name__)
+
+
+async def _cleanup_expired_files_loop() -> None:
+    while True:
+        await asyncio.sleep(3600)  # Every hour
+        try:
+            from app.db.session import AsyncSessionLocal
+            from app.repositories.conversation_file import ConversationFileRepository
+
+            async with AsyncSessionLocal() as session:
+                repo = ConversationFileRepository(session)
+                count = await repo.delete_expired()
+                if count:
+                    await session.commit()
+                    logger.info("Cleaned up %d expired pending files", count)
+        except Exception:
+            logger.exception("Failed to clean up expired files")
+
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    # 即使直接运行 uvicorn，也在启动时先做一次 schema 护栏检查。
     await run_startup_schema_guard()
+    # 强制解析一次存储根路径并缓存，避免后台 task CWD 漂移。
+    from app.services.files.storage import _resolve_storage_root
+    _resolve_storage_root()
+    cleanup_task = asyncio.create_task(_cleanup_expired_files_loop())
     yield
+    cleanup_task.cancel()
+    try:
+        await cleanup_task
+    except asyncio.CancelledError:
+        pass
 
 
 def create_app() -> FastAPI:

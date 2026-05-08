@@ -28,6 +28,7 @@ interface ConfigFormValues {
   api_key: string
   provider_options: string
   is_default: boolean
+  supports_vision: boolean
 }
 
 const defaultForm: ConfigFormValues = {
@@ -38,6 +39,7 @@ const defaultForm: ConfigFormValues = {
   api_key: "",
   provider_options: "",
   is_default: false,
+  supports_vision: false,
 }
 
 interface ConfigFormDialogProps {
@@ -93,6 +95,7 @@ export function ConfigFormDialog({
           ? JSON.stringify(editingConfig.provider_options, null, 2)
           : "",
         is_default: Boolean(editingConfig.is_default),
+        supports_vision: Boolean(editingConfig.supports_vision),
       })
     } else {
       const p = providers[0]
@@ -342,6 +345,22 @@ export function ConfigFormDialog({
               className="h-4 w-4 rounded border-[var(--line)] text-accent-orange focus:ring-accent-orange/30"
             />
             <span className="text-sm text-[var(--ink)]">Use as default model</span>
+          </label>
+
+          {/* Vision checkbox */}
+          <label className="flex items-start gap-2.5 cursor-pointer">
+            <input
+              checked={form.supports_vision}
+              onChange={(e) => setForm((prev) => ({ ...prev, supports_vision: e.target.checked }))}
+              type="checkbox"
+              className="mt-0.5 h-4 w-4 rounded border-[var(--line)] text-accent-orange focus:ring-accent-orange/30"
+            />
+            <div>
+              <span className="text-sm text-[var(--ink)]">Support image input (vision / multimodal)</span>
+              <p className="text-xs text-[var(--ink-soft)] mt-0.5">
+                Enable if the model supports image recognition (e.g., GPT-4o, Claude 3+). Keep off for text-only models.
+              </p>
+            </div>
           </label>
 
           {/* Error */}

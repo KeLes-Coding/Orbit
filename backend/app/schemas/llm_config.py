@@ -13,6 +13,8 @@ class LLMConfigCreate(BaseModel):
     api_key: str | None = Field(default=None, max_length=4096)
     provider_options: dict = Field(default_factory=dict)
     is_default: bool = False
+    # 用户勾选后图片会以多模态 base64 格式注入 LLM 上下文，默认关闭。
+    supports_vision: bool = False
 
 
 class LLMConfigUpdate(BaseModel):
@@ -25,6 +27,7 @@ class LLMConfigUpdate(BaseModel):
     provider_options: dict | None = None
     is_enabled: bool | None = None
     is_default: bool | None = None
+    supports_vision: bool | None = None
 
 
 class LLMConfigRead(BaseModel):
@@ -40,6 +43,7 @@ class LLMConfigRead(BaseModel):
     provider_options: dict
     is_default: bool
     is_enabled: bool
+    supports_vision: bool
     has_api_key: bool = False
     created_at: datetime
     updated_at: datetime

@@ -258,8 +258,8 @@ class MessageRepository:
         source_message_id: UUID | None = None,
         revision_type: str = "normal",
         idempotency_key: str | None = None,
+        content_parts: list = [],
     ) -> Message:
-        # 用户消息写入后立即完成，并把 parent.active_child 切到这个新 sibling。
         sequence_no = await ConversationRepository(self.session).allocate_message_sequence_no(conversation_id)
         message = Message(
             conversation_id=conversation_id,
@@ -271,6 +271,7 @@ class MessageRepository:
             idempotency_key=idempotency_key,
             role="user",
             content=content,
+            content_parts=content_parts,
             status="completed",
         )
         self.session.add(message)

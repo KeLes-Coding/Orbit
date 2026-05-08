@@ -2,7 +2,7 @@ from datetime import datetime
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class ConversationCreate(BaseModel):
@@ -45,19 +45,32 @@ class ConversationRead(BaseModel):
 
 
 class MessageCreate(BaseModel):
-    # 当前阶段只接收纯文本用户消息，多模态内容后续放入 content_parts。
-    content: str = Field(min_length=1)
-    # 并行阶段允许显式指定 base message；旧前端未传时仍可回退到 active_leaf。
+    # 多模态内容放入 content_parts；content 和 file_ids 至少需要一个。
+    content: str = Field(default="", min_length=0)
+    file_ids: list[UUID] = Field(default_factory=list)
     parent_message_id: UUID | None = None
     idempotency_key: str | None = Field(default=None, min_length=1, max_length=120)
     model: str | None = Field(default=None, min_length=1, max_length=120)
 
+    @model_validator(mode="after")
+    def check_content_or_files(self) -> "MessageCreate":
+        if not self.content.strip() and len(self.file_ids) == 0:
+            raise ValueError("content 和 file_ids 至少需要一个")
+        return self
+
 
 class MessageEdit(BaseModel):
     # 编辑历史 user 消息时创建新的 sibling user message。
-    content: str = Field(min_length=1)
+    content: str = Field(default="", min_length=0)
+    file_ids: list[UUID] = Field(default_factory=list)
     idempotency_key: str | None = Field(default=None, min_length=1, max_length=120)
     model: str | None = Field(default=None, min_length=1, max_length=120)
+
+    @model_validator(mode="after")
+    def check_content_or_files(self) -> "MessageEdit":
+        if not self.content.strip() and len(self.file_ids) == 0:
+            raise ValueError("content 和 file_ids 至少需要一个")
+        return self
 
 
 class MessageRegenerate(BaseModel):

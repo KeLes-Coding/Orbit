@@ -23,3 +23,17 @@ class MessageStatus(str, Enum):
     cancelled = "cancelled"
     failed = "failed"
     partial = "partial"
+
+
+class ExtractionStatus(str, Enum):
+    pending = "pending"
+    processing = "processing"
+    success = "success"
+    failed = "failed"
+    skipped = "skipped"
+
+
+class BindStatus(str, Enum):
+    pending = "pending"
+    bound = "bound"
+    deleted = "deleted"

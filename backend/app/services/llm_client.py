@@ -51,7 +51,7 @@ class LLMClient:
         if provider is None:
             raise LLMClientError(f"暂不支持的模型供应商：{config.provider}")
 
-        chat_messages = self._build_langchain_messages(messages=messages, summary=summary)
+        chat_messages = self._build_langchain_messages(messages=messages, summary=summary, config=config)
 
         try:
             runtime_config = provider.from_model_config(config, model=model)
@@ -81,7 +81,7 @@ class LLMClient:
         if provider is None:
             raise LLMClientError(f"暂不支持的模型供应商：{config.provider}")
 
-        chat_messages = self._build_langchain_messages(messages=messages, summary=summary)
+        chat_messages = self._build_langchain_messages(messages=messages, summary=summary, config=config)
         resolved_model = model or (config.models[0] if config.models else "")
 
         try:
@@ -157,6 +157,7 @@ class LLMClient:
         *,
         messages: list[Message],
         summary: str | None,
+        config: "LLMConfig | None" = None,
     ) -> list[BaseMessage]:
         chat_messages: list[BaseMessage] = []
         if summary:
@@ -170,25 +171,88 @@ class LLMClient:
                 continue
             if message.role not in {"system", "user", "assistant", "tool"}:
                 continue
-            if not message.content:
+            if not message.content and (not message.content_parts or len(message.content_parts) == 0):
                 continue
-            chat_messages.append(self._to_langchain_message(message))
+            chat_messages.append(self._to_langchain_message(message, config=config))
 
         if not chat_messages:
             raise LLMClientError("没有可用于模型调用的消息上下文")
         return chat_messages
 
-    def _to_langchain_message(self, message: Message) -> BaseMessage:
+    def _to_langchain_message(self, message: Message, *, config: "LLMConfig | None" = None) -> BaseMessage:
+        content = self._build_message_content(message, config=config)
         if message.role == "system":
-            return SystemMessage(content=message.content)
+            return SystemMessage(content=content)
         if message.role == "user":
-            return HumanMessage(content=message.content)
+            return HumanMessage(content=content)
         if message.role == "assistant":
-            return AIMessage(content=message.content)
+            return AIMessage(content=content)
         return ToolMessage(
-            content=message.content,
+            content=content,
             tool_call_id=message.langgraph_message_id or str(message.id),
         )
+
+    def _build_message_content(
+        self, message: Message, *, config: "LLMConfig | None" = None
+    ) -> str | list[str | dict]:
+        # 多模态返回 list[str | dict]，纯文本返回 str。
+        content_parts = message.content_parts or []
+        has_images = any(
+            part.get("type") == "file" and (part.get("mime_type") or "").startswith("image/")
+            for part in content_parts
+        )
+        supports_vision = config is not None and config.supports_vision
+
+        if not has_images or not supports_vision:
+            # 纯文本路径：拼接文本和附件引用。
+            text = message.content or ""
+            for part in content_parts:
+                if part.get("type") == "file":
+                    file_name = part.get("name", "unknown")
+                    extracted = part.get("extracted_text", "")
+                    text += f"\n\n[附件：{file_name}]"
+                    if extracted:
+                        text += f"\n{extracted}"
+            return text
+
+        # 多模态路径：构造 LangChain content_blocks 列表。
+        import base64
+        from app.services.files.storage import _resolve_storage_root
+
+        blocks: list[str | dict] = []
+        if message.content:
+            blocks.append({"type": "text", "text": message.content})
+
+        base_dir = _resolve_storage_root()
+        for part in content_parts:
+            if part.get("type") != "file":
+                continue
+            mime_type = part.get("mime_type", "")
+            file_name = part.get("name", "unknown")
+            if mime_type.startswith("image/"):
+                storage_path = part.get("storage_path", "")
+                if storage_path:
+                    full_path = base_dir / storage_path
+                    if full_path.exists():
+                        image_bytes = full_path.read_bytes()
+                        b64 = base64.b64encode(image_bytes).decode("ascii")
+                        blocks.append({
+                            "type": "image_url",
+                            "image_url": {"url": f"data:{mime_type};base64,{b64}"},
+                        })
+                    else:
+                        blocks.append({"type": "text", "text": f"\n[附件：{file_name}（文件丢失）]"})
+                else:
+                    blocks.append({"type": "text", "text": f"\n[附件：{file_name}]"})
+            else:
+                # 文档文件（PDF/DOCX 等）保留文本引用。
+                extracted = part.get("extracted_text", "")
+                ref = f"\n\n[附件：{file_name}]"
+                if extracted:
+                    ref += f"\n{extracted}"
+                blocks.append({"type": "text", "text": ref})
+
+        return blocks
 
     async def _ainvoke(
         self,

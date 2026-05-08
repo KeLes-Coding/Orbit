@@ -27,6 +27,7 @@ export function ConfigCard({ config, onEdit, onArchive, onSetDefault }: ConfigCa
       <div className="config-header">
         <span className="config-name">{config.name}</span>
         {config.is_default && <Badge>Default</Badge>}
+        {config.supports_vision && <Badge variant="secondary">Vision</Badge>}
         {!config.is_enabled && <Badge variant="secondary">Disabled</Badge>}
       </div>
 

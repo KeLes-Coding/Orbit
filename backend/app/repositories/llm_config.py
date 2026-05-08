@@ -74,8 +74,8 @@ class LLMConfigRepository:
         api_key_ciphertext: str | None,
         provider_options: dict,
         is_default: bool,
+        supports_vision: bool = False,
     ) -> LLMConfig:
-        # flush 后拿到数据库生成的 UUID，refresh 后拿到服务端默认字段。
         config = LLMConfig(
             user_id=user_id,
             name=name,
@@ -85,6 +85,7 @@ class LLMConfigRepository:
             api_key_ciphertext=api_key_ciphertext,
             provider_options=provider_options,
             is_default=is_default,
+            supports_vision=supports_vision,
         )
         self.session.add(config)
         await self.session.flush()

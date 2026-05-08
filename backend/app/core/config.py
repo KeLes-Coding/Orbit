@@ -34,6 +34,11 @@ class Settings(BaseSettings):
     cors_origins: list[str] = Field(
         default_factory=lambda: ["http://localhost:5173", "http://127.0.0.1:5173"]
     )
+    # 文件上传相关配置。
+    file_storage_dir: str = "./uploads"
+    file_max_size_mb: int = 20
+    file_max_extracted_chars: int = 10000
+    file_extraction_wait_seconds: float = 2.0
 
     @field_validator("cors_origins", mode="before")
     @classmethod

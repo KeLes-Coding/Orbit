@@ -58,6 +58,7 @@ export function SettingsView() {
       api_key: string
       provider_options: string
       is_default: boolean
+      supports_vision: boolean
     }) => {
       const models = Array.from(
         new Set(values.models.map((model) => model.trim()).filter(Boolean)),
@@ -67,6 +68,7 @@ export function SettingsView() {
         provider: string
         models: string[]
         is_default: boolean
+        supports_vision: boolean
         base_url?: string
         api_key?: string
         provider_options?: Record<string, unknown>
@@ -75,6 +77,7 @@ export function SettingsView() {
         provider: values.provider.trim(),
         models,
         is_default: values.is_default,
+        supports_vision: values.supports_vision,
       }
 
       if (values.base_url.trim()) payload.base_url = values.base_url.trim()
