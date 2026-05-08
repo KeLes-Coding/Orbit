@@ -24,6 +24,13 @@ export interface Conversation {
   llm_config_id?: string | null
   title?: string | null
   chat_mode: string
+  summary?: string | null
+  summary_updated_at?: string | null
+  summary_message_count?: number
+  active_leaf_message_id?: string | null
+  forked_from_conversation_id?: string | null
+  forked_from_message_id?: string | null
+  summary_leaf_message_id?: string | null
   metadata: Record<string, unknown>
   created_at: string
   updated_at: string
@@ -40,6 +47,15 @@ export interface Message {
   status?: 'completed' | 'streaming' | 'failed' | 'partial' | 'cancelled'
   sequence_no?: number
   langgraph_message_id?: string | null
+  parent_message_id?: string | null
+  active_child_message_id?: string | null
+  depth?: number
+  source_message_id?: string | null
+  revision_type?: 'normal' | 'edit' | 'regenerate' | 'fork_copy' | null
+  sibling_index?: number
+  sibling_count?: number
+  previous_sibling_id?: string | null
+  next_sibling_id?: string | null
   llm_config_id?: string | null
   provider?: string | null
   model?: string | null
@@ -118,6 +134,16 @@ export interface SendMessageResponse {
   assistant_message: Message
 }
 
+export interface BranchSwitchResponse {
+  active_leaf_message_id?: string | null
+  messages: Message[]
+}
+
+export interface ForkConversationResponse {
+  conversation: Conversation
+  messages: Message[]
+}
+
 export type StreamMessageEvent =
   | {
       event: 'conversation.created'
@@ -128,7 +154,7 @@ export type StreamMessageEvent =
   | {
       event: 'message.created'
       data: {
-        user_message: Message
+        user_message?: Message
         assistant_message: Message
       }
     }
