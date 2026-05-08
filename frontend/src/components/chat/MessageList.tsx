@@ -227,16 +227,18 @@ export function MessageList({
       <div className="chat-stream" ref={containerRef}>
         {messages.map((message, idx) => {
           const prev = idx > 0 ? messages[idx - 1] : null
-          const next = idx < messages.length - 1 ? messages[idx + 1] : null
           const showSep = shouldShowSeparator(message, prev)
           const roundIdx = idx === 0
             ? 1
             : messages.slice(0, idx).filter((m) => m.role === "user").length + 1
           const regenerateMessageId =
-            message.role === "user" &&
-            next?.role === "assistant" &&
-            next.parent_message_id === message.id
-              ? next.id
+            message.role === "user"
+              ? messages.find(
+                  (candidate) =>
+                    candidate.role === "assistant" &&
+                    candidate.parent_message_id === message.id &&
+                    candidate.status !== "streaming",
+                )?.id ?? null
               : null
 
           return (
@@ -268,7 +270,7 @@ export function MessageList({
                   onEdit={onEdit}
                   onSwitchBranch={onSwitchBranch}
                   onFork={onFork}
-                  actionsDisabled={isSending}
+                  actionsDisabled={false}
                 />
               </div>
             </div>

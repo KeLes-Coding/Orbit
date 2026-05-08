@@ -211,12 +211,10 @@ export const conversationApi = {
   async *resumeStreamById(
     conversationId: string,
     streamId: string,
-    lastSeq: number,
     signal?: AbortSignal,
   ): AsyncGenerator<StreamMessageEvent> {
     // replay/live 订阅已经下沉到具体 stream_id，避免并行 branch 互相串流。
-    const query = new URLSearchParams({ last_seq: String(lastSeq) })
-    yield* fetchSse(`/conversations/${conversationId}/streams/${streamId}?${query.toString()}`, {
+    yield* fetchSse(`/conversations/${conversationId}/streams/${streamId}`, {
       method: 'GET',
       headers: createHeaders(),
       signal,

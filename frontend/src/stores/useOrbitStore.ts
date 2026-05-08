@@ -41,6 +41,7 @@ interface OrbitStore {
   editingTitle: string
   sidebarCollapsed: boolean
   completedOffscreenConversationIds: Record<string, boolean>
+  receivingConversationIds: Record<string, boolean>
 
   toggleTheme: () => void
   toggleSidebar: () => void
@@ -64,6 +65,8 @@ interface OrbitStore {
   setEditingTitle: (title: string) => void
   markConversationCompletedOffscreen: (id: string) => void
   clearConversationCompletionNotice: (id: string) => void
+  markConversationReceiving: (id: string, receiving: boolean) => void
+  clearReceivingConversations: () => void
   logout: () => void
 }
 
@@ -89,6 +92,7 @@ export const useOrbitStore = create<OrbitStore>((set) => ({
   editingTitle: '',
   sidebarCollapsed: getInitialSidebarCollapsed(),
   completedOffscreenConversationIds: {},
+  receivingConversationIds: {},
 
   toggleTheme: () =>
     set((state) => {
@@ -141,6 +145,19 @@ export const useOrbitStore = create<OrbitStore>((set) => ({
       const { [id]: _removed, ...remaining } = state.completedOffscreenConversationIds
       return { completedOffscreenConversationIds: remaining }
     }),
+  markConversationReceiving: (id, receiving) =>
+    set((state) => {
+      const current = Boolean(state.receivingConversationIds[id])
+      if (current === receiving) return state
+      const next = { ...state.receivingConversationIds }
+      if (receiving) {
+        next[id] = true
+      } else {
+        delete next[id]
+      }
+      return { receivingConversationIds: next }
+    }),
+  clearReceivingConversations: () => set({ receivingConversationIds: {} }),
 
   logout: () =>
     set({
@@ -152,6 +169,7 @@ export const useOrbitStore = create<OrbitStore>((set) => ({
       editingThreadId: null,
       editingTitle: '',
       completedOffscreenConversationIds: {},
+      receivingConversationIds: {},
       authForm: { ...defaultAuthForm },
       activeView: 'chat',
     }),

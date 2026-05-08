@@ -124,9 +124,6 @@ class ConversationService:
             )
             await self.messages.set_conversation_active_leaf(conversation=conversation, message=assistant_message)
             stream_id = self._build_stream_id(assistant_message.id)
-            # 会话级 active_stream 指针只是兼容字段；真正恢复入口已下沉到 message/stream 级。
-            conversation.active_stream_id = stream_id
-            conversation.active_stream_message_id = assistant_message.id
             conversation.has_active_run = True
             await self.conversations.touch(conversation_id)
             await self.session.commit()
@@ -198,8 +195,6 @@ class ConversationService:
         )
         await self.messages.set_conversation_active_leaf(conversation=conversation, message=assistant_message)
         stream_id = self._build_stream_id(assistant_message.id)
-        conversation.active_stream_id = stream_id
-        conversation.active_stream_message_id = assistant_message.id
         conversation.has_active_run = True
         await self.conversations.touch(conversation.id)
         await self.session.commit()
@@ -232,6 +227,7 @@ class ConversationService:
         self._spawn_stream_producer(stream_id=stream_id, conversation_id=conversation.id)
         self._spawn_title_producer(
             conversation_id=conversation.id,
+            stream_id=stream_id,
             user_id=user_id,
             user_message=payload.content,
             expected_title=title,
@@ -297,8 +293,6 @@ class ConversationService:
             )
             await self.messages.set_conversation_active_leaf(conversation=conversation, message=assistant_message)
             stream_id = self._build_stream_id(assistant_message.id)
-            conversation.active_stream_id = stream_id
-            conversation.active_stream_message_id = assistant_message.id
             conversation.has_active_run = True
             await self.conversations.touch(conversation_id)
             await self.session.commit()
@@ -388,8 +382,6 @@ class ConversationService:
             )
             await self.messages.set_conversation_active_leaf(conversation=conversation, message=assistant_message)
             stream_id = self._build_stream_id(assistant_message.id)
-            conversation.active_stream_id = stream_id
-            conversation.active_stream_message_id = assistant_message.id
             conversation.has_active_run = True
             await self.conversations.touch(conversation_id)
             await self.session.commit()
@@ -414,36 +406,12 @@ class ConversationService:
         self._spawn_stream_producer(stream_id=stream_id, conversation_id=conversation_id)
         return stream_id
 
-    async def subscribe_active_stream(
-        self,
-        *,
-        user_id: UUID,
-        conversation_id: UUID,
-        last_seq: int = 0,
-    ) -> AsyncIterator[ConversationStreamEvent]:
-        conversation = await self._get_owned_conversation(
-            user_id=user_id,
-            conversation_id=conversation_id,
-        )
-        stream_id = conversation.active_stream_id
-        if not stream_id:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="当前会话没有活跃流")
-
-        # 这个入口给刷新恢复使用：先看会话指针，再接到对应 active stream 上。
-        stream = await conversation_stream_store.get_stream(stream_id)
-        if stream is None or stream.conversation_id != conversation_id or stream.user_id != user_id:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="流不存在或已过期")
-
-        async for record in conversation_stream_store.subscribe(stream_id, last_seq=last_seq):
-            yield self._to_stream_event(record)
-
     async def subscribe_stream(
         self,
         *,
         user_id: UUID,
         conversation_id: UUID,
         stream_id: str,
-        last_seq: int = 0,
     ) -> AsyncIterator[ConversationStreamEvent]:
         await self._get_owned_conversation(
             user_id=user_id,
@@ -454,7 +422,7 @@ class ConversationService:
         if stream is None or stream.conversation_id != conversation_id or stream.user_id != user_id:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="流不存在或已过期")
 
-        async for record in conversation_stream_store.subscribe(stream_id, last_seq=last_seq):
+        async for record in conversation_stream_store.subscribe(stream_id):
             yield self._to_stream_event(record)
 
     async def get_message_active_stream(
@@ -873,7 +841,6 @@ class ConversationService:
             user_id=user_id,
             conversation_id=conversation_id,
             stream_id=stream_id,
-            last_seq=0,
         ):
             yield event
 
@@ -896,7 +863,6 @@ class ConversationService:
             user_id=user_id,
             conversation_id=conversation_id,
             stream_id=stream_id,
-            last_seq=0,
         ):
             yield event
 
@@ -1006,7 +972,6 @@ class ConversationService:
             user_id=user_id,
             conversation_id=conversation_id,
             stream_id=stream_id,
-            last_seq=0,
         ):
             yield event
 
@@ -1025,7 +990,6 @@ class ConversationService:
             user_id=user_id,
             conversation_id=conversation_id,
             stream_id=stream_id,
-            last_seq=0,
         ):
             yield event
 
@@ -1191,6 +1155,10 @@ class ConversationService:
 
         stream = await conversation_stream_store.get_stream_by_message_id(candidate.id)
         if stream is None or stream.conversation_id != conversation_id:
+            await self._mark_missing_runtime_stream_failed(
+                conversation_id=conversation_id,
+                assistant_message=candidate,
+            )
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="流不存在或已过期")
 
         return ActiveStreamRead(
@@ -1199,6 +1167,22 @@ class ConversationService:
             assistant_message_id=candidate.id,
             stream_id=stream.stream_id,
         )
+
+    async def _mark_missing_runtime_stream_failed(
+        self,
+        *,
+        conversation_id: UUID,
+        assistant_message,
+    ) -> None:
+        if assistant_message.status != "streaming":
+            return
+        await self.messages.fail_assistant_message(
+            message=assistant_message,
+            error="流运行态不存在或已过期，请重新生成",
+        )
+        await self.conversations.recompute_has_active_run(conversation_id)
+        await self.conversations.touch(conversation_id)
+        await self.session.commit()
 
     async def _get_usable_llm_config(self, *, user_id: UUID, conversation: Conversation):
         llm_config_id = conversation.llm_config_id or await self._get_default_llm_config_id(user_id)
@@ -1272,6 +1256,7 @@ class ConversationService:
         self,
         *,
         conversation_id: UUID,
+        stream_id: str,
         user_id: UUID,
         user_message: str,
         expected_title: str,
@@ -1279,6 +1264,7 @@ class ConversationService:
         task = asyncio.create_task(
             self._run_title_producer(
                 conversation_id=conversation_id,
+                stream_id=stream_id,
                 user_id=user_id,
                 user_message=user_message,
                 expected_title=expected_title,
@@ -1287,7 +1273,7 @@ class ConversationService:
         task.add_done_callback(self._handle_stream_producer_result)
 
     def _handle_stream_producer_result(self, task: asyncio.Task) -> None:
-        # 后台任务异常不能静默吞掉，否则 active_stream 可能长期卡住且难排查。
+        # 后台任务异常不能静默吞掉，否则消息运行态可能长期卡住且难排查。
         try:
             task.result()
         except asyncio.CancelledError:
@@ -1313,6 +1299,7 @@ class ConversationService:
         self,
         *,
         conversation_id: UUID,
+        stream_id: str,
         user_id: UUID,
         user_message: str,
         expected_title: str,
@@ -1322,6 +1309,7 @@ class ConversationService:
             worker = ConversationService(session)
             await worker._produce_conversation_title(
                 conversation_id=conversation_id,
+                stream_id=stream_id,
                 user_id=user_id,
                 user_message=user_message,
                 expected_title=expected_title,
@@ -1331,6 +1319,7 @@ class ConversationService:
         self,
         *,
         conversation_id: UUID,
+        stream_id: str,
         user_id: UUID,
         user_message: str,
         expected_title: str,
@@ -1363,10 +1352,6 @@ class ConversationService:
         conversation.title = title
         await self.session.commit()
         await self.session.refresh(conversation)
-
-        stream_id = conversation.active_stream_id
-        if not stream_id:
-            return
 
         try:
             await conversation_stream_store.append_event(
@@ -1437,7 +1422,6 @@ class ConversationService:
                 await self._finalize_stream_conversation_state(
                     conversation=conversation,
                     stream_id=stream_id,
-                    message_id=assistant_message.id,
                 )
                 await conversation_stream_store.append_event(
                     stream_id,
@@ -1464,7 +1448,6 @@ class ConversationService:
                     await self._finalize_stream_conversation_state(
                         conversation=conversation,
                         stream_id=stream_id,
-                        message_id=assistant_message.id,
                     )
                     await conversation_stream_store.append_event(
                         stream_id,
@@ -1517,11 +1500,10 @@ class ConversationService:
                 token_usage=token_usage,
                 response_metadata=response_metadata,
             )
-            # completed/failed/cancelled 之前先清空会话指针，表示这条流已不再是 active 状态。
+            # completed/failed/cancelled 之前更新会话运行态摘要。
             await self._finalize_stream_conversation_state(
                 conversation=conversation,
                 stream_id=stream_id,
-                message_id=assistant_message.id,
             )
             await conversation_stream_store.append_event(
                 stream_id,
@@ -1540,7 +1522,6 @@ class ConversationService:
             await self._finalize_stream_conversation_state(
                 conversation=conversation,
                 stream_id=stream_id,
-                message_id=assistant_message.id,
             )
             await conversation_stream_store.append_event(
                 stream_id,
@@ -1561,7 +1542,6 @@ class ConversationService:
             await self._finalize_stream_conversation_state(
                 conversation=conversation,
                 stream_id=stream_id,
-                message_id=assistant_message.id,
             )
             await conversation_stream_store.append_event(
                 stream_id,
@@ -1609,7 +1589,6 @@ class ConversationService:
             await self._finalize_stream_conversation_state(
                 conversation=conversation,
                 stream_id=stream_id,
-                message_id=assistant_message.id,
             )
             await conversation_stream_store.append_event(
                 stream_id,
@@ -1650,13 +1629,8 @@ class ConversationService:
         *,
         conversation: Conversation,
         stream_id: str,
-        message_id: UUID,
     ) -> None:
-        # 只在当前 active_stream 仍指向本条流时清空，避免误伤更晚启动的新流。
         previous_has_active_run = bool(conversation.has_active_run)
-        if conversation.active_stream_id == stream_id and conversation.active_stream_message_id == message_id:
-            conversation.active_stream_id = None
-            conversation.active_stream_message_id = None
         has_active_run = await self.conversations.recompute_has_active_run(conversation.id)
         await self.conversations.touch(conversation.id)
         await self.session.commit()
@@ -1668,7 +1642,7 @@ class ConversationService:
         )
 
     def _to_stream_event(self, record: StreamEventRecord) -> ConversationStreamEvent:
-        # 对外统一补齐 stream_id / seq / event_id，前端恢复时只需要保存 last_seq。
+        # 对外统一补齐 stream_id / seq / event_id；seq 仅用于调试和未来事件日志后端。
         payload = {
             "stream_id": record.stream_id,
             "seq": record.seq,

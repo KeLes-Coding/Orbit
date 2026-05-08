@@ -3,7 +3,7 @@ from collections.abc import AsyncIterator
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query, Response, status
+from fastapi import APIRouter, Depends, Response, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -71,7 +71,6 @@ async def stream_new_conversation_message(
             user_id=current_user.id,
             conversation_id=conversation_id,
             stream_id=stream_id,
-            last_seq=0,
         ):
             yield encode_sse_event(event)
 
@@ -181,7 +180,6 @@ async def stream_user_message(
             user_id=current_user.id,
             conversation_id=conversation_id,
             stream_id=stream_id,
-            last_seq=0,
         ):
             yield encode_sse_event(event)
 
@@ -264,7 +262,6 @@ async def stream_regenerate_assistant(
             user_id=current_user.id,
             conversation_id=conversation_id,
             stream_id=stream_id,
-            last_seq=0,
         ):
             yield encode_sse_event(event)
 
@@ -300,7 +297,6 @@ async def stream_edit_user_message(
             user_id=current_user.id,
             conversation_id=conversation_id,
             stream_id=stream_id,
-            last_seq=0,
         ):
             yield encode_sse_event(event)
 
@@ -335,7 +331,6 @@ async def subscribe_stream_by_id(
     stream_id: str,
     current_user: Annotated[User, Depends(get_current_user)],
     session: Annotated[AsyncSession, Depends(get_db_session)],
-    last_seq: int = Query(default=0, ge=0),
 ) -> StreamingResponse:
     service = ConversationService(session)
 
@@ -345,35 +340,6 @@ async def subscribe_stream_by_id(
             user_id=current_user.id,
             conversation_id=conversation_id,
             stream_id=stream_id,
-            last_seq=last_seq,
-        ):
-            yield encode_sse_event(event)
-
-    return StreamingResponse(
-        event_generator(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",
-        },
-    )
-
-
-@router.get("/{conversation_id}/stream")
-async def subscribe_active_stream(
-    conversation_id: UUID,
-    current_user: Annotated[User, Depends(get_current_user)],
-    session: Annotated[AsyncSession, Depends(get_db_session)],
-    last_seq: int = Query(default=0, ge=0),
-) -> StreamingResponse:
-    service = ConversationService(session)
-
-    async def event_generator() -> AsyncIterator[str]:
-        # 旧入口暂时保留兼容，后续前端应切到 message -> stream_id 两段式恢复。
-        async for event in service.subscribe_active_stream(
-            user_id=current_user.id,
-            conversation_id=conversation_id,
-            last_seq=last_seq,
         ):
             yield encode_sse_event(event)
 

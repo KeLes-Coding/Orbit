@@ -33,11 +33,6 @@ class Conversation(Base):
     )
     # active_leaf 是当前路径终点的缓存，真实分支选择仍以 messages.active_child 为准。
     active_leaf_message_id: Mapped[UUID | None] = mapped_column(ForeignKey("messages.id", ondelete="SET NULL"))
-    # active_stream_* 只保留会话级运行态信号，具体事件序列在运行时 Store 中维护。
-    active_stream_id: Mapped[str | None] = mapped_column(Text)
-    active_stream_message_id: Mapped[UUID | None] = mapped_column(
-        ForeignKey("messages.id", ondelete="SET NULL")
-    )
     # fork 来源只做追溯记录，新会话会复制消息并独立演进。
     forked_from_conversation_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("conversations.id", ondelete="SET NULL")
@@ -70,9 +65,4 @@ Index(
     "idx_conversations_active_leaf",
     Conversation.active_leaf_message_id,
     postgresql_where=Conversation.active_leaf_message_id.is_not(None),
-)
-Index(
-    "idx_conversations_active_stream",
-    Conversation.active_stream_id,
-    postgresql_where=Conversation.active_stream_id.is_not(None),
 )

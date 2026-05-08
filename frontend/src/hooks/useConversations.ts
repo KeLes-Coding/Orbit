@@ -1,6 +1,7 @@
 import { useMemo, useCallback, useEffect, useRef, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { conversationApi } from '@/api/conversations'
+import { streamManager } from '@/lib/streamManager'
 import { useOrbitStore } from '@/stores/useOrbitStore'
 import type { Conversation, Message, StreamMessageEvent } from '@/api/types'
 
@@ -13,11 +14,17 @@ interface NormalizedMessage extends Message {
 }
 
 interface ActiveStreamHandle {
+  streamKey: string
   conversationId: string | null
   messageId: string | null
   streamId: string | null
-  lastSeq: number
   controller: AbortController
+}
+
+interface StreamMessageSnapshot {
+  message: Message
+  content: string
+  reasoningContent: string
 }
 
 function normalizeMessage(message: Message | null | undefined): NormalizedMessage | null {
@@ -88,27 +95,62 @@ function replaceVisibleTail(
 }
 
 function appendMessageDelta(messages: Message[], messageId: string, delta: string): Message[] {
-  return messages.map((message) =>
-    message.id === messageId
-      ? {
-          ...message,
-          content: `${message.content || ''}${delta}`,
-          status: 'streaming',
-        }
-      : message,
-  )
+  let didUpdate = false
+  const nextMessages = messages.map((message) => {
+    if (message.id !== messageId) return message
+    didUpdate = true
+    return {
+      ...message,
+      content: `${message.content || ''}${delta}`,
+      status: 'streaming' as const,
+    }
+  })
+  return didUpdate ? nextMessages : messages
 }
 
 function appendMessageReasoningDelta(messages: Message[], messageId: string, delta: string): Message[] {
-  return messages.map((message) =>
-    message.id === messageId
-      ? {
-          ...message,
-          reasoning_content: `${message.reasoning_content || ''}${delta}`,
-          status: 'streaming',
-        }
-      : message,
-  )
+  let didUpdate = false
+  const nextMessages = messages.map((message) => {
+    if (message.id !== messageId) return message
+    didUpdate = true
+    return {
+      ...message,
+      reasoning_content: `${message.reasoning_content || ''}${delta}`,
+      status: 'streaming' as const,
+    }
+  })
+  return didUpdate ? nextMessages : messages
+}
+
+function isMessageVisible(messages: Message[], messageId: string | null | undefined): boolean {
+  return Boolean(messageId && messages.some((message) => message.id === messageId))
+}
+
+function hydrateStreamSnapshots(
+  messages: Message[],
+  snapshots: Record<string, StreamMessageSnapshot>,
+): Message[] {
+  let didUpdate = false
+  const hydrated = messages.map((message) => {
+    const snapshot = snapshots[message.id]
+    if (!snapshot) return message
+    const nextMessage = {
+      ...message,
+      ...snapshot.message,
+      content: snapshot.content,
+      reasoning_content: snapshot.reasoningContent,
+    }
+    if (
+      nextMessage.content === message.content &&
+      nextMessage.reasoning_content === message.reasoning_content &&
+      nextMessage.status === message.status
+    ) {
+      return message
+    }
+    didUpdate = true
+    return nextMessage
+  })
+  return didUpdate ? hydrated : messages
 }
 
 function createIdempotencyKey(prefix: string): string {
@@ -129,6 +171,7 @@ export function useConversations(
   const pendingConversationLlmModel = useOrbitStore((s) => s.pendingConversationLlmModel)
   const draft = useOrbitStore((s) => s.draft)
   const isCreatingConversationTitle = useOrbitStore((s) => s.isCreatingConversationTitle)
+  const receivingConversationIds = useOrbitStore((s) => s.receivingConversationIds)
   const setActiveConversationId = useOrbitStore((s) => s.setActiveConversationId)
   const setPendingConversationLlmConfigId = useOrbitStore((s) => s.setPendingConversationLlmConfigId)
   const setPendingConversationLlmModel = useOrbitStore((s) => s.setPendingConversationLlmModel)
@@ -139,12 +182,11 @@ export function useConversations(
   const markConversationCompletedOffscreen = useOrbitStore((s) => s.markConversationCompletedOffscreen)
   const clearConversationCompletionNotice = useOrbitStore((s) => s.clearConversationCompletionNotice)
   const queryClient = useQueryClient()
-  const [streamingConversationIds, setStreamingConversationIds] = useState<Set<string>>(() => new Set())
   const [isPendingNewConversationStream, setIsPendingNewConversationStream] = useState(false)
-  const activeStreamRefs = useRef<Record<string, ActiveStreamHandle>>({})
   const pendingNewConversationStreamRef = useRef<ActiveStreamHandle | null>(null)
-  const streamCursorRef = useRef<Record<string, { streamId: string | null; lastSeq: number }>>({})
   const activeConversationIdRef = useRef(activeConversationId)
+  const resumeAttemptRef = useRef<Record<string, boolean>>({})
+  const streamMessageSnapshotsRef = useRef<Record<string, StreamMessageSnapshot>>({})
 
   useEffect(() => {
     activeConversationIdRef.current = activeConversationId
@@ -196,8 +238,30 @@ export function useConversations(
     () => conversations.find((c) => c.id === activeConversationId),
     [conversations, activeConversationId],
   )
+  const currentBranchIsStreaming = useMemo(
+    () =>
+      Boolean(
+        activeConversation?.active_leaf_message_id &&
+          rawMessages.some(
+            (message) =>
+              message.id === activeConversation.active_leaf_message_id &&
+              message.role === 'assistant' &&
+              message.status === 'streaming',
+          ),
+      ),
+    [activeConversation?.active_leaf_message_id, rawMessages],
+  )
+  const currentBranchHasPendingLocalStream = useMemo(
+    () =>
+      Boolean(
+        activeConversationId &&
+          receivingConversationIds[activeConversationId] &&
+          streamManager.getByConversation(activeConversationId).some((stream) => stream.messageId === null),
+      ),
+    [activeConversationId, receivingConversationIds],
+  )
   const isActiveConversationStreaming = activeConversationId
-    ? streamingConversationIds.has(activeConversationId)
+    ? currentBranchIsStreaming || currentBranchHasPendingLocalStream
     : isPendingNewConversationStream
 
   // 只有首次没有任何缓存消息时才显示 loading，切页返回时保留现有内容避免闪烁。
@@ -209,50 +273,18 @@ export function useConversations(
     [],
   )
 
-  const updateStreamCursor = useCallback((conversationId: string, streamId: string, seq: number) => {
-    // 前端只需要记住每个会话最近收到的 seq，恢复时把它回传给后端即可。
-    const current = streamCursorRef.current[conversationId]
-    if (!current || current.streamId !== streamId || seq > current.lastSeq) {
-      streamCursorRef.current[conversationId] = { streamId, lastSeq: seq }
-    }
-  }, [])
-
-  const clearStreamCursor = useCallback((conversationId: string) => {
-    delete streamCursorRef.current[conversationId]
-  }, [])
-
-  const markConversationStreaming = useCallback((conversationId: string, isStreaming: boolean) => {
-    setStreamingConversationIds((current) => {
-      const next = new Set(current)
-      if (isStreaming) {
-        next.add(conversationId)
-      } else {
-        next.delete(conversationId)
-      }
-      return next
-    })
-  }, [])
-
   const markConversationStreamState = useCallback(
     (
       conversationId: string,
-      streamId: string | null,
-      messageId: string | null,
       hasActiveRun?: boolean,
     ) => {
+      if (typeof hasActiveRun !== 'boolean') return
       queryClient.setQueryData<Conversation[]>(['conversations'], (old = []) =>
         old.map((conversation) =>
           conversation.id === conversationId
             ? {
                 ...conversation,
-                active_stream_id: streamId,
-                active_stream_message_id: messageId,
-                has_active_run:
-                  typeof hasActiveRun === 'boolean'
-                    ? hasActiveRun
-                    : streamId
-                      ? true
-                      : conversation.has_active_run,
+                has_active_run: hasActiveRun,
               }
             : conversation,
         ),
@@ -271,24 +303,69 @@ export function useConversations(
     [queryClient],
   )
 
+  const rememberStreamMessage = useCallback((message: Message) => {
+    if (message.role !== 'assistant') return
+    streamMessageSnapshotsRef.current[message.id] = {
+      message,
+      content: message.content || '',
+      reasoningContent: message.reasoning_content || '',
+    }
+  }, [])
+
+  const appendStreamSnapshotContent = useCallback((messageId: string, delta: string) => {
+    const current = streamMessageSnapshotsRef.current[messageId]
+    if (!current) return
+    streamMessageSnapshotsRef.current[messageId] = {
+      ...current,
+      content: `${current.content}${delta}`,
+      message: {
+        ...current.message,
+        content: `${current.content}${delta}`,
+        status: 'streaming' as const,
+      },
+    }
+  }, [])
+
+  const appendStreamSnapshotReasoning = useCallback((messageId: string, delta: string) => {
+    const current = streamMessageSnapshotsRef.current[messageId]
+    if (!current) return
+    streamMessageSnapshotsRef.current[messageId] = {
+      ...current,
+      reasoningContent: `${current.reasoningContent}${delta}`,
+      message: {
+        ...current.message,
+        reasoning_content: `${current.reasoningContent}${delta}`,
+        status: 'streaming' as const,
+      },
+    }
+  }, [])
+
+  const hydrateCachedStreamSnapshots = useCallback(
+    (conversationId: string) => {
+      queryClient.setQueryData<Message[]>(['messages', conversationId], (old = []) =>
+        hydrateStreamSnapshots(old, streamMessageSnapshotsRef.current),
+      )
+    },
+    [queryClient],
+  )
+
   const applyStreamEvent = useCallback(
-    (conversationId: string, streamEvent: StreamMessageEvent, controller: AbortController) => {
-      updateStreamCursor(conversationId, streamEvent.data.stream_id, streamEvent.data.seq)
+    (conversationId: string, streamKey: string, streamEvent: StreamMessageEvent, controller: AbortController) => {
+      let nextStreamKey = streamKey
+      streamManager.update(nextStreamKey, {
+        streamId: streamEvent.data.stream_id,
+        status: 'streaming',
+      })
 
       if (streamEvent.event === 'conversation.created') {
-        // New Chat 的首条事件里也带 stream 元信息，先把游标和会话状态记下来。
-        markConversationStreamState(
-          streamEvent.data.conversation.id,
-          streamEvent.data.stream_id,
-          streamEvent.data.conversation.active_stream_message_id ?? null,
-        )
+        markConversationStreamState(streamEvent.data.conversation.id, true)
         upsertConversation(streamEvent.data.conversation)
-        return
+        return nextStreamKey
       }
 
       if (streamEvent.event === 'conversation.updated') {
         upsertConversation(streamEvent.data.conversation)
-        return
+        return nextStreamKey
       }
 
       if (streamEvent.event === 'conversation.run_state_changed') {
@@ -299,61 +376,62 @@ export function useConversations(
               ? {
                   ...conversation,
                   has_active_run: streamEvent.data.has_active_run,
-                  active_stream_id: streamEvent.data.has_active_run ? conversation.active_stream_id : null,
-                  active_stream_message_id: streamEvent.data.has_active_run
-                    ? conversation.active_stream_message_id
-                    : null,
                 }
               : conversation,
           ),
         )
         if (!streamEvent.data.has_active_run) {
-          markConversationStreamState(conversationId, null, null, false)
-          markConversationStreaming(conversationId, false)
-          if (activeStreamRefs.current[conversationId]?.controller === controller) {
-            delete activeStreamRefs.current[conversationId]
+          markConversationStreamState(conversationId, false)
+          if (streamManager.get(nextStreamKey)?.controller === controller) {
+            streamManager.remove(nextStreamKey)
           }
-          clearStreamCursor(conversationId)
         }
-        return
+        return nextStreamKey
       }
 
       if (streamEvent.event === 'message.created') {
-        activeStreamRefs.current[conversationId] = {
+        rememberStreamMessage(streamEvent.data.assistant_message)
+        nextStreamKey = streamManager.adoptMessageId(nextStreamKey, streamEvent.data.assistant_message.id)
+        streamManager.set({
+          streamKey: nextStreamKey,
           conversationId,
           messageId: streamEvent.data.assistant_message.id,
           streamId: streamEvent.data.stream_id,
-          lastSeq: streamEvent.data.seq,
           controller,
-        }
-        markConversationStreaming(conversationId, true)
-        markConversationStreamState(
-          conversationId,
-          streamEvent.data.stream_id,
-          streamEvent.data.assistant_message.id,
-        )
+          source: streamManager.get(nextStreamKey)?.source ?? 'created',
+          status: 'streaming',
+        })
+        markConversationStreamState(conversationId, true)
         queryClient.setQueryData<Message[]>(['messages', conversationId], (old = []) => {
+          const parentMessageId =
+            streamEvent.data.user_message?.parent_message_id ??
+            streamEvent.data.assistant_message.parent_message_id
+          if (old.length > 0 && parentMessageId && !isMessageVisible(old, parentMessageId)) {
+            return old
+          }
           return replaceVisibleTail(
             old,
             streamEvent.data.user_message,
             streamEvent.data.assistant_message,
           )
         })
-        return
+        return nextStreamKey
       }
 
       if (streamEvent.event === 'message.delta') {
+        appendStreamSnapshotContent(streamEvent.data.message_id, streamEvent.data.delta)
         queryClient.setQueryData<Message[]>(['messages', conversationId], (old = []) =>
           appendMessageDelta(old, streamEvent.data.message_id, streamEvent.data.delta),
         )
-        return
+        return nextStreamKey
       }
 
       if (streamEvent.event === 'message.reasoning_delta') {
+        appendStreamSnapshotReasoning(streamEvent.data.message_id, streamEvent.data.delta)
         queryClient.setQueryData<Message[]>(['messages', conversationId], (old = []) =>
           appendMessageReasoningDelta(old, streamEvent.data.message_id, streamEvent.data.delta),
         )
-        return
+        return nextStreamKey
       }
 
       if (
@@ -361,31 +439,36 @@ export function useConversations(
         streamEvent.event === 'message.failed' ||
         streamEvent.event === 'message.cancelled'
       ) {
-        markConversationStreamState(conversationId, null, null, false)
-        markConversationStreaming(conversationId, false)
-        if (activeStreamRefs.current[conversationId]?.controller === controller) {
-          delete activeStreamRefs.current[conversationId]
+        rememberStreamMessage(streamEvent.data.message)
+        streamManager.update(nextStreamKey, {
+          status:
+            streamEvent.event === 'message.completed'
+              ? 'completed'
+              : streamEvent.event === 'message.failed'
+                ? 'failed'
+                : 'cancelled',
+        })
+        if (streamManager.get(nextStreamKey)?.controller === controller) {
+          streamManager.remove(nextStreamKey)
         }
-        clearStreamCursor(conversationId)
-        if (
-          streamEvent.event === 'message.completed' &&
-          activeConversationIdRef.current !== conversationId
-        ) {
+        if (streamEvent.event === 'message.completed' && activeConversationIdRef.current !== conversationId) {
           markConversationCompletedOffscreen(conversationId)
         }
       }
 
-      queryClient.setQueryData<Message[]>(['messages', conversationId], (old = []) =>
-        upsertMessage(old, streamEvent.data.message),
-      )
+      queryClient.setQueryData<Message[]>(['messages', conversationId], (old = []) => {
+        const messageStillVisible = old.some((message) => message.id === streamEvent.data.message.id)
+        return messageStillVisible ? upsertMessage(old, streamEvent.data.message) : old
+      })
+      return nextStreamKey
     },
     [
-      clearStreamCursor,
       markConversationCompletedOffscreen,
       markConversationStreamState,
-      markConversationStreaming,
+      appendStreamSnapshotContent,
+      appendStreamSnapshotReasoning,
       queryClient,
-      updateStreamCursor,
+      rememberStreamMessage,
       upsertConversation,
     ],
   )
@@ -417,6 +500,7 @@ export function useConversations(
       const idempotencyKey = createIdempotencyKey('msg')
       const localId = Date.now()
       const controller = new AbortController()
+      let streamKey = streamManager.makePendingKey(conversationId, 'send')
 
       // 后端返回真实消息前先插入本地占位，保证发送后 UI 立即有反馈。
       queryClient.setQueryData<Message[]>(['messages', conversationId], [
@@ -440,14 +524,14 @@ export function useConversations(
         },
       ])
 
-      markConversationStreaming(conversationId, true)
-      activeStreamRefs.current[conversationId] = {
+      streamManager.set({
+        streamKey,
         conversationId,
         messageId: null,
         streamId: null,
-        lastSeq: 0,
         controller,
-      }
+        source: 'created',
+      })
 
       try {
         for await (const streamEvent of conversationApi.streamMessage(
@@ -460,7 +544,7 @@ export function useConversations(
           },
           controller.signal,
         )) {
-          applyStreamEvent(conversationId, streamEvent, controller)
+          streamKey = applyStreamEvent(conversationId, streamKey, streamEvent, controller)
         }
         queryClient.invalidateQueries({ queryKey: ['conversations'] })
       } catch (error) {
@@ -470,23 +554,29 @@ export function useConversations(
         queryClient.setQueryData(['messages', conversationId], previousMessages)
         setErrorMessage(error instanceof Error ? error.message : 'Streaming request failed.')
       } finally {
-        if (activeStreamRefs.current[conversationId]?.controller === controller) {
-          delete activeStreamRefs.current[conversationId]
+        if (streamManager.get(streamKey)?.controller === controller) {
+          streamManager.remove(streamKey)
         }
-        markConversationStreaming(conversationId, false)
       }
     },
-    [applyStreamEvent, markConversationStreaming, queryClient, setErrorMessage],
+    [applyStreamEvent, queryClient, setErrorMessage],
   )
 
   const streamNewConversationMessage = useCallback(
     async (content: string, llmConfigId: string | null, model?: string | null) => {
       const controller = new AbortController()
       let conversationId: string | null = null
+      let streamKey: string | null = null
 
       setIsPendingNewConversationStream(true)
       setIsCreatingConversationTitle(true)
-      pendingNewConversationStreamRef.current = { conversationId: null, messageId: null, streamId: null, lastSeq: 0, controller }
+      pendingNewConversationStreamRef.current = {
+        streamKey: streamManager.makePendingKey('new-conversation', 'new'),
+        conversationId: null,
+        messageId: null,
+        streamId: null,
+        controller,
+      }
 
       try {
         for await (const streamEvent of conversationApi.streamNewConversationMessage(
@@ -503,16 +593,18 @@ export function useConversations(
           if (streamEvent.event === 'conversation.created') {
             const conversation = streamEvent.data.conversation
             conversationId = conversation.id
+            streamKey = streamManager.makePendingKey(conversation.id, 'new')
             pendingNewConversationStreamRef.current = null
             setIsPendingNewConversationStream(false)
-            activeStreamRefs.current[conversation.id] = {
+            streamManager.set({
+              streamKey,
               conversationId,
               messageId: null,
               streamId: streamEvent.data.stream_id,
-              lastSeq: streamEvent.data.seq,
               controller,
-            }
-            markConversationStreaming(conversation.id, true)
+              source: 'created',
+              status: 'streaming',
+            })
             setIsCreatingConversationTitle(false)
             queryClient.setQueryData<Conversation[]>(['conversations'], (old = []) => [
               conversation,
@@ -526,7 +618,10 @@ export function useConversations(
           }
 
           if (!conversationId) continue
-          applyStreamEvent(conversationId, streamEvent, controller)
+          if (!streamKey) {
+            streamKey = streamManager.makePendingKey(conversationId, 'new')
+          }
+          streamKey = applyStreamEvent(conversationId, streamKey, streamEvent, controller)
         }
         queryClient.invalidateQueries({ queryKey: ['conversations'] })
       } catch (error) {
@@ -536,9 +631,8 @@ export function useConversations(
         setErrorMessage(error instanceof Error ? error.message : 'Streaming request failed.')
       } finally {
         pendingNewConversationStreamRef.current = null
-        if (conversationId && activeStreamRefs.current[conversationId]?.controller === controller) {
-          delete activeStreamRefs.current[conversationId]
-          markConversationStreaming(conversationId, false)
+        if (streamKey && streamManager.get(streamKey)?.controller === controller) {
+          streamManager.remove(streamKey)
         }
         setIsCreatingConversationTitle(false)
         setIsPendingNewConversationStream(false)
@@ -546,7 +640,6 @@ export function useConversations(
     },
     [
       applyStreamEvent,
-      markConversationStreaming,
       queryClient,
       setActiveConversationId,
       setActiveView,
@@ -559,7 +652,7 @@ export function useConversations(
   const sendMessage = useCallback(() => {
     const content = draft.trim()
     const isCurrentThreadStreaming = activeConversationId
-      ? streamingConversationIds.has(activeConversationId)
+      ? currentBranchIsStreaming || currentBranchHasPendingLocalStream
       : isPendingNewConversationStream
     if (!content || isCurrentThreadStreaming) return
     if (!hasUser) {
@@ -583,7 +676,8 @@ export function useConversations(
     pendingConversationLlmModel,
     hasUser,
     isPendingNewConversationStream,
-    streamingConversationIds,
+    currentBranchIsStreaming,
+    currentBranchHasPendingLocalStream,
     streamMessage,
     streamNewConversationMessage,
     setDraft,
@@ -592,17 +686,18 @@ export function useConversations(
 
   const regenerateAssistant = useCallback(
     async (messageId: string, model?: string | null) => {
-      if (!activeConversationId || streamingConversationIds.has(activeConversationId)) return
+      if (!activeConversationId) return
       const controller = new AbortController()
-      markConversationStreaming(activeConversationId, true)
+      let streamKey = streamManager.makePendingKey(activeConversationId, 'regen')
       setErrorMessage('')
-      activeStreamRefs.current[activeConversationId] = {
+      streamManager.set({
+        streamKey,
         conversationId: activeConversationId,
         messageId: null,
         streamId: null,
-        lastSeq: 0,
         controller,
-      }
+        source: 'created',
+      })
 
       try {
         const idempotencyKey = createIdempotencyKey('regen')
@@ -613,7 +708,7 @@ export function useConversations(
           controller.signal,
           model ?? null,
         )) {
-          applyStreamEvent(activeConversationId, streamEvent, controller)
+          streamKey = applyStreamEvent(activeConversationId, streamKey, streamEvent, controller)
         }
         queryClient.invalidateQueries({ queryKey: ['conversations'] })
       } catch (error) {
@@ -622,35 +717,33 @@ export function useConversations(
         }
         setErrorMessage(error instanceof Error ? error.message : 'Regenerate request failed.')
       } finally {
-        if (activeStreamRefs.current[activeConversationId]?.controller === controller) {
-          delete activeStreamRefs.current[activeConversationId]
+        if (streamManager.get(streamKey)?.controller === controller) {
+          streamManager.remove(streamKey)
         }
-        markConversationStreaming(activeConversationId, false)
       }
     },
     [
       activeConversationId,
       applyStreamEvent,
-      markConversationStreaming,
       queryClient,
       setErrorMessage,
-      streamingConversationIds,
     ],
   )
 
   const editUserMessage = useCallback(
     async (messageId: string, content: string, model?: string | null) => {
-      if (!activeConversationId || streamingConversationIds.has(activeConversationId)) return
+      if (!activeConversationId) return
       const controller = new AbortController()
-      markConversationStreaming(activeConversationId, true)
+      let streamKey = streamManager.makePendingKey(activeConversationId, 'edit')
       setErrorMessage('')
-      activeStreamRefs.current[activeConversationId] = {
+      streamManager.set({
+        streamKey,
         conversationId: activeConversationId,
         messageId: null,
         streamId: null,
-        lastSeq: 0,
         controller,
-      }
+        source: 'created',
+      })
 
       try {
         for await (const streamEvent of conversationApi.streamEditUserMessage(
@@ -663,7 +756,7 @@ export function useConversations(
           },
           controller.signal,
         )) {
-          applyStreamEvent(activeConversationId, streamEvent, controller)
+          streamKey = applyStreamEvent(activeConversationId, streamKey, streamEvent, controller)
         }
         queryClient.invalidateQueries({ queryKey: ['conversations'] })
       } catch (error) {
@@ -672,28 +765,28 @@ export function useConversations(
         }
         setErrorMessage(error instanceof Error ? error.message : 'Edit request failed.')
       } finally {
-        if (activeStreamRefs.current[activeConversationId]?.controller === controller) {
-          delete activeStreamRefs.current[activeConversationId]
+        if (streamManager.get(streamKey)?.controller === controller) {
+          streamManager.remove(streamKey)
         }
-        markConversationStreaming(activeConversationId, false)
       }
     },
     [
       activeConversationId,
       applyStreamEvent,
-      markConversationStreaming,
       queryClient,
       setErrorMessage,
-      streamingConversationIds,
     ],
   )
 
   const switchBranch = useCallback(
     async (messageId: string) => {
-      if (!activeConversationId || streamingConversationIds.has(activeConversationId)) return
+      if (!activeConversationId) return
       try {
         const response = await conversationApi.switchBranch(activeConversationId, messageId)
-        queryClient.setQueryData<Message[]>(['messages', activeConversationId], response.messages)
+        queryClient.setQueryData<Message[]>(
+          ['messages', activeConversationId],
+          hydrateStreamSnapshots(response.messages, streamMessageSnapshotsRef.current),
+        )
         queryClient.setQueryData<Conversation[]>(['conversations'], (old = []) =>
           old.map((conversation) =>
             conversation.id === activeConversationId
@@ -705,12 +798,12 @@ export function useConversations(
         setErrorMessage(error instanceof Error ? error.message : 'Failed to switch branch.')
       }
     },
-    [activeConversationId, queryClient, setErrorMessage, streamingConversationIds],
+    [activeConversationId, queryClient, setErrorMessage],
   )
 
   const forkConversation = useCallback(
     async (messageId: string, title?: string | null) => {
-      if (!activeConversationId || streamingConversationIds.has(activeConversationId)) return null
+      if (!activeConversationId) return null
       try {
         const response = await conversationApi.forkConversation(activeConversationId, messageId, title)
         queryClient.setQueryData<Conversation[]>(['conversations'], (old = []) => [
@@ -733,20 +826,21 @@ export function useConversations(
       setActiveConversationId,
       setActiveView,
       setErrorMessage,
-      streamingConversationIds,
     ],
   )
 
   const stopGeneration = useCallback(async () => {
+    const conversationStreams = activeConversationId ? streamManager.getByConversation(activeConversationId) : []
     const activeStream = activeConversationId
-      ? activeStreamRefs.current[activeConversationId]
+      ? streamManager.getByMessageId(activeConversation?.active_leaf_message_id) ??
+        conversationStreams[conversationStreams.length - 1] ??
+        null
       : pendingNewConversationStreamRef.current
     if (!activeStream) return
     if (!activeStream.messageId) {
       activeStream.controller.abort()
       if (activeStream.conversationId) {
-        delete activeStreamRefs.current[activeStream.conversationId]
-        markConversationStreaming(activeStream.conversationId, false)
+        streamManager.remove(activeStream.streamKey)
       } else {
         pendingNewConversationStreamRef.current = null
         setIsPendingNewConversationStream(false)
@@ -771,13 +865,12 @@ export function useConversations(
       setErrorMessage(error instanceof Error ? error.message : 'Failed to stop generation.')
     } finally {
       if (activeStream.conversationId) {
-        delete activeStreamRefs.current[activeStream.conversationId]
-        markConversationStreaming(activeStream.conversationId, false)
+        streamManager.remove(activeStream.streamKey)
       }
     }
   }, [
     activeConversationId,
-    markConversationStreaming,
+    activeConversation?.active_leaf_message_id,
     queryClient,
     setErrorMessage,
     setIsCreatingConversationTitle,
@@ -788,44 +881,48 @@ export function useConversations(
     if (!hasUser || !activeConversationId || !activeConversation?.has_active_run) return
     if (messagesQuery.isLoading || messagesQuery.isFetching) return
 
-    const currentStream = activeStreamRefs.current[activeConversationId]
-    if (currentStream?.conversationId === activeConversationId) {
+    const streamingAssistant =
+      [...rawMessages]
+        .reverse()
+        .find((message) => message.role === 'assistant' && message.status === 'streaming') ?? null
+    if (!streamingAssistant) return
+
+    const resumeMessageId = streamingAssistant.id
+    if (streamManager.getByMessageId(resumeMessageId)?.conversationId === activeConversationId) {
+      hydrateCachedStreamSnapshots(activeConversationId)
       return
     }
 
-    const visibleLeafMessageId =
-      activeConversation.active_leaf_message_id ?? rawMessages[rawMessages.length - 1]?.id ?? null
-    if (!visibleLeafMessageId) return
-
-    const controller = new AbortController()
+    const attemptKey = `${activeConversationId}:${resumeMessageId}`
+    if (resumeAttemptRef.current[attemptKey]) return
+    resumeAttemptRef.current[attemptKey] = true
 
     void (async () => {
+      const controller = new AbortController()
+      let streamKey: string | null = null
       try {
         const activeStream = await conversationApi.getMessageActiveStream(
           activeConversationId,
-          visibleLeafMessageId,
+          resumeMessageId,
         )
-        const savedCursor = streamCursorRef.current[activeConversationId]
-        const lastSeq =
-          savedCursor && savedCursor.streamId === activeStream.stream_id ? savedCursor.lastSeq : 0
-
+        streamKey = activeStream.assistant_message_id
         // 刷新页面、重新进入会话或切 branch 后，先锁定当前 visible branch，再恢复它对应的流。
-        activeStreamRefs.current[activeConversationId] = {
+        streamManager.set({
+          streamKey,
           conversationId: activeConversationId,
           messageId: activeStream.assistant_message_id,
           streamId: activeStream.stream_id,
-          lastSeq,
           controller,
-        }
-        markConversationStreaming(activeConversationId, true)
+          source: 'resumed',
+          status: 'streaming',
+        })
 
         for await (const streamEvent of conversationApi.resumeStreamById(
           activeConversationId,
           activeStream.stream_id,
-          lastSeq,
           controller.signal,
         )) {
-          applyStreamEvent(activeConversationId, streamEvent, controller)
+          streamKey = applyStreamEvent(activeConversationId, streamKey, streamEvent, controller)
         }
         queryClient.invalidateQueries({ queryKey: ['conversations'] })
       } catch (error) {
@@ -833,28 +930,26 @@ export function useConversations(
           return
         }
         const message = error instanceof Error ? error.message : 'Resume stream request failed.'
-        if (message !== '当前分支没有活跃流') {
+        if (message === '当前分支没有活跃流' || message === '流不存在或已过期') {
+          queryClient.invalidateQueries({ queryKey: ['conversations'] })
+          queryClient.invalidateQueries({ queryKey: ['messages', activeConversationId] })
+        } else {
           setErrorMessage(message)
         }
       } finally {
-        if (activeStreamRefs.current[activeConversationId]?.controller === controller) {
-          delete activeStreamRefs.current[activeConversationId]
+        if (streamKey && streamManager.get(streamKey)?.controller === controller) {
+          streamManager.remove(streamKey)
         }
-        markConversationStreaming(activeConversationId, false)
+        delete resumeAttemptRef.current[attemptKey]
       }
     })()
-
-    return () => {
-      controller.abort()
-    }
   }, [
-    activeConversation?.active_leaf_message_id,
     activeConversation?.has_active_run,
     activeConversationId,
     applyStreamEvent,
     enableStreamResume,
     hasUser,
-    markConversationStreaming,
+    hydrateCachedStreamSnapshots,
     messagesQuery.isFetching,
     messagesQuery.isLoading,
     queryClient,

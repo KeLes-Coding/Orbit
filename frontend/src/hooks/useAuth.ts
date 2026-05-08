@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { authApi } from '@/api/auth'
 import { getStoredToken, setStoredToken, clearStoredToken } from '@/api/client'
+import { streamManager } from '@/lib/streamManager'
 import { useOrbitStore } from '@/stores/useOrbitStore'
 import type { RegisterPayload } from '@/api/types'
 
@@ -114,6 +115,7 @@ export function useAuth() {
   }
 
   const logout = () => {
+    streamManager.abortAll()
     clearStoredToken()
     logoutStore()
     setErrorMessage('')

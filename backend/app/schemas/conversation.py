@@ -36,8 +36,6 @@ class ConversationRead(BaseModel):
     has_active_run: bool
     next_message_sequence_no: int
     active_leaf_message_id: UUID | None
-    active_stream_id: str | None
-    active_stream_message_id: UUID | None
     forked_from_conversation_id: UUID | None
     forked_from_message_id: UUID | None
     summary_leaf_message_id: UUID | None

@@ -112,7 +112,7 @@ class ConversationStreamStore:
             queue.put_nowait(record)
         return record
 
-    async def subscribe(self, stream_id: str, *, last_seq: int = 0) -> AsyncIterator[StreamEventRecord]:
+    async def subscribe(self, stream_id: str) -> AsyncIterator[StreamEventRecord]:
         stream = await self.get_stream(stream_id)
         if stream is None:
             return
@@ -124,8 +124,8 @@ class ConversationStreamStore:
             current = self._streams.get(stream_id)
             if current is None:
                 return
-            # 新订阅者先回放 last_seq 之后的缺失事件，再无缝切到 live 队列。
-            replay_records = [record for record in current.event_log if record.seq > last_seq]
+            # 新订阅者先回放当前内存窗口内的完整事件日志，再无缝切到 live 队列。
+            replay_records = list(current.event_log)
             should_wait_live = current.is_active
             if should_wait_live:
                 current.subscribers[subscriber_id] = StreamSubscriber(
@@ -144,9 +144,7 @@ class ConversationStreamStore:
                 record = await queue.get()
                 if record is None:
                     break
-                if record.seq > last_seq:
-                    last_seq = record.seq
-                    yield record
+                yield record
         finally:
             async with self._lock:
                 current = self._streams.get(stream_id)

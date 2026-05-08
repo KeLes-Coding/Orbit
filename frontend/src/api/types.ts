@@ -30,8 +30,6 @@ export interface Conversation {
   has_active_run?: boolean
   next_message_sequence_no?: number
   active_leaf_message_id?: string | null
-  active_stream_id?: string | null
-  active_stream_message_id?: string | null
   forked_from_conversation_id?: string | null
   forked_from_message_id?: string | null
   summary_leaf_message_id?: string | null
