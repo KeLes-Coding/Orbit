@@ -263,7 +263,11 @@ export function MessageList({
                 <MessageBubble
                   message={message}
                   isCurrentBranchLeaf={message.id === currentLeafMessageId}
-                  isCurrentBranchRunning={message.id === currentLeafMessageId && !!hasActiveRun}
+                  isCurrentBranchRunning={
+                    message.id === currentLeafMessageId &&
+                    message.status === "streaming" &&
+                    !!hasActiveRun
+                  }
                   onRetry={onRetry}
                   onRegenerate={onRegenerate}
                   regenerateMessageId={regenerateMessageId}
