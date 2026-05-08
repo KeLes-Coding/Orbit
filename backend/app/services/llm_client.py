@@ -44,6 +44,7 @@ class LLMClient:
         config: LLMConfig,
         messages: list[Message],
         summary: str | None = None,
+        model: str | None = None,
     ) -> LLMCompletion:
         # LLMClient 只做运行时编排；具体 provider 差异交给 registry 下的 provider 实现。
         provider = get_provider(config.provider)
@@ -53,8 +54,8 @@ class LLMClient:
         chat_messages = self._build_langchain_messages(messages=messages, summary=summary)
 
         try:
-            # from_model_config 会在 provider 层解密 API Key，并构造不含 ORM 的运行时配置。
-            chat_model = provider.build_chat_model(provider.from_model_config(config))
+            runtime_config = provider.from_model_config(config, model=model)
+            chat_model = provider.build_chat_model(runtime_config)
         except LLMProviderError as exc:
             raise LLMClientError(str(exc)) from exc
         except Exception as exc:
@@ -64,6 +65,7 @@ class LLMClient:
             model=chat_model,
             messages=chat_messages,
             config=config,
+            runtime_config=runtime_config,
         )
 
     async def stream(
@@ -72,6 +74,7 @@ class LLMClient:
         config: LLMConfig,
         messages: list[Message],
         summary: str | None = None,
+        model: str | None = None,
     ) -> AsyncIterator[LLMStreamChunk]:
         # 与 generate 复用同一套上下文组装和 provider 初始化，只把 ainvoke 换成 astream。
         provider = get_provider(config.provider)
@@ -79,18 +82,19 @@ class LLMClient:
             raise LLMClientError(f"暂不支持的模型供应商：{config.provider}")
 
         chat_messages = self._build_langchain_messages(messages=messages, summary=summary)
+        resolved_model = model or (config.models[0] if config.models else "")
 
         try:
-            runtime_config = provider.from_model_config(config)
+            runtime_config = provider.from_model_config(config, model=model)
             if provider.supports_native_stream(runtime_config):
                 async for chunk in provider.stream_chat(config=runtime_config, messages=chat_messages):
                     response_metadata = dict(chunk.response_metadata or {})
                     response_metadata.setdefault("provider", config.provider)
-                    response_metadata.setdefault("model", config.model)
+                    response_metadata.setdefault("model", resolved_model)
                     log_llm_object(
                         phase="provider.stream.chunk",
                         provider=config.provider,
-                        model=config.model,
+                        model=resolved_model,
                         value=chunk.raw,
                         extracted={
                             "content_delta": chunk.content_delta,
@@ -118,7 +122,7 @@ class LLMClient:
             async for chunk in chat_model.astream(chat_messages):
                 response_metadata = dict(getattr(chunk, "response_metadata", None) or {})
                 response_metadata.setdefault("provider", config.provider)
-                response_metadata.setdefault("model", config.model)
+                response_metadata.setdefault("model", resolved_model)
                 token_usage = self._extract_token_usage(
                     response=chunk,
                     response_metadata=response_metadata,
@@ -127,7 +131,7 @@ class LLMClient:
                 log_llm_object(
                     phase="stream.chunk",
                     provider=config.provider,
-                    model=config.model,
+                    model=resolved_model,
                     value=chunk,
                     extracted={
                         "content_delta": content_delta,
@@ -192,6 +196,7 @@ class LLMClient:
         model: Any,
         messages: list[BaseMessage],
         config: LLMConfig,
+        runtime_config: Any = None,
     ) -> LLMCompletion:
         # LangChain 不同 provider 的返回元信息形状略有差异，这里统一收敛成 LLMCompletion。
         try:
@@ -200,10 +205,11 @@ class LLMClient:
             raise LLMClientError(f"模型服务请求失败：{exc}") from exc
 
         content, reasoning_content = self._split_message_content(response)
+        resolved_model = getattr(runtime_config, "model", None) or (config.models[0] if config.models else "")
         log_llm_object(
             phase="generate.response",
             provider=config.provider,
-            model=config.model,
+            model=resolved_model,
             value=response,
             extracted={
                 "content": content,
@@ -215,7 +221,7 @@ class LLMClient:
 
         response_metadata = dict(getattr(response, "response_metadata", None) or {})
         response_metadata.setdefault("provider", config.provider)
-        response_metadata.setdefault("model", config.model)
+        response_metadata.setdefault("model", resolved_model)
         token_usage = self._extract_token_usage(response=response, response_metadata=response_metadata)
 
         if getattr(response, "id", None):

@@ -86,11 +86,12 @@ class BaseLLMProvider(ABC):
             default_base_url=self.default_base_url,
         )
 
-    def from_model_config(self, config: LLMConfig) -> LLMRuntimeConfig:
+    def from_model_config(self, config: LLMConfig, *, model: str | None = None) -> LLMRuntimeConfig:
         # API Key 只在进入 provider 运行时前解密，不向 API schema 或日志暴露。
+        resolved_model = model or (config.models[0] if config.models else None)
         return LLMRuntimeConfig(
             provider=config.provider,
-            model=config.model,
+            model=resolved_model,
             base_url=config.base_url,
             api_key=decrypt_secret(config.api_key_ciphertext),
             provider_options=config.provider_options or {},
@@ -149,7 +150,7 @@ class BaseLLMProvider(ABC):
     def supports_native_stream(self, config: LLMRuntimeConfig) -> bool:
         return False
 
-    async def stream_chat(
+    def stream_chat(
         self,
         *,
         config: LLMRuntimeConfig,

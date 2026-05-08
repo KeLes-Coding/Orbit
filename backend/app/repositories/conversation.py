@@ -76,6 +76,38 @@ class ConversationRepository:
             .values(updated_at=func.now())
         )
 
+    async def allocate_message_sequence_no(self, conversation_id: UUID) -> int:
+        # 并发写入时统一从 conversations.next_message_sequence_no 原子分配序号。
+        result = await self.session.execute(
+            update(Conversation)
+            .where(Conversation.id == conversation_id)
+            .values(next_message_sequence_no=Conversation.next_message_sequence_no + 1)
+            .returning(Conversation.next_message_sequence_no)
+        )
+        next_value = result.scalar_one_or_none()
+        if next_value is None:
+            raise ValueError(f"conversation not found: {conversation_id}")
+        return int(next_value) - 1
+
+    async def recompute_has_active_run(self, conversation_id: UUID) -> bool:
+        # has_active_run 是缓存字段，真相仍来自是否存在 streaming assistant message。
+        result = await self.session.execute(
+            select(
+                func.count(Message.id) > 0,
+            ).where(
+                Message.conversation_id == conversation_id,
+                Message.role == "assistant",
+                Message.status == "streaming",
+            )
+        )
+        has_active_run = bool(result.scalar_one())
+        await self.session.execute(
+            update(Conversation)
+            .where(Conversation.id == conversation_id)
+            .values(has_active_run=has_active_run)
+        )
+        return has_active_run
+
     async def archive(self, conversation: Conversation) -> None:
         # 归档会话不删除消息，便于后续恢复、审计或导出。
         conversation.archived_at = datetime.now(timezone.utc)
@@ -145,13 +177,77 @@ class MessageRepository:
         result = await self.session.execute(statement)
         return result.scalar_one_or_none()
 
-    async def next_sequence_no(self, conversation_id: UUID) -> int:
-        # MVP 先用 max(sequence_no)+1；高并发发送时可升级为行锁或独立计数器。
-        statement = select(func.coalesce(func.max(Message.sequence_no), 0) + 1).where(
-            Message.conversation_id == conversation_id
+    async def get_by_id_for_update(self, *, conversation_id: UUID, message_id: UUID) -> Message | None:
+        statement = (
+            select(Message)
+            .where(
+                Message.conversation_id == conversation_id,
+                Message.id == message_id,
+            )
+            .with_for_update()
         )
         result = await self.session.execute(statement)
-        return int(result.scalar_one())
+        return result.scalar_one_or_none()
+
+    async def find_user_message_by_idempotency(
+        self,
+        *,
+        conversation_id: UUID,
+        parent_message_id: UUID | None,
+        idempotency_key: str,
+    ) -> Message | None:
+        statement = (
+            select(Message)
+            .where(
+                Message.conversation_id == conversation_id,
+                Message.parent_message_id.is_(None)
+                if parent_message_id is None
+                else Message.parent_message_id == parent_message_id,
+                Message.idempotency_key == idempotency_key,
+                Message.role == "user",
+            )
+            .order_by(Message.sequence_no.asc())
+        )
+        result = await self.session.execute(statement)
+        return result.scalars().first()
+
+    async def get_first_assistant_child(self, *, conversation_id: UUID, parent_message_id: UUID) -> Message | None:
+        statement = (
+            select(Message)
+            .where(
+                Message.conversation_id == conversation_id,
+                Message.parent_message_id == parent_message_id,
+                Message.role == "assistant",
+            )
+            .order_by(Message.sequence_no.asc())
+        )
+        result = await self.session.execute(statement)
+        return result.scalars().first()
+
+    async def find_assistant_message_by_idempotency(
+        self,
+        *,
+        conversation_id: UUID,
+        parent_message_id: UUID,
+        idempotency_key: str,
+        source_message_id: UUID | None = None,
+        revision_type: str | None = None,
+    ) -> Message | None:
+        # assistant 的幂等复用比普通 user message 更严格：
+        # 既要看 parent，也要看 source_message/revision_type，避免不同 regenerate 串到一起。
+        statement = select(Message).where(
+            Message.conversation_id == conversation_id,
+            Message.parent_message_id == parent_message_id,
+            Message.idempotency_key == idempotency_key,
+            Message.role == "assistant",
+        )
+        if source_message_id is not None:
+            statement = statement.where(Message.source_message_id == source_message_id)
+        if revision_type is not None:
+            statement = statement.where(Message.revision_type == revision_type)
+        statement = statement.order_by(Message.sequence_no.asc())
+        result = await self.session.execute(statement)
+        return result.scalars().first()
 
     async def create_user_message(
         self,
@@ -161,9 +257,10 @@ class MessageRepository:
         parent_message: Message | None = None,
         source_message_id: UUID | None = None,
         revision_type: str = "normal",
+        idempotency_key: str | None = None,
     ) -> Message:
         # 用户消息写入后立即完成，并把 parent.active_child 切到这个新 sibling。
-        sequence_no = await self.next_sequence_no(conversation_id)
+        sequence_no = await ConversationRepository(self.session).allocate_message_sequence_no(conversation_id)
         message = Message(
             conversation_id=conversation_id,
             sequence_no=sequence_no,
@@ -171,6 +268,7 @@ class MessageRepository:
             depth=(parent_message.depth + 1) if parent_message else 0,
             source_message_id=source_message_id,
             revision_type=revision_type,
+            idempotency_key=idempotency_key,
             role="user",
             content=content,
             status="completed",
@@ -194,9 +292,10 @@ class MessageRepository:
         parent_message: Message | None = None,
         source_message_id: UUID | None = None,
         revision_type: str = "normal",
+        idempotency_key: str | None = None,
     ) -> Message:
         # 先写入 streaming 占位；它也是树上的普通 child，可被取消、重发或切换。
-        sequence_no = await self.next_sequence_no(conversation_id)
+        sequence_no = await ConversationRepository(self.session).allocate_message_sequence_no(conversation_id)
         message = Message(
             conversation_id=conversation_id,
             sequence_no=sequence_no,
@@ -204,6 +303,7 @@ class MessageRepository:
             depth=(parent_message.depth + 1) if parent_message else 0,
             source_message_id=source_message_id,
             revision_type=revision_type,
+            idempotency_key=idempotency_key,
             role="assistant",
             content="",
             status="streaming",
@@ -285,7 +385,9 @@ class MessageRepository:
         parent_message: Message | None,
     ) -> Message:
         # Fork v1 只复制 visible path，复制出的消息重新建立 parent/active_child 链。
-        sequence_no = await self.next_sequence_no(target_conversation_id)
+        sequence_no = await ConversationRepository(self.session).allocate_message_sequence_no(
+            target_conversation_id
+        )
         clone = Message(
             conversation_id=target_conversation_id,
             sequence_no=sequence_no,

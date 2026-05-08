@@ -1,7 +1,7 @@
 from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, Text, func, text
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, String, Text, func, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -23,6 +23,14 @@ class Conversation(Base):
     summary: Mapped[str | None] = mapped_column(Text)
     summary_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     summary_message_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    # 并行阶段由会话级缓存快速告诉前端“当前是否仍有运行中分支”。
+    has_active_run: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("false"))
+    # 用会话级递增计数器稳定分配 sequence_no，避免并发下 max()+1 冲突。
+    next_message_sequence_no: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        server_default=text("1"),
+    )
     # active_leaf 是当前路径终点的缓存，真实分支选择仍以 messages.active_child 为准。
     active_leaf_message_id: Mapped[UUID | None] = mapped_column(ForeignKey("messages.id", ondelete="SET NULL"))
     # fork 来源只做追溯记录，新会话会复制消息并独立演进。

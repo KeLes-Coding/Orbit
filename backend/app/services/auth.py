@@ -4,7 +4,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.security import create_access_token, hash_password, verify_password
 from app.models.user import User
 from app.repositories.user import UserRepository
-from app.schemas.auth import AuthToken, UserCreate, UserLogin
+from app.schemas.auth import AuthToken, UserCreate, UserLogin, UserRead
 
 
 class AuthService:
@@ -51,4 +51,7 @@ class AuthService:
 
     def _build_token(self, user: User) -> AuthToken:
         # 令牌里只放 user_id，用户资料始终从数据库读取，便于禁用账号即时生效。
-        return AuthToken(access_token=create_access_token(user.id), user=user)
+        return AuthToken(
+            access_token=create_access_token(user.id),
+            user=UserRead.model_validate(user),
+        )

@@ -53,16 +53,19 @@ export function SettingsView() {
     async (values: {
       name: string
       provider: string
-      model: string
+      models: string[]
       base_url: string
       api_key: string
       provider_options: string
       is_default: boolean
     }) => {
+      const models = Array.from(
+        new Set(values.models.map((model) => model.trim()).filter(Boolean)),
+      )
       const payload: {
         name: string
         provider: string
-        model: string
+        models: string[]
         is_default: boolean
         base_url?: string
         api_key?: string
@@ -70,7 +73,7 @@ export function SettingsView() {
       } = {
         name: values.name.trim(),
         provider: values.provider.trim(),
-        model: values.model.trim(),
+        models,
         is_default: values.is_default,
       }
 
@@ -174,7 +177,6 @@ export function SettingsView() {
         open={showForm}
         onOpenChange={setShowForm}
         editingConfig={editingConfig}
-        configs={configs}
         providers={apiProviders}
         isSaving={isSaving}
         onSave={handleSave}

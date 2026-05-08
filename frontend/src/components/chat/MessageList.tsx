@@ -1,13 +1,16 @@
 import { useEffect, useMemo, useRef, useState } from "react"
+import type { CSSProperties } from "react"
 import { ArrowDown } from "lucide-react"
 import type { Message } from "@/api/types"
 import { MessageBubble } from "./MessageBubble"
 
 interface MessageListProps {
   messages: (Message & { paragraphs?: string[] })[]
+  currentLeafMessageId?: string | null
+  hasActiveRun?: boolean
   onRetry?: (messageId: string) => void
   onRegenerate?: (messageId: string) => void
-  onEdit?: (messageId: string, currentContent: string) => void
+  onEdit?: (messageId: string, newContent: string) => void
   onSwitchBranch?: (messageId: string) => void
   onFork?: (messageId: string) => void
   isSending?: boolean
@@ -15,6 +18,8 @@ interface MessageListProps {
 
 export function MessageList({
   messages,
+  currentLeafMessageId,
+  hasActiveRun,
   onRetry,
   onRegenerate,
   onEdit,
@@ -26,11 +31,11 @@ export function MessageList({
   const scrollParentRef = useRef<HTMLElement | null>(null)
   const messageRefs = useRef<Map<string, HTMLDivElement>>(new Map())
   const isPinnedToBottomRef = useRef(true)
+  const isProgrammaticScrollRef = useRef(false)
   const rafIdRef = useRef<number | null>(null)
   const activeRoundIdRef = useRef<string | null>(null)
   const [activeRoundId, setActiveRoundId] = useState<string | null>(null)
   const [isPinnedToBottom, setIsPinnedToBottom] = useState(true)
-  const seenIdsRef = useRef<Set<string>>(new Set())
 
   const rounds = useMemo(
     () =>
@@ -39,6 +44,8 @@ export function MessageList({
         .map((message, index) => ({
           id: message.id,
           index: index + 1,
+          siblingIndex: message.sibling_index ?? 1,
+          siblingCount: message.sibling_count ?? 1,
           preview: (message.content || "New message").replace(/\s+/g, " ").trim().slice(0, 150),
         })),
     [messages],
@@ -53,8 +60,6 @@ export function MessageList({
         latestMessage.reasoning_content?.length ?? 0,
       ].join(":")
     : "empty"
-
-  const isLatestStreaming = latestMessage?.status === "streaming"
 
   const getScrollParent = () => {
     if (scrollParentRef.current) return scrollParentRef.current
@@ -76,11 +81,15 @@ export function MessageList({
   const scrollToBottom = (smooth = false) => {
     const el = getScrollParent()
     if (!el) return
+    isProgrammaticScrollRef.current = true
     if (smooth) {
       el.scrollTo({ top: el.scrollHeight, behavior: "smooth" })
     } else {
       el.scrollTop = el.scrollHeight
     }
+    requestAnimationFrame(() => {
+      isProgrammaticScrollRef.current = false
+    })
   }
 
   const setActiveRound = (roundId: string | null) => {
@@ -123,7 +132,7 @@ export function MessageList({
     const targetRect = target.getBoundingClientRect()
     scrollParent.scrollTo({
       top: scrollParent.scrollTop + targetRect.top - parentRect.top - 104,
-      behavior: "smooth",
+      behavior: "auto",
     })
     setActiveRound(roundId)
   }
@@ -132,6 +141,10 @@ export function MessageList({
     const scrollParent = getScrollParent()
     if (!scrollParent) return
     const handleScroll = () => {
+      if (isProgrammaticScrollRef.current) {
+        updateActiveRound()
+        return
+      }
       updatePinnedState()
       updateActiveRound()
     }
@@ -172,25 +185,11 @@ export function MessageList({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  /* Track which messages have been seen for staggered animation */
-  useEffect(() => {
-    for (const msg of messages) {
-      seenIdsRef.current.add(msg.id)
-    }
-  }, [messages])
-
   /* Check if a round separator should be shown between two messages */
   const shouldShowSeparator = (current: Message & { paragraphs?: string[] }, prev: Message & { paragraphs?: string[] } | null) => {
     if (!prev) return false
     if (current.role !== "user") return false
     return prev.role === "assistant"
-  }
-
-  /* Determine if a message should animate in */
-  const shouldAnimateMessage = (msg: Message & { paragraphs?: string[] }) => {
-    if (isLatestStreaming && msg.id === latestMessage?.id) return false
-    if (msg.status === "streaming") return false
-    return true
   }
 
   const getRoundLabel = (roundIndex: number) => {
@@ -200,7 +199,11 @@ export function MessageList({
   return (
     <>
       {rounds.length > 1 && (
-        <nav className="message-jump-nav" aria-label="Conversation rounds">
+        <nav
+          className="message-jump-nav"
+          aria-label="Conversation rounds"
+          style={{ "--message-jump-count": rounds.length } as CSSProperties}
+        >
           <span className="message-jump-rail" aria-hidden="true" />
           {rounds.map((round) => (
             <button
@@ -211,6 +214,11 @@ export function MessageList({
               onClick={() => scrollToRound(round.id)}
             >
               <span className="message-jump-index">{round.index}</span>
+              {round.siblingCount > 1 && (
+                <span className="message-jump-branch-count">
+                  {round.siblingIndex}/{round.siblingCount}
+                </span>
+              )}
               <span className="message-jump-preview">{round.preview}</span>
             </button>
           ))}
@@ -223,6 +231,15 @@ export function MessageList({
           const roundIdx = idx === 0
             ? 1
             : messages.slice(0, idx).filter((m) => m.role === "user").length + 1
+          const regenerateMessageId =
+            message.role === "user"
+              ? messages.find(
+                  (candidate) =>
+                    candidate.role === "assistant" &&
+                    candidate.parent_message_id === message.id &&
+                    candidate.status !== "streaming",
+                )?.id ?? null
+              : null
 
           return (
             <div key={message.id}>
@@ -234,7 +251,7 @@ export function MessageList({
                 </div>
               )}
               <div
-                className={`message-anchor${shouldAnimateMessage(message) ? " should-animate" : ""}`}
+                className="message-anchor"
                 ref={(node) => {
                   if (node) {
                     messageRefs.current.set(message.id, node)
@@ -245,13 +262,19 @@ export function MessageList({
               >
                 <MessageBubble
                   message={message}
+                  isCurrentBranchLeaf={message.id === currentLeafMessageId}
+                  isCurrentBranchRunning={
+                    message.id === currentLeafMessageId &&
+                    message.status === "streaming" &&
+                    !!hasActiveRun
+                  }
                   onRetry={onRetry}
                   onRegenerate={onRegenerate}
+                  regenerateMessageId={regenerateMessageId}
                   onEdit={onEdit}
                   onSwitchBranch={onSwitchBranch}
                   onFork={onFork}
-                  actionsDisabled={isSending}
-                  shouldAnimate={shouldAnimateMessage(message)}
+                  actionsDisabled={false}
                 />
               </div>
             </div>
@@ -264,9 +287,9 @@ export function MessageList({
           className="scroll-bottom-btn"
           aria-label="Scroll to bottom"
           onClick={() => {
-            scrollToBottom(true)
             isPinnedToBottomRef.current = true
             setIsPinnedToBottom(true)
+            scrollToBottom()
           }}
         >
           <ArrowDown className="h-4 w-4" />

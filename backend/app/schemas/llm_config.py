@@ -8,7 +8,7 @@ class LLMConfigCreate(BaseModel):
     # 创建模型配置时允许传入明文 api_key，服务层会加密后再入库。
     name: str = Field(min_length=1, max_length=100)
     provider: str = Field(min_length=1, max_length=50)
-    model: str = Field(min_length=1, max_length=120)
+    models: list[str] = Field(min_length=1)
     base_url: str | None = None
     api_key: str | None = Field(default=None, max_length=4096)
     provider_options: dict = Field(default_factory=dict)
@@ -19,7 +19,7 @@ class LLMConfigUpdate(BaseModel):
     # 更新请求全部字段可选；只修改前端显式传入的字段。
     name: str | None = Field(default=None, min_length=1, max_length=100)
     provider: str | None = Field(default=None, min_length=1, max_length=50)
-    model: str | None = Field(default=None, min_length=1, max_length=120)
+    models: list[str] | None = None
     base_url: str | None = None
     api_key: str | None = Field(default=None, max_length=4096)
     provider_options: dict | None = None
@@ -35,7 +35,7 @@ class LLMConfigRead(BaseModel):
     user_id: UUID
     name: str
     provider: str
-    model: str
+    models: list[str]
     base_url: str | None
     provider_options: dict
     is_default: bool

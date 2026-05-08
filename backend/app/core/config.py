@@ -27,6 +27,10 @@ class Settings(BaseSettings):
     llm_debug_logging: bool = False
     llm_debug_max_chars: int = 4000
     llm_debug_log_path: str = "logs/llm-debug.log"
+    # 直接运行 uvicorn 时，也在应用启动阶段校验数据库 schema 是否已迁移到最新版本。
+    schema_check_on_startup: bool = True
+    # 默认不在应用进程内自动跑迁移；需要时可显式打开，适合本地开发环境。
+    auto_migrate_on_startup: bool = False
     cors_origins: list[str] = Field(
         default_factory=lambda: ["http://localhost:5173", "http://127.0.0.1:5173"]
     )

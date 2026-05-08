@@ -18,7 +18,6 @@ import { MessageList } from "@/components/chat/MessageList"
 import { ChatComposer } from "@/components/chat/ChatComposer"
 import { EmptyChatState } from "@/components/chat/EmptyChatState"
 import { ModelSelector } from "@/components/chat/ModelSelector"
-import type { LlmConfig } from "@/api/types"
 import "./ChatShell.css"
 
 export function ChatShell() {
@@ -29,6 +28,7 @@ export function ChatShell() {
     activeConversation,
     activeConversationId,
     pendingConversationLlmConfigId,
+    pendingConversationLlmModel,
     isLoadingMessages,
     isSending,
     selectConversation,
@@ -69,9 +69,9 @@ export function ChatShell() {
   }, [activeConversationId, location.pathname, navigate, routeConversationId])
 
   const currentLlmConfigId = useMemo(() => {
+    const pendingConfig = configs.find((c) => c.id === pendingConversationLlmConfigId)
+    if (pendingConfig) return pendingConfig.id
     if (!activeConversation) {
-      const pendingConfig = configs.find((c) => c.id === pendingConversationLlmConfigId)
-      if (pendingConfig) return pendingConfig.id
       const defaultConfig = configs.find((c) => c.is_default)
       if (defaultConfig) return defaultConfig.id
       return null
@@ -83,21 +83,30 @@ export function ChatShell() {
     return null
   }, [activeConversation, configs, pendingConversationLlmConfigId])
 
+  const currentModel = useMemo(() => {
+    if (pendingConversationLlmModel) return pendingConversationLlmModel
+    const activeConfig = configs.find((c) => c.id === currentLlmConfigId)
+    return activeConfig?.models[0] || null
+  }, [configs, currentLlmConfigId, pendingConversationLlmModel])
+
   const selectModel = useCallback(
-    async (config: LlmConfig) => {
+    async (configId: string, model: string) => {
       if (!activeConversationId) {
-        selectPendingConversationLlm(config.id)
-        toast.success(`New chat will use ${config.name}`)
+        selectPendingConversationLlm(configId, model)
+        const config = configs.find((c) => c.id === configId)
+        toast.success(`New chat will use ${config?.name || "config"} · ${model}`)
         return
       }
       try {
-        await switchConversationLlm(activeConversationId, config.id)
-        toast.success(`Switched to ${config.name}`)
+        await switchConversationLlm(activeConversationId, configId)
+        selectPendingConversationLlm(configId, model)
+        const config = configs.find((c) => c.id === configId)
+        toast.success(`Switched to ${config?.name || "config"} · ${model}`)
       } catch {
         toast.error("Failed to switch model")
       }
     },
-    [activeConversationId, selectPendingConversationLlm, switchConversationLlm],
+    [activeConversationId, configs, selectPendingConversationLlm, switchConversationLlm],
   )
 
   const goToConfigs = useCallback(() => {
@@ -128,12 +137,8 @@ export function ChatShell() {
   }, [configs.length, navigate, openAuth, sendMessage, setActiveView, setErrorMessage, user])
 
   const handleEditMessage = useCallback(
-    (messageId: string, currentContent: string) => {
-      const nextContent = window.prompt("Edit message", currentContent)
-      if (nextContent === null) return
-      const trimmed = nextContent.trim()
-      if (!trimmed || trimmed === currentContent.trim()) return
-      void editUserMessage(messageId, trimmed)
+    (messageId: string, newContent: string) => {
+      void editUserMessage(messageId, newContent)
     },
     [editUserMessage],
   )
@@ -191,6 +196,7 @@ export function ChatShell() {
           <ModelSelector
             configs={configs}
             currentConfigId={currentLlmConfigId}
+            currentModel={currentModel}
             onSelect={selectModel}
             onManage={goToConfigs}
           />
@@ -206,6 +212,8 @@ export function ChatShell() {
         ) : (
           <MessageList
             messages={messages}
+            currentLeafMessageId={activeConversation?.active_leaf_message_id ?? null}
+            hasActiveRun={isSending}
             isSending={isSending}
             onRegenerate={regenerateAssistant}
             onEdit={handleEditMessage}

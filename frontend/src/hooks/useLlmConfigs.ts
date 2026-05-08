@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { llmConfigApi } from '@/api/llmConfigs'
-import type { LlmConfig } from '@/api/types'
+import type { LlmConfig, CreateLlmConfigPayload, UpdateLlmConfigPayload } from '@/api/types'
 
 export function useLlmConfigs(hasUser: boolean) {
   const queryClient = useQueryClient()
@@ -14,7 +14,7 @@ export function useLlmConfigs(hasUser: boolean) {
   const configs = configsQuery.data || []
 
   const createConfig = useMutation({
-    mutationFn: llmConfigApi.create,
+    mutationFn: (payload: CreateLlmConfigPayload) => llmConfigApi.create(payload),
     onSuccess: (config) => {
       queryClient.setQueryData<LlmConfig[]>(['llm-configs'], (old = []) => [
         config,
@@ -24,7 +24,7 @@ export function useLlmConfigs(hasUser: boolean) {
   })
 
   const updateConfig = useMutation({
-    mutationFn: ({ id, payload }: { id: string; payload: Parameters<typeof llmConfigApi.update>[1] }) =>
+    mutationFn: ({ id, payload }: { id: string; payload: UpdateLlmConfigPayload }) =>
       llmConfigApi.update(id, payload),
     onSuccess: (updated) => {
       queryClient.setQueryData<LlmConfig[]>(['llm-configs'], (old = []) =>
@@ -71,7 +71,7 @@ export function useLlmConfigs(hasUser: boolean) {
     isLoadingConfigs: configsQuery.isLoading,
     isLoadingProviders: providersQuery.isLoading,
     createConfig: createConfig.mutateAsync,
-    updateConfig: (id: string, payload: Parameters<typeof llmConfigApi.update>[1]) =>
+    updateConfig: (id: string, payload: UpdateLlmConfigPayload) =>
       updateConfig.mutateAsync({ id, payload }),
     archiveConfig: archiveConfig.mutateAsync,
     setDefaultConfig: setDefaultConfig.mutateAsync,

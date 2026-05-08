@@ -36,9 +36,12 @@ interface OrbitStore {
   authForm: { email: string; password: string; displayName: string }
   activeConversationId: string | null
   pendingConversationLlmConfigId: string | null
+  pendingConversationLlmModel: string | null
   editingThreadId: string | null
   editingTitle: string
   sidebarCollapsed: boolean
+  completedOffscreenConversationIds: Record<string, boolean>
+  receivingConversationIds: Record<string, boolean>
 
   toggleTheme: () => void
   toggleSidebar: () => void
@@ -57,8 +60,13 @@ interface OrbitStore {
   resetAuthForm: () => void
   setActiveConversationId: (id: string | null) => void
   setPendingConversationLlmConfigId: (id: string | null) => void
+  setPendingConversationLlmModel: (model: string | null) => void
   setEditingThreadId: (id: string | null) => void
   setEditingTitle: (title: string) => void
+  markConversationCompletedOffscreen: (id: string) => void
+  clearConversationCompletionNotice: (id: string) => void
+  markConversationReceiving: (id: string, receiving: boolean) => void
+  clearReceivingConversations: () => void
   logout: () => void
 }
 
@@ -79,9 +87,12 @@ export const useOrbitStore = create<OrbitStore>((set) => ({
   authForm: { ...defaultAuthForm },
   activeConversationId: null,
   pendingConversationLlmConfigId: null,
+  pendingConversationLlmModel: null,
   editingThreadId: null,
   editingTitle: '',
   sidebarCollapsed: getInitialSidebarCollapsed(),
+  completedOffscreenConversationIds: {},
+  receivingConversationIds: {},
 
   toggleTheme: () =>
     set((state) => {
@@ -118,17 +129,47 @@ export const useOrbitStore = create<OrbitStore>((set) => ({
   resetAuthForm: () => set({ authForm: { ...defaultAuthForm } }),
   setActiveConversationId: (id) => set({ activeConversationId: id }),
   setPendingConversationLlmConfigId: (id) => set({ pendingConversationLlmConfigId: id }),
+  setPendingConversationLlmModel: (model) => set({ pendingConversationLlmModel: model }),
   setEditingThreadId: (id) => set({ editingThreadId: id }),
   setEditingTitle: (title) => set({ editingTitle: title }),
+  markConversationCompletedOffscreen: (id) =>
+    set((state) => ({
+      completedOffscreenConversationIds: {
+        ...state.completedOffscreenConversationIds,
+        [id]: true,
+      },
+    })),
+  clearConversationCompletionNotice: (id) =>
+    set((state) => {
+      if (!state.completedOffscreenConversationIds[id]) return state
+      const { [id]: _removed, ...remaining } = state.completedOffscreenConversationIds
+      return { completedOffscreenConversationIds: remaining }
+    }),
+  markConversationReceiving: (id, receiving) =>
+    set((state) => {
+      const current = Boolean(state.receivingConversationIds[id])
+      if (current === receiving) return state
+      const next = { ...state.receivingConversationIds }
+      if (receiving) {
+        next[id] = true
+      } else {
+        delete next[id]
+      }
+      return { receivingConversationIds: next }
+    }),
+  clearReceivingConversations: () => set({ receivingConversationIds: {} }),
 
   logout: () =>
     set({
       draft: '',
       activeConversationId: null,
       pendingConversationLlmConfigId: null,
+  pendingConversationLlmModel: null,
       isCreatingConversationTitle: false,
       editingThreadId: null,
       editingTitle: '',
+      completedOffscreenConversationIds: {},
+      receivingConversationIds: {},
       authForm: { ...defaultAuthForm },
       activeView: 'chat',
     }),

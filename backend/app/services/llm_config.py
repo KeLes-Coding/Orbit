@@ -97,12 +97,14 @@ class LLMConfigService:
         # 入库前把 claude/google 等别名规范化，历史消息上的 provider 快照更稳定。
         provider = self._normalize_provider_or_400(payload.provider)
 
+        models = self._clean_models_or_400(payload.models)
+
         # API Key 在进入数据库前加密；后续响应永远不返回明文或密文。
         config = await self.configs.create(
             user_id=user_id,
             name=payload.name,
             provider=provider,
-            model=payload.model.strip(),
+            models=models,
             base_url=payload.base_url,
             api_key_ciphertext=encrypt_secret(payload.api_key),
             provider_options=payload.provider_options,
@@ -127,8 +129,8 @@ class LLMConfigService:
             config.name = update_data["name"]
         if "provider" in update_data:
             config.provider = self._normalize_provider_or_400(update_data["provider"])
-        if "model" in update_data:
-            config.model = update_data["model"].strip()
+        if "models" in update_data:
+            config.models = self._clean_models_or_400(update_data["models"])
         if "base_url" in update_data:
             config.base_url = update_data["base_url"]
         if "api_key" in update_data:
@@ -196,6 +198,12 @@ class LLMConfigService:
         if provider is None:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="暂不支持的模型供应商")
         return provider.provider
+
+    def _clean_models_or_400(self, models: list[str]) -> list[str]:
+        cleaned = list(dict.fromkeys(model.strip() for model in models if model.strip()))
+        if not cleaned:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="至少需要配置一个模型")
+        return cleaned
 
     def _to_model_read(self, model) -> LLMModelRead:
         # Provider 内部统一返回 dataclass，这里再转换成 API schema。

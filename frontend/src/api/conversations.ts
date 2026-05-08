@@ -1,11 +1,13 @@
 import apiClient, { API_BASE_URL, clearStoredToken, getStoredToken } from './client'
 import type {
+  ActiveStreamResponse,
   Conversation,
   BranchSwitchResponse,
   CreateConversationMessagePayload,
   CreateConversationPayload,
   ForkConversationResponse,
   Message,
+  SendMessagePayload,
   SendMessageResponse,
   StreamMessageEvent,
   UpdateConversationPayload,
@@ -97,6 +99,26 @@ async function* parseSseStream(body: ReadableStream<Uint8Array>): AsyncGenerator
   }
 }
 
+async function* fetchSse(
+  input: string,
+  init: RequestInit,
+): AsyncGenerator<StreamMessageEvent> {
+  // 所有 SSE 接口都走同一层 fetch 封装，避免重复处理鉴权和错误解析。
+  const response = await fetch(resolveApiUrl(input), init)
+
+  if (response.status === 401) {
+    clearStoredToken()
+  }
+  if (!response.ok) {
+    throw new Error(await parseStreamError(response))
+  }
+  if (!response.body) {
+    throw new Error('Streaming response is not readable')
+  }
+
+  yield* parseSseStream(response.body)
+}
+
 export const conversationApi = {
   list(): Promise<Conversation[]> {
     return apiClient.get('/conversations')
@@ -122,114 +144,81 @@ export const conversationApi = {
     return apiClient.get(`/conversations/${conversationId}/messages`)
   },
 
-  sendMessage(conversationId: string, content: string): Promise<SendMessageResponse> {
-    return apiClient.post(`/conversations/${conversationId}/messages`, { content })
+  sendMessage(conversationId: string, payload: SendMessagePayload): Promise<SendMessageResponse> {
+    return apiClient.post(`/conversations/${conversationId}/messages`, payload)
   },
 
   async *streamMessage(
     conversationId: string,
-    content: string,
+    payload: SendMessagePayload,
     signal?: AbortSignal,
   ): AsyncGenerator<StreamMessageEvent> {
     // 流式接口不能走 axios 的 JSON 解析，直接使用 fetch 读取 SSE 字节流。
-    const response = await fetch(resolveApiUrl(`/conversations/${conversationId}/messages/stream`), {
+    yield* fetchSse(`/conversations/${conversationId}/messages/stream`, {
       method: 'POST',
       headers: createHeaders(),
-      body: JSON.stringify({ content }),
+      body: JSON.stringify(payload),
       signal,
     })
-
-    if (response.status === 401) {
-      clearStoredToken()
-    }
-    if (!response.ok) {
-      throw new Error(await parseStreamError(response))
-    }
-    if (!response.body) {
-      throw new Error('Streaming response is not readable')
-    }
-
-    yield* parseSseStream(response.body)
   },
 
   async *streamRegenerateAssistant(
     conversationId: string,
     messageId: string,
+    idempotencyKey?: string | null,
     signal?: AbortSignal,
+    model?: string | null,
   ): AsyncGenerator<StreamMessageEvent> {
-    const response = await fetch(
-      resolveApiUrl(`/conversations/${conversationId}/messages/${messageId}/regenerate/stream`),
-      {
-        method: 'POST',
-        headers: createHeaders(),
-        signal,
-      },
-    )
-
-    if (response.status === 401) {
-      clearStoredToken()
-    }
-    if (!response.ok) {
-      throw new Error(await parseStreamError(response))
-    }
-    if (!response.body) {
-      throw new Error('Streaming response is not readable')
-    }
-
-    yield* parseSseStream(response.body)
+    yield* fetchSse(`/conversations/${conversationId}/messages/${messageId}/regenerate/stream`, {
+      method: 'POST',
+      headers: createHeaders(),
+      body: JSON.stringify({ idempotency_key: idempotencyKey ?? null, model: model ?? null }),
+      signal,
+    })
   },
 
   async *streamEditUserMessage(
     conversationId: string,
     messageId: string,
-    content: string,
+    payload: SendMessagePayload & { model?: string | null },
     signal?: AbortSignal,
   ): AsyncGenerator<StreamMessageEvent> {
-    const response = await fetch(
-      resolveApiUrl(`/conversations/${conversationId}/messages/${messageId}/edit/stream`),
-      {
-        method: 'POST',
-        headers: createHeaders(),
-        body: JSON.stringify({ content }),
-        signal,
-      },
-    )
-
-    if (response.status === 401) {
-      clearStoredToken()
-    }
-    if (!response.ok) {
-      throw new Error(await parseStreamError(response))
-    }
-    if (!response.body) {
-      throw new Error('Streaming response is not readable')
-    }
-
-    yield* parseSseStream(response.body)
+    yield* fetchSse(`/conversations/${conversationId}/messages/${messageId}/edit/stream`, {
+      method: 'POST',
+      headers: createHeaders(),
+      body: JSON.stringify(payload),
+      signal,
+    })
   },
 
   async *streamNewConversationMessage(
     payload: CreateConversationMessagePayload,
     signal?: AbortSignal,
   ): AsyncGenerator<StreamMessageEvent> {
-    const response = await fetch(resolveApiUrl('/conversations/messages/stream'), {
+    yield* fetchSse('/conversations/messages/stream', {
       method: 'POST',
       headers: createHeaders(),
       body: JSON.stringify(payload),
       signal,
     })
+  },
 
-    if (response.status === 401) {
-      clearStoredToken()
-    }
-    if (!response.ok) {
-      throw new Error(await parseStreamError(response))
-    }
-    if (!response.body) {
-      throw new Error('Streaming response is not readable')
-    }
+  getMessageActiveStream(conversationId: string, messageId: string): Promise<ActiveStreamResponse> {
+    // 先按当前可见 branch 的 message 查活跃流，再按 stream_id 做精确恢复。
+    return apiClient.get(`/conversations/${conversationId}/messages/${messageId}/active-stream`)
+  },
 
-    yield* parseSseStream(response.body)
+  async *resumeStreamById(
+    conversationId: string,
+    streamId: string,
+    signal?: AbortSignal,
+  ): AsyncGenerator<StreamMessageEvent> {
+    // replay/live 订阅已经下沉到具体 stream_id，避免并行 branch 互相串流。
+    yield* fetchSse(`/conversations/${conversationId}/streams/${streamId}`, {
+      method: 'GET',
+      headers: createHeaders(),
+      signal,
+    })
   },
 
   async cancelMessage(conversationId: string, messageId: string): Promise<Message> {

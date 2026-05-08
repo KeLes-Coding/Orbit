@@ -27,6 +27,8 @@ export interface Conversation {
   summary?: string | null
   summary_updated_at?: string | null
   summary_message_count?: number
+  has_active_run?: boolean
+  next_message_sequence_no?: number
   active_leaf_message_id?: string | null
   forked_from_conversation_id?: string | null
   forked_from_message_id?: string | null
@@ -34,6 +36,12 @@ export interface Conversation {
   metadata: Record<string, unknown>
   created_at: string
   updated_at: string
+}
+
+export interface StreamEnvelope {
+  stream_id: string
+  seq: number
+  event_id: string
 }
 
 export interface Message {
@@ -71,7 +79,7 @@ export interface LlmConfig {
   user_id: string
   name: string
   provider: string
-  model: string
+  models: string[]
   base_url?: string | null
   has_api_key: boolean
   provider_options?: Record<string, unknown> | null
@@ -92,6 +100,9 @@ export interface LlmProvider {
 
 export interface LlmModel {
   id: string
+  name?: string | null
+  description?: string | null
+  owned_by?: string | null
 }
 
 export interface LoginPayload {
@@ -114,8 +125,10 @@ export interface CreateConversationPayload {
 export interface CreateConversationMessagePayload {
   content: string
   llm_config_id?: string | null
+  model?: string | null
   chat_mode?: string
   metadata?: Record<string, unknown>
+  idempotency_key?: string | null
 }
 
 export interface UpdateConversationPayload {
@@ -127,6 +140,9 @@ export interface UpdateConversationPayload {
 
 export interface SendMessagePayload {
   content: string
+  parent_message_id?: string | null
+  idempotency_key?: string | null
+  model?: string | null
 }
 
 export interface SendMessageResponse {
@@ -144,37 +160,57 @@ export interface ForkConversationResponse {
   messages: Message[]
 }
 
+export interface ActiveStreamResponse {
+  conversation_id: string
+  message_id: string
+  assistant_message_id: string
+  stream_id: string
+}
+
 export type StreamMessageEvent =
   | {
       event: 'conversation.created'
-      data: {
+      data: StreamEnvelope & {
         conversation: Conversation
       }
     }
   | {
+      event: 'conversation.updated'
+      data: StreamEnvelope & {
+        conversation: Conversation
+      }
+    }
+  | {
+      event: 'conversation.run_state_changed'
+      data: StreamEnvelope & {
+        conversation_id: string
+        has_active_run: boolean
+      }
+    }
+  | {
       event: 'message.created'
-      data: {
+      data: StreamEnvelope & {
         user_message?: Message
         assistant_message: Message
       }
     }
   | {
       event: 'message.delta'
-      data: {
+      data: StreamEnvelope & {
         message_id: string
         delta: string
       }
     }
   | {
       event: 'message.reasoning_delta'
-      data: {
+      data: StreamEnvelope & {
         message_id: string
         delta: string
       }
     }
   | {
       event: 'message.completed' | 'message.failed' | 'message.cancelled'
-      data: {
+      data: StreamEnvelope & {
         message: Message
       }
     }
@@ -189,7 +225,7 @@ export interface ProbeModelsPayload {
 export interface CreateLlmConfigPayload {
   name: string
   provider: string
-  model: string
+  models: string[]
   base_url?: string | null
   api_key?: string | null
   provider_options?: Record<string, unknown>
@@ -199,7 +235,7 @@ export interface CreateLlmConfigPayload {
 export interface UpdateLlmConfigPayload {
   name?: string
   provider?: string
-  model?: string
+  models?: string[]
   base_url?: string | null
   api_key?: string | null
   provider_options?: Record<string, unknown>

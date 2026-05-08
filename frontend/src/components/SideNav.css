@@ -12,19 +12,6 @@
     color 160ms ease;
 }
 
-/* Active indicator: small orange dot */
-.thread-item.active::before {
-  content: "";
-  position: absolute;
-  left: -12px;
-  top: 50%;
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-  background: var(--accent-orange);
-  transform: translateY(-50%);
-}
-
 .thread-item:hover {
   background: var(--surface-low);
 }
@@ -41,6 +28,10 @@
 .thread-item.pending .thread-button {
   color: var(--ink-soft);
   cursor: default;
+}
+
+.thread-item.running .thread-button {
+  color: var(--ink);
 }
 
 .thread-item.pending .thread-button::after {
@@ -73,6 +64,7 @@
 .thread-button {
   display: flex;
   align-items: center;
+  gap: 6px;
   max-width: 100%;
   overflow: hidden;
   border: 0;
@@ -85,14 +77,52 @@
   cursor: pointer;
   flex: 1;
   min-width: 0;
-  padding: 7px 0 7px 0;
+  padding: 7px 0;
+}
+
+.thread-status-slot {
+  display: grid;
+  flex: 0 0 14px;
+  width: 14px;
+  height: 18px;
+  place-items: center;
+}
+
+.thread-completion-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--accent-orange);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent-orange) 13%, transparent);
 }
 
 .thread-title {
+  flex: 1;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.thread-running-indicator {
+  flex: 0 0 auto;
+  width: 12px;
+  height: 12px;
+  margin-left: 8px;
+  border-radius: 999px;
+  border: 2px solid color-mix(in srgb, var(--ink-soft) 28%, transparent);
+  border-top-color: var(--accent-orange);
+  border-right-color: color-mix(in srgb, var(--accent-orange) 40%, transparent);
+  animation: thread-run-spin 0.9s linear infinite;
+}
+
+@keyframes thread-run-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .thread-button:hover {
