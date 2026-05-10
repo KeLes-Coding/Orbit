@@ -67,6 +67,7 @@ class ConversationService:
         user_id: UUID,
         conversation_id: UUID,
         content: str,
+        llm_config_id: UUID | None = None,
         parent_message_id: UUID | None = None,
         idempotency_key: str | None = None,
         model: str | None = None,
@@ -106,7 +107,11 @@ class ConversationService:
                     detail="幂等请求已存在，请刷新当前分支消息状态",
                 )
 
-            llm_config = await self._get_usable_llm_config(user_id=user_id, conversation=conversation)
+            llm_config = await self._get_usable_llm_config(
+                user_id=user_id,
+                conversation=conversation,
+                llm_config_id=llm_config_id,
+            )
             resolved_model = model or (llm_config.models[0] if llm_config.models else None)
 
             content_parts: list = []
@@ -263,6 +268,7 @@ class ConversationService:
         user_id: UUID,
         conversation_id: UUID,
         message_id: UUID,
+        llm_config_id: UUID | None = None,
         idempotency_key: str | None = None,
         model: str | None = None,
     ) -> str:
@@ -302,7 +308,11 @@ class ConversationService:
                     detail="幂等请求已存在，请刷新当前分支消息状态",
                 )
 
-            llm_config = await self._get_usable_llm_config(user_id=user_id, conversation=conversation)
+            llm_config = await self._get_usable_llm_config(
+                user_id=user_id,
+                conversation=conversation,
+                llm_config_id=llm_config_id,
+            )
             resolved_model = model or (llm_config.models[0] if llm_config.models else None)
             assistant_message = await self.messages.create_assistant_placeholder(
                 conversation_id=conversation_id,
@@ -371,7 +381,11 @@ class ConversationService:
                 if parent is None:
                     raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="无法找到编辑上下文")
 
-            llm_config = await self._get_usable_llm_config(user_id=user_id, conversation=conversation)
+            llm_config = await self._get_usable_llm_config(
+                user_id=user_id,
+                conversation=conversation,
+                llm_config_id=payload.llm_config_id,
+            )
             resolved_model = getattr(payload, "model", None) or (llm_config.models[0] if llm_config.models else None)
             existing_exchange = await self._find_idempotent_exchange(
                 conversation_id=conversation_id,
@@ -565,6 +579,7 @@ class ConversationService:
         user_id: UUID,
         conversation_id: UUID,
         content: str,
+        llm_config_id: UUID | None = None,
         parent_message_id: UUID | None = None,
         idempotency_key: str | None = None,
         model: str | None = None,
@@ -600,7 +615,11 @@ class ConversationService:
                     assistant_message=await self._message_read(assistant_message),
                 )
 
-            llm_config = await self._get_usable_llm_config(user_id=user_id, conversation=conversation)
+            llm_config = await self._get_usable_llm_config(
+                user_id=user_id,
+                conversation=conversation,
+                llm_config_id=llm_config_id,
+            )
             resolved_model = model or (llm_config.models[0] if llm_config.models else None)
 
             content_parts: list = []
@@ -679,6 +698,7 @@ class ConversationService:
         user_id: UUID,
         conversation_id: UUID,
         message_id: UUID,
+        llm_config_id: UUID | None = None,
         idempotency_key: str | None = None,
         model: str | None = None,
     ) -> MessageRead:
@@ -713,7 +733,11 @@ class ConversationService:
             if existing_assistant is not None:
                 return await self._message_read(existing_assistant)
 
-            llm_config = await self._get_usable_llm_config(user_id=user_id, conversation=conversation)
+            llm_config = await self._get_usable_llm_config(
+                user_id=user_id,
+                conversation=conversation,
+                llm_config_id=llm_config_id,
+            )
             resolved_model = model or (llm_config.models[0] if llm_config.models else None)
             history_messages = await self.messages.list_path_to_message(
                 conversation_id=conversation_id,
@@ -771,7 +795,6 @@ class ConversationService:
         conversation_id: UUID,
         message_id: UUID,
         payload: MessageEdit,
-        model: str | None = None,
     ) -> MessageExchangeRead:
         # Edit 不修改旧 user，而是在原 parent 下创建新的 user sibling。
         conversation = await self._get_owned_conversation(user_id=user_id, conversation_id=conversation_id)
@@ -798,8 +821,12 @@ class ConversationService:
                 if parent is None:
                     raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="无法找到编辑上下文")
 
-            llm_config = await self._get_usable_llm_config(user_id=user_id, conversation=conversation)
-            resolved_model = model or (llm_config.models[0] if llm_config.models else None)
+            llm_config = await self._get_usable_llm_config(
+                user_id=user_id,
+                conversation=conversation,
+                llm_config_id=payload.llm_config_id,
+            )
+            resolved_model = payload.model or (llm_config.models[0] if llm_config.models else None)
             existing_exchange = await self._find_idempotent_exchange(
                 conversation_id=conversation_id,
                 parent_message_id=parent.id if parent else None,
@@ -1234,8 +1261,14 @@ class ConversationService:
         await self.conversations.touch(conversation_id)
         await self.session.commit()
 
-    async def _get_usable_llm_config(self, *, user_id: UUID, conversation: Conversation):
-        llm_config_id = conversation.llm_config_id or await self._get_default_llm_config_id(user_id)
+    async def _get_usable_llm_config(
+        self,
+        *,
+        user_id: UUID,
+        conversation: Conversation,
+        llm_config_id: UUID | None = None,
+    ):
+        llm_config_id = llm_config_id or conversation.llm_config_id or await self._get_default_llm_config_id(user_id)
         if llm_config_id is None:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,

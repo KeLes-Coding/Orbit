@@ -47,6 +47,7 @@ class ConversationRead(BaseModel):
 class MessageCreate(BaseModel):
     # 多模态内容放入 content_parts；content 和 file_ids 至少需要一个。
     content: str = Field(default="", min_length=0)
+    llm_config_id: UUID | None = None
     file_ids: list[UUID] = Field(default_factory=list)
     parent_message_id: UUID | None = None
     idempotency_key: str | None = Field(default=None, min_length=1, max_length=120)
@@ -62,6 +63,7 @@ class MessageCreate(BaseModel):
 class MessageEdit(BaseModel):
     # 编辑历史 user 消息时创建新的 sibling user message。
     content: str = Field(default="", min_length=0)
+    llm_config_id: UUID | None = None
     file_ids: list[UUID] = Field(default_factory=list)
     idempotency_key: str | None = Field(default=None, min_length=1, max_length=120)
     model: str | None = Field(default=None, min_length=1, max_length=120)
@@ -75,6 +77,7 @@ class MessageEdit(BaseModel):
 
 class MessageRegenerate(BaseModel):
     # 重发 assistant 时允许前端传幂等键，避免重复点击生成多个 sibling。
+    llm_config_id: UUID | None = None
     idempotency_key: str | None = Field(default=None, min_length=1, max_length=120)
     model: str | None = Field(default=None, min_length=1, max_length=120)
 

@@ -509,6 +509,8 @@ export function useConversations(
     (conversationId: string) => {
       setActiveView('chat')
       setActiveConversationId(conversationId)
+      setPendingConversationLlmConfigId(null)
+      setPendingConversationLlmModel(null)
       clearConversationCompletionNotice(conversationId)
       setErrorMessage('')
     },
@@ -516,12 +518,20 @@ export function useConversations(
       clearConversationCompletionNotice,
       setActiveView,
       setActiveConversationId,
+      setPendingConversationLlmConfigId,
+      setPendingConversationLlmModel,
       setErrorMessage,
     ],
   )
 
   const streamMessage = useCallback(
-    async (conversationId: string, content: string, model?: string | null, fileIds?: string[]) => {
+    async (
+      conversationId: string,
+      content: string,
+      llmConfigId?: string | null,
+      model?: string | null,
+      fileIds?: string[],
+    ) => {
       await queryClient.cancelQueries({ queryKey: ['messages', conversationId] })
       const previousMessages = queryClient.getQueryData<Message[]>(['messages', conversationId]) || []
       const conversation = queryClient
@@ -573,6 +583,7 @@ export function useConversations(
           conversationId,
           {
             content: content || '',
+            llm_config_id: llmConfigId ?? null,
             parent_message_id: parentMessageId,
             idempotency_key: idempotencyKey,
             model: model ?? null,
@@ -650,6 +661,7 @@ export function useConversations(
             queryClient.setQueryData<Message[]>(['messages', conversation.id], [])
             setActiveConversationId(conversation.id)
             setPendingConversationLlmConfigId(null)
+            setPendingConversationLlmModel(null)
             setActiveView('chat')
             continue
           }
@@ -683,6 +695,7 @@ export function useConversations(
       setErrorMessage,
       setIsCreatingConversationTitle,
       setPendingConversationLlmConfigId,
+      setPendingConversationLlmModel,
     ],
   )
 
@@ -755,7 +768,7 @@ export function useConversations(
     [pendingFiles],
   )
 
-  const sendMessage = useCallback(() => {
+  const sendMessage = useCallback((selectedLlmConfigId?: string | null, selectedModel?: string | null) => {
     const content = draft.trim()
     const hasFiles = pendingFiles.length > 0
     const isCurrentThreadStreaming = activeConversationId
@@ -774,10 +787,21 @@ export function useConversations(
     const doSend = async () => {
       const fileIds = await uploadPendingFiles(conversationId)
       if (!conversationId) {
-        void streamNewConversationMessage(content, pendingConversationLlmConfigId, pendingConversationLlmModel, fileIds)
+        void streamNewConversationMessage(
+          content,
+          selectedLlmConfigId ?? pendingConversationLlmConfigId,
+          selectedModel ?? pendingConversationLlmModel,
+          fileIds,
+        )
         return
       }
-      void streamMessage(conversationId, content, pendingConversationLlmModel, fileIds)
+      void streamMessage(
+        conversationId,
+        content,
+        selectedLlmConfigId ?? pendingConversationLlmConfigId,
+        selectedModel ?? pendingConversationLlmModel,
+        fileIds,
+      )
     }
     void doSend().then(() => setPendingFiles([]))
   }, [
@@ -799,7 +823,7 @@ export function useConversations(
   ])
 
   const regenerateAssistant = useCallback(
-    async (messageId: string, model?: string | null) => {
+    async (messageId: string, llmConfigId?: string | null, model?: string | null) => {
       if (!activeConversationId || !isUuid(messageId)) return
       const controller = new AbortController()
       let streamKey = streamManager.makePendingKey(activeConversationId, 'regen')
@@ -822,6 +846,7 @@ export function useConversations(
           idempotencyKey,
           controller.signal,
           model ?? null,
+          llmConfigId ?? null,
         )) {
           streamKey = applyStreamEvent(activeConversationId, streamKey, streamEvent, controller)
         }
@@ -847,7 +872,7 @@ export function useConversations(
   )
 
   const editUserMessage = useCallback(
-    async (messageId: string, content: string, model?: string | null) => {
+    async (messageId: string, content: string, llmConfigId?: string | null, model?: string | null) => {
       if (!activeConversationId || !isUuid(messageId)) return
       const controller = new AbortController()
       let streamKey = streamManager.makePendingKey(activeConversationId, 'edit')
@@ -868,6 +893,7 @@ export function useConversations(
           messageId,
           {
             content,
+            llm_config_id: llmConfigId ?? null,
             idempotency_key: createIdempotencyKey('edit'),
             model: model ?? null,
           },
@@ -905,6 +931,8 @@ export function useConversations(
           ['messages', activeConversationId],
           hydrateStreamSnapshots(response.messages, streamMessageSnapshotsRef.current),
         )
+        setPendingConversationLlmConfigId(null)
+        setPendingConversationLlmModel(null)
         queryClient.setQueryData<Conversation[]>(['conversations'], (old = []) =>
           old.map((conversation) =>
             conversation.id === activeConversationId
@@ -916,7 +944,13 @@ export function useConversations(
         setErrorMessage(error instanceof Error ? error.message : 'Failed to switch branch.')
       }
     },
-    [activeConversationId, queryClient, setErrorMessage],
+    [
+      activeConversationId,
+      queryClient,
+      setErrorMessage,
+      setPendingConversationLlmConfigId,
+      setPendingConversationLlmModel,
+    ],
   )
 
   const forkConversation = useCallback(

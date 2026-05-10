@@ -75,6 +75,12 @@ export function ChatShell() {
   const currentLlmConfigId = useMemo(() => {
     const pendingConfig = configs.find((c) => c.id === pendingConversationLlmConfigId)
     if (pendingConfig) return pendingConfig.id
+    const latestAssistantConfigId = [...messages]
+      .reverse()
+      .find((message) => message.role === "assistant" && message.llm_config_id)?.llm_config_id
+    if (latestAssistantConfigId && configs.some((c) => c.id === latestAssistantConfigId)) {
+      return latestAssistantConfigId
+    }
     if (!activeConversation) {
       const defaultConfig = configs.find((c) => c.is_default)
       if (defaultConfig) return defaultConfig.id
@@ -85,13 +91,22 @@ export function ChatShell() {
     const defaultConfig = configs.find((c) => c.is_default)
     if (defaultConfig) return defaultConfig.id
     return null
-  }, [activeConversation, configs, pendingConversationLlmConfigId])
+  }, [activeConversation, configs, messages, pendingConversationLlmConfigId])
 
   const currentModel = useMemo(() => {
     if (pendingConversationLlmModel) return pendingConversationLlmModel
+    const latestAssistantModel = [...messages]
+      .reverse()
+      .find(
+        (message) =>
+          message.role === "assistant" &&
+          message.llm_config_id === currentLlmConfigId &&
+          message.model,
+      )?.model
+    if (latestAssistantModel) return latestAssistantModel
     const activeConfig = configs.find((c) => c.id === currentLlmConfigId)
     return activeConfig?.models[0] || null
-  }, [configs, currentLlmConfigId, pendingConversationLlmModel])
+  }, [configs, currentLlmConfigId, messages, pendingConversationLlmModel])
 
   const showVisionHint = useMemo(() => {
     const hasImage = pendingFiles.some((pf) => pf.file.type.startsWith("image/"))
@@ -144,14 +159,31 @@ export function ChatShell() {
       navigate("/model-configs")
       return
     }
-    sendMessage()
-  }, [configs.length, navigate, openAuth, sendMessage, setActiveView, setErrorMessage, user])
+    sendMessage(currentLlmConfigId, currentModel)
+  }, [
+    configs.length,
+    currentLlmConfigId,
+    currentModel,
+    navigate,
+    openAuth,
+    sendMessage,
+    setActiveView,
+    setErrorMessage,
+    user,
+  ])
 
   const handleEditMessage = useCallback(
     (messageId: string, newContent: string) => {
-      void editUserMessage(messageId, newContent)
+      void editUserMessage(messageId, newContent, currentLlmConfigId, currentModel)
     },
-    [editUserMessage],
+    [currentLlmConfigId, currentModel, editUserMessage],
+  )
+
+  const handleRegenerateAssistant = useCallback(
+    (messageId: string) => {
+      void regenerateAssistant(messageId, currentLlmConfigId, currentModel)
+    },
+    [currentLlmConfigId, currentModel, regenerateAssistant],
   )
 
   const handleForkMessage = useCallback(
@@ -226,7 +258,7 @@ export function ChatShell() {
             currentLeafMessageId={activeConversation?.active_leaf_message_id ?? null}
             hasActiveRun={isSending}
             isSending={isSending}
-            onRegenerate={regenerateAssistant}
+            onRegenerate={handleRegenerateAssistant}
             onEdit={handleEditMessage}
             onSwitchBranch={switchBranch}
             onFork={handleForkMessage}

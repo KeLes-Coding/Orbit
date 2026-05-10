@@ -142,6 +142,7 @@ export interface UpdateConversationPayload {
 
 export interface SendMessagePayload {
   content: string
+  llm_config_id?: string | null
   parent_message_id?: string | null
   idempotency_key?: string | null
   model?: string | null

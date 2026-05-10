@@ -150,6 +150,7 @@ async def create_user_message(
         user_id=current_user.id,
         conversation_id=conversation_id,
         content=payload.content,
+        llm_config_id=payload.llm_config_id,
         parent_message_id=payload.parent_message_id,
         idempotency_key=payload.idempotency_key,
         model=payload.model,
@@ -169,6 +170,7 @@ async def stream_user_message(
         user_id=current_user.id,
         conversation_id=conversation_id,
         content=payload.content,
+        llm_config_id=payload.llm_config_id,
         parent_message_id=payload.parent_message_id,
         idempotency_key=payload.idempotency_key,
         model=payload.model,
@@ -211,6 +213,7 @@ async def regenerate_assistant(
         user_id=current_user.id,
         conversation_id=conversation_id,
         message_id=message_id,
+        llm_config_id=payload.llm_config_id if payload else None,
         idempotency_key=payload.idempotency_key if payload else None,
         model=payload.model if payload else None,
     )
@@ -234,7 +237,6 @@ async def edit_user_message(
         conversation_id=conversation_id,
         message_id=message_id,
         payload=payload,
-        model=payload.model,
     )
 
 
@@ -253,6 +255,7 @@ async def stream_regenerate_assistant(
         user_id=current_user.id,
         conversation_id=conversation_id,
         message_id=message_id,
+        llm_config_id=payload.llm_config_id if payload else None,
         idempotency_key=payload.idempotency_key if payload else None,
         model=payload.model if payload else None,
     )

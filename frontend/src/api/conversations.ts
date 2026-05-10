@@ -168,11 +168,16 @@ export const conversationApi = {
     idempotencyKey?: string | null,
     signal?: AbortSignal,
     model?: string | null,
+    llmConfigId?: string | null,
   ): AsyncGenerator<StreamMessageEvent> {
     yield* fetchSse(`/conversations/${conversationId}/messages/${messageId}/regenerate/stream`, {
       method: 'POST',
       headers: createHeaders(),
-      body: JSON.stringify({ idempotency_key: idempotencyKey ?? null, model: model ?? null }),
+      body: JSON.stringify({
+        idempotency_key: idempotencyKey ?? null,
+        llm_config_id: llmConfigId ?? null,
+        model: model ?? null,
+      }),
       signal,
     })
   },
