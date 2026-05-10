@@ -7,6 +7,7 @@ export interface ManagedStreamHandle {
   streamKey: string
   conversationId: string
   messageId: string | null
+  parentMessageId?: string | null
   streamId: string | null
   controller: AbortController
   source: ManagedStreamSource

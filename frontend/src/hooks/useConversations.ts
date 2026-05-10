@@ -260,9 +260,15 @@ export function useConversations(
       Boolean(
         activeConversationId &&
           receivingConversationIds[activeConversationId] &&
-          streamManager.getByConversation(activeConversationId).some((stream) => stream.messageId === null),
+          streamManager
+            .getByConversation(activeConversationId)
+            .some(
+              (stream) =>
+                stream.messageId === null &&
+                stream.parentMessageId === (activeConversation?.active_leaf_message_id ?? null),
+            ),
       ),
-    [activeConversationId, receivingConversationIds],
+    [activeConversation?.active_leaf_message_id, activeConversationId, receivingConversationIds],
   )
   const isActiveConversationStreaming = activeConversationId
     ? currentBranchIsStreaming || currentBranchHasPendingLocalStream
@@ -532,6 +538,7 @@ export function useConversations(
         streamKey,
         conversationId,
         messageId: null,
+        parentMessageId,
         streamId: null,
         controller,
         source: 'created',
@@ -777,6 +784,7 @@ export function useConversations(
         streamKey,
         conversationId: activeConversationId,
         messageId: null,
+        parentMessageId: activeConversation?.active_leaf_message_id ?? null,
         streamId: null,
         controller,
         source: 'created',
@@ -807,6 +815,7 @@ export function useConversations(
     },
     [
       activeConversationId,
+      activeConversation?.active_leaf_message_id,
       applyStreamEvent,
       queryClient,
       setErrorMessage,
@@ -823,6 +832,7 @@ export function useConversations(
         streamKey,
         conversationId: activeConversationId,
         messageId: null,
+        parentMessageId: activeConversation?.active_leaf_message_id ?? null,
         streamId: null,
         controller,
         source: 'created',
@@ -855,6 +865,7 @@ export function useConversations(
     },
     [
       activeConversationId,
+      activeConversation?.active_leaf_message_id,
       applyStreamEvent,
       queryClient,
       setErrorMessage,
