@@ -128,6 +128,13 @@ function isMessageVisible(messages: Message[], messageId: string | null | undefi
   return Boolean(messageId && messages.some((message) => message.id === messageId))
 }
 
+function isUuid(value: string | null | undefined): value is string {
+  return Boolean(
+    value &&
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value),
+  )
+}
+
 function hydrateStreamSnapshots(
   messages: Message[],
   snapshots: Record<string, StreamMessageSnapshot>,
@@ -402,16 +409,19 @@ export function useConversations(
       if (streamEvent.event === 'message.created') {
         rememberStreamMessage(streamEvent.data.assistant_message)
         nextStreamKey = streamManager.adoptMessageId(nextStreamKey, streamEvent.data.assistant_message.id)
+        const streamHandle = streamManager.get(nextStreamKey)
         streamManager.set({
           streamKey: nextStreamKey,
           conversationId,
           messageId: streamEvent.data.assistant_message.id,
+          parentMessageId: streamHandle?.parentMessageId ?? streamEvent.data.assistant_message.parent_message_id ?? null,
           streamId: streamEvent.data.stream_id,
           controller,
-          source: streamManager.get(nextStreamKey)?.source ?? 'created',
+          source: streamHandle?.source ?? 'created',
           status: 'streaming',
         })
         markConversationStreamState(conversationId, true)
+        let didApplyToVisiblePath = false
         queryClient.setQueryData<Message[]>(['messages', conversationId], (old = []) => {
           const parentMessageId =
             streamEvent.data.user_message?.parent_message_id ??
@@ -419,12 +429,24 @@ export function useConversations(
           if (old.length > 0 && parentMessageId && !isMessageVisible(old, parentMessageId)) {
             return old
           }
+          didApplyToVisiblePath = true
           return replaceVisibleTail(
             old,
             streamEvent.data.user_message,
             streamEvent.data.assistant_message,
           )
         })
+        if (didApplyToVisiblePath) {
+          queryClient.setQueryData<Conversation[]>(['conversations'], (old = []) =>
+            old.map((conversation) =>
+              conversation.id === conversationId &&
+              (conversation.active_leaf_message_id === (streamHandle?.parentMessageId ?? null) ||
+                conversation.active_leaf_message_id === streamEvent.data.assistant_message.id)
+                ? { ...conversation, active_leaf_message_id: streamEvent.data.assistant_message.id }
+                : conversation,
+            ),
+          )
+        }
         return nextStreamKey
       }
 
@@ -505,7 +527,9 @@ export function useConversations(
       const conversation = queryClient
         .getQueryData<Conversation[]>(['conversations'])
         ?.find((item) => item.id === conversationId)
-      const parentMessageId = conversation?.active_leaf_message_id ?? null
+      const parentMessageId = isUuid(conversation?.active_leaf_message_id)
+        ? conversation.active_leaf_message_id
+        : null
       const idempotencyKey = createIdempotencyKey('msg')
       const localId = Date.now()
       const controller = new AbortController()
@@ -776,7 +800,7 @@ export function useConversations(
 
   const regenerateAssistant = useCallback(
     async (messageId: string, model?: string | null) => {
-      if (!activeConversationId) return
+      if (!activeConversationId || !isUuid(messageId)) return
       const controller = new AbortController()
       let streamKey = streamManager.makePendingKey(activeConversationId, 'regen')
       setErrorMessage('')
@@ -824,7 +848,7 @@ export function useConversations(
 
   const editUserMessage = useCallback(
     async (messageId: string, content: string, model?: string | null) => {
-      if (!activeConversationId) return
+      if (!activeConversationId || !isUuid(messageId)) return
       const controller = new AbortController()
       let streamKey = streamManager.makePendingKey(activeConversationId, 'edit')
       setErrorMessage('')
@@ -874,7 +898,7 @@ export function useConversations(
 
   const switchBranch = useCallback(
     async (messageId: string) => {
-      if (!activeConversationId) return
+      if (!activeConversationId || !isUuid(messageId)) return
       try {
         const response = await conversationApi.switchBranch(activeConversationId, messageId)
         queryClient.setQueryData<Message[]>(
@@ -897,7 +921,7 @@ export function useConversations(
 
   const forkConversation = useCallback(
     async (messageId: string, title?: string | null) => {
-      if (!activeConversationId) return null
+      if (!activeConversationId || !isUuid(messageId)) return null
       try {
         const response = await conversationApi.forkConversation(activeConversationId, messageId, title)
         queryClient.setQueryData<Conversation[]>(['conversations'], (old = []) => [
@@ -931,7 +955,7 @@ export function useConversations(
         null
       : pendingNewConversationStreamRef.current
     if (!activeStream) return
-    if (!activeStream.messageId) {
+    if (!activeStream.messageId || !isUuid(activeStream.messageId)) {
       activeStream.controller.abort()
       if (activeStream.conversationId) {
         streamManager.remove(activeStream.streamKey)
@@ -978,7 +1002,7 @@ export function useConversations(
     const streamingAssistant =
       [...rawMessages]
         .reverse()
-        .find((message) => message.role === 'assistant' && message.status === 'streaming') ?? null
+        .find((message) => message.role === 'assistant' && message.status === 'streaming' && isUuid(message.id)) ?? null
     if (!streamingAssistant) return
 
     const resumeMessageId = streamingAssistant.id
