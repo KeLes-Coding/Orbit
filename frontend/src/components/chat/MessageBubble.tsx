@@ -96,6 +96,7 @@ export const MessageBubble = memo(function MessageBubble({
   const siblingIndex = message.sibling_index ?? 1
   const hasSiblings = siblingCount > 1
   const canAct = !actionsDisabled && !isStreaming && !String(message.id).startsWith("local-")
+  const canSwitchBranch = !actionsDisabled && !String(message.id).startsWith("local-")
 
   const hasContent = useMemo(
     () => (message.content || "").trim().length > 0,
@@ -186,7 +187,7 @@ export const MessageBubble = memo(function MessageBubble({
     <div className="branch-switcher" aria-label="Message versions">
       <MessageAction
         label="Previous version"
-        disabled={!canAct || !message.previous_sibling_id}
+        disabled={!canSwitchBranch || !message.previous_sibling_id}
         onClick={() => message.previous_sibling_id && onSwitchBranch?.(message.previous_sibling_id)}
       >
         <ChevronLeftIcon />
@@ -194,7 +195,7 @@ export const MessageBubble = memo(function MessageBubble({
       <span className="branch-count">{siblingIndex}/{siblingCount}</span>
       <MessageAction
         label="Next version"
-        disabled={!canAct || !message.next_sibling_id}
+        disabled={!canSwitchBranch || !message.next_sibling_id}
         onClick={() => message.next_sibling_id && onSwitchBranch?.(message.next_sibling_id)}
       >
         <ChevronRightIcon />
