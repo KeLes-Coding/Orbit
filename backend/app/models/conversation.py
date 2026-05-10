@@ -51,6 +51,7 @@ class Conversation(Base):
     llm_config = relationship("LLMConfig", back_populates="conversations")
     # Conversation 与 Message 之间现在有多个外键，必须显式指定真正的一对多外键。
     messages = relationship("Message", back_populates="conversation", foreign_keys="Message.conversation_id")
+    files = relationship("ConversationFile", back_populates="conversation", foreign_keys="ConversationFile.conversation_id")
 
 
 Index("uq_conversations_thread_id", Conversation.thread_id, unique=True)

@@ -6,6 +6,7 @@ import remarkGfm from "remark-gfm"
 import type { Message } from "@/api/types"
 import { TypingIndicator } from "./TypingIndicator"
 import { OrbitIcon } from "@/components/OrbitIcon"
+import { FileAttachmentList } from "./FileAttachmentCard"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 
 /* DeepSeek-inspired chevron SVGs */
@@ -250,7 +251,10 @@ export const MessageBubble = memo(function MessageBubble({
                 </div>
               </div>
             ) : (
-              <div className="user-bubble">{message.content}</div>
+              <>
+                <div className="user-bubble">{message.content}</div>
+                <FileAttachmentList contentParts={message.content_parts || []} />
+              </>
             )}
             {branchStateBadge && <div className="branch-state-row user">{branchStateBadge}</div>}
             {!isEditing && (
@@ -317,11 +321,14 @@ export const MessageBubble = memo(function MessageBubble({
           {isStreaming && !hasContent ? (
             <TypingIndicator />
           ) : (
-            <div className="markdown-body">
-              <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                {message.content}
-              </ReactMarkdown>
-            </div>
+            <>
+              <div className="markdown-body">
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                  {message.content}
+                </ReactMarkdown>
+              </div>
+              <FileAttachmentList contentParts={message.content_parts || []} />
+            </>
           )}
 
           {isStreaming && hasContent && (

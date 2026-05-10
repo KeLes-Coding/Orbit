@@ -1,6 +1,6 @@
 from typing import Annotated
 
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Query, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -13,30 +13,49 @@ from app.repositories.user import UserRepository
 bearer_scheme = HTTPBearer(auto_error=False)
 
 
-async def get_current_user(
-    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
-    session: Annotated[AsyncSession, Depends(get_db_session)],
+async def _resolve_user_from_token(
+    token: str,
+    session: AsyncSession,
 ) -> User:
-    # 所有需要登录的接口统一走这里解析 Bearer Token。
-    if credentials is None or credentials.scheme.lower() != "bearer":
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="缺少登录凭证",
-        )
-
-    # 令牌只负责证明 user_id，用户状态仍然每次从数据库读取。
-    user_id = verify_access_token(credentials.credentials)
+    user_id = verify_access_token(token)
     if user_id is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="登录凭证无效或已过期",
+            detail="Invalid or expired token",
         )
-
-    # 账号被禁用后，即使旧令牌还没过期，也不能继续访问业务接口。
     user = await UserRepository(session).get_by_id(user_id)
     if user is None or not user.is_enabled:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="用户不存在或已被禁用",
+            detail="User not found or disabled",
         )
     return user
+
+
+async def get_current_user(
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+) -> User:
+    if credentials is None or credentials.scheme.lower() != "bearer":
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing credentials",
+        )
+
+    return await _resolve_user_from_token(credentials.credentials, session)
+
+
+async def get_current_user_allow_query(
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+    token: Annotated[str | None, Query()] = None,
+) -> User:
+    # 优先用 Header，兜底用 query param —— 浏览器 <img> 标签不走 fetch，无法带 Header。
+    if credentials and credentials.scheme.lower() == "bearer":
+        return await _resolve_user_from_token(credentials.credentials, session)
+    if token:
+        return await _resolve_user_from_token(token, session)
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Missing credentials",
+    )

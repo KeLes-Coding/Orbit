@@ -29,6 +29,7 @@ class User(Base):
 
     llm_configs = relationship("LLMConfig", back_populates="user")
     conversations = relationship("Conversation", back_populates="user")
+    files = relationship("ConversationFile", back_populates="user")
 
 
 Index(

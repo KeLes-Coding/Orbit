@@ -109,6 +109,7 @@ class LLMConfigService:
             api_key_ciphertext=encrypt_secret(payload.api_key),
             provider_options=payload.provider_options,
             is_default=is_default,
+            supports_vision=payload.supports_vision,
         )
         await self.session.commit()
         return self._to_read(config)
@@ -146,6 +147,8 @@ class LLMConfigService:
             config.is_default = True
         elif update_data.get("is_default") is False:
             config.is_default = False
+        if "supports_vision" in update_data:
+            config.supports_vision = update_data["supports_vision"]
 
         await self.session.commit()
         await self.session.refresh(config)

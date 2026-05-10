@@ -101,10 +101,17 @@ class OpenAICompatibleProvider(BaseLLMProvider):
         role = getattr(message, "role", None) or message.type
         return {"role": role, "content": self._message_content_text(message.content)}
 
-    def _message_content_text(self, content: Any) -> str:
+    def _message_content_text(self, content: Any) -> str | list:
+        # 多模态 content_blocks 直接透传给 OpenAI API，只对纯文本做字符串化。
         if isinstance(content, str):
             return content
         if isinstance(content, list):
+            # 检查是否包含非文本块（如 image_url）：有则原样返回 list，否则拼接文本。
+            for block in content:
+                if isinstance(block, dict):
+                    block_type = str(block.get("type") or "").lower()
+                    if block_type not in {"text", "reasoning", "thinking"}:
+                        return content
             parts: list[str] = []
             for block in content:
                 if isinstance(block, str):

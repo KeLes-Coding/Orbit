@@ -85,6 +85,7 @@ export interface LlmConfig {
   provider_options?: Record<string, unknown> | null
   is_default: boolean
   is_enabled: boolean
+  supports_vision: boolean
   created_at: string
   updated_at: string
 }
@@ -129,6 +130,7 @@ export interface CreateConversationMessagePayload {
   chat_mode?: string
   metadata?: Record<string, unknown>
   idempotency_key?: string | null
+  file_ids?: string[]
 }
 
 export interface UpdateConversationPayload {
@@ -143,12 +145,40 @@ export interface SendMessagePayload {
   parent_message_id?: string | null
   idempotency_key?: string | null
   model?: string | null
+  file_ids?: string[]
 }
 
 export interface SendMessageResponse {
   user_message: Message
   assistant_message: Message
 }
+
+export interface ConversationFile {
+  id: string
+  user_id: string
+  conversation_id?: string | null
+  original_name: string
+  file_type: string
+  file_size: number
+  file_extension?: string | null
+  storage_type: string
+  extraction_status: 'pending' | 'processing' | 'success' | 'failed' | 'skipped'
+  extraction_error?: string | null
+  bind_status: 'pending' | 'bound' | 'deleted'
+  created_at: string
+  updated_at: string
+}
+
+export type ContentPart =
+  | { type: 'text'; text: string }
+  | {
+      type: 'file'
+      file_id: string
+      name: string
+      mime_type: string
+      file_size: number
+      extracted_text?: string | null
+    }
 
 export interface BranchSwitchResponse {
   active_leaf_message_id?: string | null
@@ -230,6 +260,7 @@ export interface CreateLlmConfigPayload {
   api_key?: string | null
   provider_options?: Record<string, unknown>
   is_default?: boolean
+  supports_vision?: boolean
 }
 
 export interface UpdateLlmConfigPayload {
@@ -240,4 +271,5 @@ export interface UpdateLlmConfigPayload {
   api_key?: string | null
   provider_options?: Record<string, unknown>
   is_default?: boolean
+  supports_vision?: boolean
 }

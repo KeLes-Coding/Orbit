@@ -29,6 +29,8 @@ class LLMConfig(Base):
     # 每个用户只允许一个活跃默认配置，具体约束由下面的部分唯一索引保证。
     is_default: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=expression.false())
     is_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=expression.true())
+    # 用户手动勾选后，发送消息时图片会以 base64 多模态格式注入 LLM 上下文。
+    supports_vision: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=expression.false())
     archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(

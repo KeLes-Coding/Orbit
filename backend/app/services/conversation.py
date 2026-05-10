@@ -70,8 +70,8 @@ class ConversationService:
         parent_message_id: UUID | None = None,
         idempotency_key: str | None = None,
         model: str | None = None,
+        file_ids: list[UUID] | None = None,
     ) -> str:
-        # 启动流时只负责写入消息和注册 active stream，真正生成放到后台 producer。
         conversation = await self._get_owned_conversation(user_id=user_id, conversation_id=conversation_id)
         parent_message = await self._resolve_parent_message(
             conversation_id=conversation_id,
@@ -108,11 +108,23 @@ class ConversationService:
 
             llm_config = await self._get_usable_llm_config(user_id=user_id, conversation=conversation)
             resolved_model = model or (llm_config.models[0] if llm_config.models else None)
+
+            content_parts: list = []
+            if file_ids:
+                from app.services.file_service import FileService
+                file_service = FileService(self.session)
+                bound_files = await file_service.bind_pending_files(
+                    user_id=user_id, file_ids=file_ids, conversation_id=conversation_id
+                )
+                bound_files = await file_service.wait_for_extraction(files=bound_files)
+                content_parts = file_service.build_content_parts(content=content, files=bound_files)
+
             user_message = await self.messages.create_user_message(
                 conversation_id=conversation_id,
                 content=content,
                 parent_message=parent_message,
                 idempotency_key=idempotency_key,
+                content_parts=content_parts,
             )
             await self.messages.set_conversation_active_leaf(conversation=conversation, message=user_message)
             assistant_message = await self.messages.create_assistant_placeholder(
@@ -155,7 +167,6 @@ class ConversationService:
         user_id: UUID,
         payload: ConversationMessageCreate,
     ) -> tuple[UUID, str]:
-        # 首条消息的启动阶段仍在请求内完成，确保创建会话失败能直接返回普通 HTTP 错误。
         llm_config_id = payload.llm_config_id or await self._get_default_llm_config_id(user_id)
         if llm_config_id is None:
             raise HTTPException(
@@ -171,7 +182,6 @@ class ConversationService:
             )
         resolved_model = payload.model or (llm_config.models[0] if llm_config.models else None)
 
-        # 先用本地 fallback title 落库，让首轮流式响应不再被标题模型阻塞。
         title = self.title_generator.fallback_title(payload.content)
         conversation = await self.conversations.create(
             user_id=user_id,
@@ -180,10 +190,23 @@ class ConversationService:
             chat_mode=payload.chat_mode,
             metadata=payload.metadata,
         )
+
+        content_parts: list = []
+        file_ids = getattr(payload, "file_ids", None) or None
+        if file_ids:
+            from app.services.file_service import FileService
+            file_service = FileService(self.session)
+            bound_files = await file_service.bind_pending_files(
+                user_id=user_id, file_ids=file_ids, conversation_id=conversation.id
+            )
+            bound_files = await file_service.wait_for_extraction(files=bound_files)
+            content_parts = file_service.build_content_parts(content=payload.content, files=bound_files)
+
         user_message = await self.messages.create_user_message(
             conversation_id=conversation.id,
             content=payload.content,
             idempotency_key=payload.idempotency_key,
+            content_parts=content_parts,
         )
         await self.messages.set_conversation_active_leaf(conversation=conversation, message=user_message)
         assistant_message = await self.messages.create_assistant_placeholder(
@@ -364,6 +387,20 @@ class ConversationService:
                     status_code=status.HTTP_409_CONFLICT,
                     detail="幂等请求已存在，请刷新当前分支消息状态",
                 )
+
+            file_ids = getattr(payload, "file_ids", None) or None
+            content_parts: list = []
+            if file_ids:
+                from app.services.file_service import FileService
+                file_service = FileService(self.session)
+                bound_files = await file_service.bind_pending_files(
+                    user_id=user_id, file_ids=file_ids, conversation_id=conversation_id
+                )
+                bound_files = await file_service.wait_for_extraction(files=bound_files)
+                content_parts = file_service.build_content_parts(
+                    content=payload.content, files=bound_files
+                )
+
             user_message = await self.messages.create_user_message(
                 conversation_id=conversation_id,
                 content=payload.content,
@@ -371,6 +408,7 @@ class ConversationService:
                 source_message_id=target.id,
                 revision_type="edit",
                 idempotency_key=payload.idempotency_key,
+                content_parts=content_parts,
             )
             await self.messages.set_conversation_active_leaf(conversation=conversation, message=user_message)
             assistant_message = await self.messages.create_assistant_placeholder(
@@ -530,8 +568,8 @@ class ConversationService:
         parent_message_id: UUID | None = None,
         idempotency_key: str | None = None,
         model: str | None = None,
+        file_ids: list[UUID] | None = None,
     ) -> MessageExchangeRead:
-        # 本接口完成“一问一答”：写入用户消息、创建 assistant 占位、调用模型并落库结果。
         conversation = await self._get_owned_conversation(user_id=user_id, conversation_id=conversation_id)
         parent_message = await self._resolve_parent_message(
             conversation_id=conversation_id,
@@ -564,11 +602,23 @@ class ConversationService:
 
             llm_config = await self._get_usable_llm_config(user_id=user_id, conversation=conversation)
             resolved_model = model or (llm_config.models[0] if llm_config.models else None)
+
+            content_parts: list = []
+            if file_ids:
+                from app.services.file_service import FileService
+                file_service = FileService(self.session)
+                bound_files = await file_service.bind_pending_files(
+                    user_id=user_id, file_ids=file_ids, conversation_id=conversation_id
+                )
+                bound_files = await file_service.wait_for_extraction(files=bound_files)
+                content_parts = file_service.build_content_parts(content=content, files=bound_files)
+
             user_message = await self.messages.create_user_message(
                 conversation_id=conversation_id,
                 content=content,
                 parent_message=parent_message,
                 idempotency_key=idempotency_key,
+                content_parts=content_parts,
             )
             await self.messages.set_conversation_active_leaf(conversation=conversation, message=user_message)
             history_messages = await self.messages.list_path_to_message(

@@ -146,7 +146,6 @@ async def create_user_message(
     current_user: Annotated[User, Depends(get_current_user)],
     session: Annotated[AsyncSession, Depends(get_db_session)],
 ) -> MessageExchangeRead:
-    # 写入用户消息后立即调用模型，并返回本轮 user/assistant 两条消息。
     return await ConversationService(session).create_user_message(
         user_id=current_user.id,
         conversation_id=conversation_id,
@@ -154,6 +153,7 @@ async def create_user_message(
         parent_message_id=payload.parent_message_id,
         idempotency_key=payload.idempotency_key,
         model=payload.model,
+        file_ids=payload.file_ids if payload.file_ids else None,
     )
 
 
@@ -165,7 +165,6 @@ async def stream_user_message(
     session: Annotated[AsyncSession, Depends(get_db_session)],
 ) -> StreamingResponse:
     service = ConversationService(session)
-    # 发送消息时先启动后台 producer，再把当前连接挂为订阅者。
     stream_id = await service.start_stream_user_message(
         user_id=current_user.id,
         conversation_id=conversation_id,
@@ -173,6 +172,7 @@ async def stream_user_message(
         parent_message_id=payload.parent_message_id,
         idempotency_key=payload.idempotency_key,
         model=payload.model,
+        file_ids=payload.file_ids if payload.file_ids else None,
     )
 
     async def event_generator() -> AsyncIterator[str]:

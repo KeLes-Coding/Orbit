@@ -1,9 +1,11 @@
 import { useMemo, useCallback, useEffect, useRef, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { conversationApi } from '@/api/conversations'
+import { fileApi } from '@/api/files'
 import { streamManager } from '@/lib/streamManager'
 import { useOrbitStore } from '@/stores/useOrbitStore'
 import type { Conversation, Message, StreamMessageEvent } from '@/api/types'
+import type { PendingFile } from '@/components/chat/FilePreviewItem'
 
 interface UseConversationsOptions {
   enableStreamResume?: boolean
@@ -183,6 +185,8 @@ export function useConversations(
   const clearConversationCompletionNotice = useOrbitStore((s) => s.clearConversationCompletionNotice)
   const queryClient = useQueryClient()
   const [isPendingNewConversationStream, setIsPendingNewConversationStream] = useState(false)
+  const [pendingFiles, setPendingFiles] = useState<PendingFile[]>([])
+  const [isUploadingFiles, setIsUploadingFiles] = useState(false)
   const pendingNewConversationStreamRef = useRef<ActiveStreamHandle | null>(null)
   const activeConversationIdRef = useRef(activeConversationId)
   const resumeAttemptRef = useRef<Record<string, boolean>>({})
@@ -489,20 +493,18 @@ export function useConversations(
   )
 
   const streamMessage = useCallback(
-    async (conversationId: string, content: string, model?: string | null) => {
+    async (conversationId: string, content: string, model?: string | null, fileIds?: string[]) => {
       await queryClient.cancelQueries({ queryKey: ['messages', conversationId] })
       const previousMessages = queryClient.getQueryData<Message[]>(['messages', conversationId]) || []
       const conversation = queryClient
         .getQueryData<Conversation[]>(['conversations'])
         ?.find((item) => item.id === conversationId)
-      // 普通发送不再默认绑定“唯一活跃流”，而是显式把当前可见 leaf 作为 base message 传给后端。
       const parentMessageId = conversation?.active_leaf_message_id ?? null
       const idempotencyKey = createIdempotencyKey('msg')
       const localId = Date.now()
       const controller = new AbortController()
       let streamKey = streamManager.makePendingKey(conversationId, 'send')
 
-      // 后端返回真实消息前先插入本地占位，保证发送后 UI 立即有反馈。
       queryClient.setQueryData<Message[]>(['messages', conversationId], [
         ...previousMessages,
         {
@@ -510,6 +512,7 @@ export function useConversations(
           conversation_id: conversationId,
           role: 'user',
           content,
+          content_parts: [],
           status: 'completed',
           created_at: new Date().toISOString(),
         },
@@ -519,6 +522,7 @@ export function useConversations(
           role: 'assistant',
           content: '',
           reasoning_content: '',
+          content_parts: [],
           status: 'streaming',
           created_at: new Date().toISOString(),
         },
@@ -537,10 +541,11 @@ export function useConversations(
         for await (const streamEvent of conversationApi.streamMessage(
           conversationId,
           {
-            content,
+            content: content || '',
             parent_message_id: parentMessageId,
             idempotency_key: idempotencyKey,
             model: model ?? null,
+            file_ids: fileIds?.length ? fileIds : undefined,
           },
           controller.signal,
         )) {
@@ -563,7 +568,7 @@ export function useConversations(
   )
 
   const streamNewConversationMessage = useCallback(
-    async (content: string, llmConfigId: string | null, model?: string | null) => {
+    async (content: string, llmConfigId: string | null, model?: string | null, fileIds?: string[]) => {
       const controller = new AbortController()
       let conversationId: string | null = null
       let streamKey: string | null = null
@@ -581,12 +586,13 @@ export function useConversations(
       try {
         for await (const streamEvent of conversationApi.streamNewConversationMessage(
           {
-            content,
+            content: content || '',
             llm_config_id: llmConfigId,
             chat_mode: 'chat',
             metadata: {},
             idempotency_key: createIdempotencyKey('new-chat'),
             model: model ?? null,
+            file_ids: fileIds?.length ? fileIds : undefined,
           },
           controller.signal,
         )) {
@@ -649,12 +655,82 @@ export function useConversations(
     ],
   )
 
+  const addFiles = useCallback((files: File[]) => {
+    const newFiles: PendingFile[] = files.map((file) => {
+      const isImage = file.type.startsWith("image/")
+      return {
+        file,
+        status: "pending" as const,
+        preview: isImage ? URL.createObjectURL(file) : undefined,
+      }
+    })
+    setPendingFiles((prev) => [...prev, ...newFiles])
+  }, [])
+
+  const removeFile = useCallback((index: number) => {
+    setPendingFiles((prev) => {
+      const next = [...prev]
+      const removed = next[index]
+      if (removed?.preview) URL.revokeObjectURL(removed.preview)
+      next.splice(index, 1)
+      return next
+    })
+  }, [])
+
+  const uploadPendingFiles = useCallback(
+    async (conversationId: string | null): Promise<string[]> => {
+      const files = pendingFiles.filter((pf) => pf.status !== "ready")
+      if (files.length === 0) {
+        return pendingFiles
+          .filter((pf) => pf.serverFile?.id)
+          .map((pf) => pf.serverFile!.id)
+      }
+
+      setIsUploadingFiles(true)
+      const fileIds: string[] = []
+      const updated: PendingFile[] = [...pendingFiles]
+
+      for (let i = 0; i < updated.length; i++) {
+        const pf = updated[i]
+        if (pf.status === "ready" && pf.serverFile?.id) {
+          fileIds.push(pf.serverFile.id)
+          continue
+        }
+        updated[i] = { ...pf, status: "uploading" }
+        setPendingFiles([...updated])
+
+        try {
+          let serverFile
+          if (conversationId) {
+            serverFile = await fileApi.uploadToConversation(conversationId, pf.file)
+          } else {
+            serverFile = await fileApi.uploadPending(pf.file)
+          }
+          fileIds.push(serverFile.id)
+          updated[i] = { ...pf, status: "ready", serverFile }
+        } catch (err) {
+          updated[i] = {
+            ...pf,
+            status: "error",
+            error: err instanceof Error ? err.message : "Upload failed",
+          }
+        }
+        setPendingFiles([...updated])
+      }
+
+      setIsUploadingFiles(false)
+      return fileIds
+    },
+    [pendingFiles],
+  )
+
   const sendMessage = useCallback(() => {
     const content = draft.trim()
+    const hasFiles = pendingFiles.length > 0
     const isCurrentThreadStreaming = activeConversationId
       ? currentBranchIsStreaming || currentBranchHasPendingLocalStream
       : isPendingNewConversationStream
-    if (!content || isCurrentThreadStreaming) return
+    if ((!content && !hasFiles) || isCurrentThreadStreaming || isUploadingFiles) return
     if (!hasUser) {
       setErrorMessage('Sign in before sending messages.')
       return
@@ -663,14 +739,20 @@ export function useConversations(
     setErrorMessage('')
 
     const conversationId = activeConversationId
-    if (!conversationId) {
-      void streamNewConversationMessage(content, pendingConversationLlmConfigId, pendingConversationLlmModel)
-      return
+    // Upload files, then send with file_ids
+    const doSend = async () => {
+      const fileIds = await uploadPendingFiles(conversationId)
+      if (!conversationId) {
+        void streamNewConversationMessage(content, pendingConversationLlmConfigId, pendingConversationLlmModel, fileIds)
+        return
+      }
+      void streamMessage(conversationId, content, pendingConversationLlmModel, fileIds)
     }
-
-    void streamMessage(conversationId, content, pendingConversationLlmModel)
+    void doSend().then(() => setPendingFiles([]))
   }, [
     draft,
+    pendingFiles,
+    isUploadingFiles,
     activeConversationId,
     pendingConversationLlmConfigId,
     pendingConversationLlmModel,
@@ -678,6 +760,7 @@ export function useConversations(
     isPendingNewConversationStream,
     currentBranchIsStreaming,
     currentBranchHasPendingLocalStream,
+    uploadPendingFiles,
     streamMessage,
     streamNewConversationMessage,
     setDraft,
@@ -1009,6 +1092,10 @@ export function useConversations(
     messages,
     isLoadingMessages,
     isSending: isActiveConversationStreaming,
+    pendingFiles,
+    isUploadingFiles,
+    addFiles,
+    removeFile,
     formatConversationTitle,
     selectConversation,
     createNewThread: () => {
@@ -1020,6 +1107,7 @@ export function useConversations(
       setActiveConversationId(null)
       setPendingConversationLlmConfigId(null)
       setPendingConversationLlmModel(null)
+      setPendingFiles([])
       setIsCreatingConversationTitle(false)
       setErrorMessage('')
     },
