@@ -1,5 +1,4 @@
 import hashlib
-import os
 from functools import lru_cache
 from pathlib import Path
 from uuid import UUID
@@ -44,6 +43,7 @@ class LocalFileStorage:
         file_dir = self._file_dir(file_id)
         if file_dir.exists():
             import shutil
+
             shutil.rmtree(file_dir)
 
     @staticmethod

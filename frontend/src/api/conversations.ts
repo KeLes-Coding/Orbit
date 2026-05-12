@@ -8,7 +8,6 @@ import type {
   ForkConversationResponse,
   Message,
   SendMessagePayload,
-  SendMessageResponse,
   StreamMessageEvent,
   UpdateConversationPayload,
 } from './types'
@@ -142,10 +141,6 @@ export const conversationApi = {
 
   messages(conversationId: string): Promise<Message[]> {
     return apiClient.get(`/conversations/${conversationId}/messages`)
-  },
-
-  sendMessage(conversationId: string, payload: SendMessagePayload): Promise<SendMessageResponse> {
-    return apiClient.post(`/conversations/${conversationId}/messages`, payload)
   },
 
   async *streamMessage(

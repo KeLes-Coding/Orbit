@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from uuid import UUID
 
-from sqlalchemy import func, select, update
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.conversation_file import ConversationFile
@@ -45,9 +45,7 @@ class ConversationFileRepository:
         result = await self.session.execute(statement)
         return result.scalar_one_or_none()
 
-    async def find_by_checksum(
-        self, *, user_id: UUID, checksum: str
-    ) -> ConversationFile | None:
+    async def find_by_checksum(self, *, user_id: UUID, checksum: str) -> ConversationFile | None:
         # 按用户 + SHA-256 查找已有文件，用于上传去重。
         statement = select(ConversationFile).where(
             ConversationFile.user_id == user_id,

@@ -1,14 +1,14 @@
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, File, Path, Query, Response, UploadFile, status
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi import APIRouter, Depends, File, Response, UploadFile, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user, get_current_user_allow_query
 from app.db.session import get_db_session
 from app.models.user import User
 from app.schemas.file import FileRead
+from app.services.conversation import ConversationService
 from app.services.file_service import FileService
 
 router = APIRouter(tags=["files"])
@@ -21,9 +21,7 @@ async def upload_pending_file(
     session: Annotated[AsyncSession, Depends(get_db_session)],
 ) -> FileRead:
     # 新聊天预上传：文件写入临时区，conversation_id=NULL，24h 后过期。
-    return await FileService(session).upload_pending_file(
-        user_id=current_user.id, file=file
-    )
+    return await FileService(session).upload_pending_file(user_id=current_user.id, file=file)
 
 
 @router.post(
@@ -37,7 +35,11 @@ async def upload_conversation_file(
     current_user: Annotated[User, Depends(get_current_user)],
     session: Annotated[AsyncSession, Depends(get_db_session)],
 ) -> FileRead:
-    # 已有会话上传：文件直接绑定到当前 conversation。
+    # 已有会话上传必须先校验 conversation 归属，避免用户把文件绑定到他人会话。
+    await ConversationService(session).get_conversation(
+        user_id=current_user.id,
+        conversation_id=conversation_id,
+    )
     return await FileService(session).upload_to_conversation(
         user_id=current_user.id, conversation_id=conversation_id, file=file
     )
@@ -55,6 +57,7 @@ async def get_file_metadata(
     )
     if file_record is None:
         from fastapi import HTTPException, status
+
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
     return FileRead.model_validate(file_record)
 
@@ -87,11 +90,8 @@ async def list_conversation_files(
     session: Annotated[AsyncSession, Depends(get_db_session)],
 ) -> list[FileRead]:
     # 返回当前会话已绑定的文件列表，先校验会话归属再查询文件。
-    from app.services.conversation import ConversationService
     await ConversationService(session).get_conversation(
         user_id=current_user.id, conversation_id=conversation_id
     )
-    files = await FileService(session).repo.list_by_conversation(
-        conversation_id=conversation_id
-    )
+    files = await FileService(session).repo.list_by_conversation(conversation_id=conversation_id)
     return [FileRead.model_validate(f) for f in files]
