@@ -10,6 +10,74 @@ import { FileAttachmentList } from "./FileAttachmentCard"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 
 /* DeepSeek-inspired chevron SVGs */
+/** agent 工具调用卡片列表：每个 tool_call + tool_result 对渲染为可折叠卡片。*/
+function AgentToolCards({ deltas }: { deltas: NonNullable<Message['agentDeltas']> }) {
+  const [expanded, setExpanded] = useState<Record<number, boolean>>({})
+
+  if (!deltas || deltas.length === 0) return null
+
+  return (
+    <div className="agent-tool-cards">
+      {deltas.map((delta, index) => (
+        <div key={index} className="agent-tool-card">
+          <button
+            type="button"
+            className="agent-tool-card-header"
+            onClick={() => setExpanded((prev) => ({ ...prev, [index]: !prev[index] }))}
+          >
+            <span className="agent-tool-icon">
+              {delta.type === 'tool_call'
+                ? '🔧'
+                : delta.type === 'tool_result'
+                  ? '📄'
+                  : delta.type === 'subagent_started' || delta.type === 'subagent_delta' || delta.type === 'subagent_completed'
+                    ? '🤖'
+                    : '📋'}
+            </span>
+            <span className="agent-tool-name">
+              {delta.type === 'tool_call'
+                ? delta.tool_name || 'tool_call'
+                : delta.type === 'tool_result'
+                  ? '结果'
+                  : delta.type === 'subagent_started'
+                    ? `${delta.subagent_name || 'subagent'} started`
+                    : delta.type === 'subagent_completed'
+                      ? `${delta.subagent_name || 'subagent'} completed`
+                      : delta.type === 'subagent_delta'
+                        ? delta.subagent_name || 'subagent'
+                  : 'todo'}
+            </span>
+            {delta.type === 'tool_call' && delta.tool_input && (
+              <span className="agent-tool-input-preview">
+                {Object.values(delta.tool_input).slice(0, 2).join(', ')}
+              </span>
+            )}
+            <span className="agent-tool-expand">{expanded[index] ? '▾' : '▸'}</span>
+          </button>
+          {expanded[index] && (
+            <div className="agent-tool-card-body">
+              {delta.type === 'tool_call' && delta.tool_input && (
+                <pre className="agent-tool-input">
+                  {JSON.stringify(delta.tool_input, null, 2)}
+                </pre>
+              )}
+              {delta.type === 'tool_result' && delta.content && (
+                <pre className="agent-tool-content">{delta.content}</pre>
+              )}
+              {delta.type === 'todo' && delta.content && (
+                <p className="agent-tool-todo">{delta.content}</p>
+              )}
+              {delta.type === 'subagent_delta' && delta.content && (
+                <pre className="agent-tool-content">{delta.content}</pre>
+              )}
+            </div>
+          )}
+        </div>
+      ))}
+    </div>
+  )
+}
+
 function ChevronLeftIcon() {
   return (
     <svg width="13" height="13" viewBox="0 0 14 14" fill="none">
@@ -329,6 +397,11 @@ export const MessageBubble = memo(function MessageBubble({
                 </ReactMarkdown>
               </div>
               <FileAttachmentList contentParts={message.content_parts || []} />
+
+              {/* agent 工具调用卡片：折叠式展示 tool_call → tool_result */}
+              {(message.agentDeltas?.length ?? 0) > 0 && (
+                <AgentToolCards deltas={message.agentDeltas!} />
+              )}
             </>
           )}
 

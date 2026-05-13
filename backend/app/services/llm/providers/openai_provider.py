@@ -13,8 +13,65 @@ from app.services.llm.providers.base import (
     LLMModelInfo,
     LLMProviderError,
     LLMProviderStreamChunk,
+    LLMProviderInfo,
     LLMRuntimeConfig,
 )
+
+
+class DeepSeekCompatibleChatOpenAI(ChatOpenAI):
+    """支持 DeepSeek reasoning_content 回传的 ChatOpenAI 子类。
+
+    DeepSeek V4 等 reasoning 模型要求将 assistant 消息中的 reasoning_content
+    回传给 API。LangChain 的两个函数都需要修复：
+    1. _create_chat_result — 从 API 响应中提取 reasoning_content 并保存到 AIMessage
+    2. _get_request_payload — 从 AIMessage 中读取 reasoning_content 并注入请求 payload
+    """
+
+    def _create_chat_result(self, response, generation_info=None):
+        """覆写以在 AIMessage.additional_kwargs 中保留 reasoning_content。
+
+        LangChain ChatOpenAI 的 _convert_dict_to_message 不处理 reasoning_content，
+        导致 DeepSeek reasoning 模型的后续请求丢失推理上下文。
+        """
+        chat_result = super()._create_chat_result(response, generation_info)
+        response_dict = (
+            response if isinstance(response, dict)
+            else response.model_dump(exclude={"choices": {"__all__": {"message": {"parsed"}}}})
+        )
+        for choice, generation in zip(
+            response_dict.get("choices", []), chat_result.generations
+        ):
+            msg_content = choice.get("message", {})
+            reasoning = msg_content.get("reasoning_content", "")
+            if reasoning and isinstance(generation.message, AIMessage):
+                generation.message.additional_kwargs["reasoning_content"] = reasoning
+        return chat_result
+
+    def _get_request_payload(
+        self,
+        input_,
+        *,
+        stop=None,
+        **kwargs,
+    ):
+        payload = super()._get_request_payload(input_, stop=stop, **kwargs)
+        # 遍历每条 AIMessage，将 additional_kwargs 中的 reasoning_content
+        # 提升到消息 dict 顶层（DeepSeek API 要求的格式）。
+        assistant_idx = 0
+        for raw_msg in input_:
+            if not isinstance(raw_msg, AIMessage):
+                continue
+            ak = getattr(raw_msg, "additional_kwargs", None) or {}
+            reasoning = ak.get("reasoning_content") or ak.get("reasoning")
+            assistant_msgs = [
+                (i, m) for i, m in enumerate(payload.get("messages", []))
+                if m.get("role") == "assistant"
+            ]
+            if reasoning and assistant_idx < len(assistant_msgs):
+                idx, _ = assistant_msgs[assistant_idx]
+                payload["messages"][idx]["reasoning_content"] = reasoning
+            assistant_idx += 1
+        return payload
 
 
 class OpenAICompatibleProvider(BaseLLMProvider):
@@ -42,7 +99,8 @@ class OpenAICompatibleProvider(BaseLLMProvider):
         }
         if options.extra_body:
             model_kwargs["extra_body"] = options.extra_body
-        return ChatOpenAI(**model_kwargs)
+        # 使用 DeepSeekCompatibleChatOpenAI 以支持 reasoning_content 回传
+        return DeepSeekCompatibleChatOpenAI(**model_kwargs)
 
     def supports_native_stream(self, config: LLMRuntimeConfig) -> bool:
         # OpenAI-compatible 的原生 stream 可以保留第三方扩展字段，如 DeepSeek delta.reasoning_content。
@@ -91,7 +149,13 @@ class OpenAICompatibleProvider(BaseLLMProvider):
         if isinstance(message, HumanMessage):
             return {"role": "user", "content": self._message_content_text(message.content)}
         if isinstance(message, AIMessage):
-            return {"role": "assistant", "content": self._message_content_text(message.content)}
+            msg: dict[str, Any] = {"role": "assistant", "content": self._message_content_text(message.content)}
+            # DeepSeek 等 reasoning 模型要求将 reasoning_content 回传给 API，
+            # 否则第二轮请求会报 "reasoning_content must be passed back" 错误。
+            reasoning = self._extract_reasoning(message)
+            if reasoning:
+                msg["reasoning_content"] = reasoning
+            return msg
         if isinstance(message, ToolMessage):
             return {
                 "role": "tool",
@@ -159,6 +223,24 @@ class OpenAICompatibleProvider(BaseLLMProvider):
             finish_reason=str(finish_reason) if finish_reason is not None else None,
             raw=chunk,
         )
+
+    def _extract_reasoning(self, message: BaseMessage) -> str:
+        """从 AIMessage 中提取 reasoning 内容，用于回传给 DeepSeek 等 reasoning 模型。
+
+        LangChain ChatOpenAI 将 DeepSeek 的 reasoning_content 存在
+        additional_kwargs["reasoning"] 中。同时检查 response_metadata。
+        """
+        for container in (
+            getattr(message, "additional_kwargs", None),
+            getattr(message, "response_metadata", None),
+        ):
+            if not isinstance(container, dict):
+                continue
+            for key in ("reasoning", "reasoning_content", "thinking"):
+                text = self._normalize_text_value(container.get(key))
+                if text:
+                    return text
+        return ""
 
     def _get_field(self, value: Any, key: str) -> Any:
         if value is None:

@@ -2249,3 +2249,110 @@ textarea:disabled {
   color: var(--color-fg);
   background: var(--color-surface-hover);
 }
+
+/* ── chat_mode 切换按钮 ── */
+.chat-mode-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid var(--color-border);
+  border-radius: 14px;
+  background: var(--color-surface);
+  color: var(--color-fg-muted);
+  cursor: pointer;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  transition: all 0.15s ease;
+}
+.chat-mode-toggle:hover {
+  border-color: var(--color-fg-muted);
+  color: var(--color-fg);
+}
+.chat-mode-toggle.is-agent {
+  background: var(--color-accent, #6c5ce7);
+  color: #fff;
+  border-color: var(--color-accent, #6c5ce7);
+}
+.chat-mode-toggle:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.mode-badge {
+  line-height: 1;
+}
+
+/* ── agent 工具卡片 ── */
+.agent-tool-cards {
+  margin-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.agent-tool-card {
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  overflow: hidden;
+  font-size: 13px;
+}
+.agent-tool-card-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 6px 10px;
+  background: var(--color-surface);
+  border: none;
+  cursor: pointer;
+  color: var(--color-fg);
+  font-size: inherit;
+  text-align: left;
+}
+.agent-tool-card-header:hover {
+  background: var(--color-surface-hover);
+}
+.agent-tool-icon {
+  font-size: 14px;
+  flex-shrink: 0;
+}
+.agent-tool-name {
+  font-weight: 600;
+  flex-shrink: 0;
+}
+.agent-tool-input-preview {
+  color: var(--color-fg-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+}
+.agent-tool-expand {
+  margin-left: auto;
+  color: var(--color-fg-muted);
+  font-size: 11px;
+}
+.agent-tool-card-body {
+  padding: 8px 10px;
+  border-top: 1px solid var(--color-border);
+  background: var(--color-surface-elevated);
+}
+.agent-tool-input,
+.agent-tool-content {
+  font-family: var(--font-mono, monospace);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-all;
+  margin: 0;
+  color: var(--color-fg);
+  max-height: 240px;
+  overflow-y: auto;
+}
+.agent-tool-todo {
+  margin: 0;
+  color: var(--color-fg);
+}

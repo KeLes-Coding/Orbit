@@ -149,3 +149,22 @@ class ConversationForkRead(BaseModel):
     # Fork 后返回新会话和复制后的 visible path。
     conversation: ConversationRead
     messages: list[MessageRead]
+
+
+class ConversationRunRead(BaseModel):
+    """统一 run 记录的响应模型，所有 chat_mode 共用。"""
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    conversation_id: UUID
+    assistant_message_id: UUID | None
+    thread_id: str
+    runtime_kind: str
+    chat_mode: str
+    status: str
+    started_at: datetime
+    finished_at: datetime | None
+    last_error: str | None
+    metadata_: dict = Field(serialization_alias="metadata")
+    created_at: datetime
+    updated_at: datetime

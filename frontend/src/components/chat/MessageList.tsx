@@ -225,7 +225,10 @@ export function MessageList({
         </nav>
       )}
       <div className="chat-stream" ref={containerRef}>
-        {messages.map((message, idx) => {
+        {messages
+          // tool 消息的内容已在父 assistant 的 AgentToolCards 中展示，此处跳过。
+          .filter((message) => message.role !== 'tool')
+          .map((message, idx) => {
           const prev = idx > 0 ? messages[idx - 1] : null
           const showSep = shouldShowSeparator(message, prev)
           const roundIdx = idx === 0

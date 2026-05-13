@@ -482,6 +482,27 @@ class ConversationRunService(ConversationStreamRunService):
         )
         stream_id = self._build_stream_id(assistant_message.id)
         conversation.has_active_run = True
+
+        # 创建统一 run 记录，所有 chat_mode 共享同一张表。
+        runtime_kind = (
+            "langgraph_agent" if conversation.chat_mode == "agent" else "classic_chat"
+        )
+        run_record = await self.runs.create(
+            conversation_id=conversation_id,
+            assistant_message_id=assistant_message.id,
+            user_id=conversation.user_id,
+            thread_id=conversation.thread_id,
+            runtime_kind=runtime_kind,
+            chat_mode=conversation.chat_mode,
+            metadata={
+                "provider": llm_config.provider,
+                "model": model or "",
+            },
+        )
+        # 将 run_id 写入 assistant 消息的 langgraph_message_id，
+        # 用于将来 resume 时根据 run 记录恢复完整的消息→图消息映射。
+        assistant_message.langgraph_message_id = str(run_record.id)
+
         await self.conversations.touch(conversation_id)
         await self.session.commit()
         return user_message, assistant_message, stream_id

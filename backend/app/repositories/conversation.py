@@ -321,6 +321,40 @@ class MessageRepository:
         await self.session.refresh(message)
         return message
 
+    async def create_tool_message(
+        self,
+        *,
+        conversation_id: UUID,
+        parent_message: Message,
+        tool_call_id: str,
+        content: str,
+    ) -> Message:
+        """为 agent 工具调用结果创建一条 role="tool" 的消息记录。
+
+        tool 消息作为 assistant 的子节点落入消息树，但不出现在默认可见路径上：
+          - parent_message_id 指向当前 assistant 消息
+          - 不更新 parent 的 active_child（即不切换到 tool 分支）
+          - 不更新 conversation.active_leaf
+        这样消息树结构完整可审计，但 UI 默认展示仍干净。
+        """
+        sequence_no = await ConversationRepository(self.session).allocate_message_sequence_no(
+            conversation_id
+        )
+        message = Message(
+            conversation_id=conversation_id,
+            sequence_no=sequence_no,
+            parent_message_id=parent_message.id,
+            depth=parent_message.depth + 1,
+            role="tool",
+            content=content,
+            status="completed",
+            langgraph_message_id=tool_call_id,
+        )
+        self.session.add(message)
+        await self.session.flush()
+        await self.session.refresh(message)
+        return message
+
     async def set_conversation_active_leaf(self, *, conversation: Conversation, message: Message | None) -> None:
         # active_leaf 只是路径终点缓存，便于快速加载和继续发送。
         conversation.active_leaf_message_id = message.id if message else None

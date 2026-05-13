@@ -72,6 +72,18 @@ export interface Message {
   token_count?: number
   created_at: string
   updated_at?: string
+  // —— agent 扩展（前端运行时缓存，非持久化字段）——
+  agentDeltas?: AgentDelta[]
+}
+
+/** Agent 工具调用/结果的单条记录，用于前端渲染工具卡片。 */
+export interface AgentDelta {
+  type: 'tool_call' | 'tool_result' | 'todo' | 'subagent_started' | 'subagent_delta' | 'subagent_completed'
+  tool_call_id?: string
+  tool_name?: string
+  tool_input?: Record<string, unknown>
+  content?: string
+  subagent_name?: string
 }
 
 export interface LlmConfig {
@@ -238,6 +250,48 @@ export type StreamMessageEvent =
       event: 'message.completed' | 'message.failed' | 'message.cancelled'
       data: StreamEnvelope & {
         message: Message
+      }
+    }
+  // ── agent 扩展事件 ──
+  | {
+      event: 'message.agent_delta'
+      data: StreamEnvelope & {
+        message_id: string
+        type: 'tool_call' | 'tool_result' | 'todo'
+        tool_call_id?: string
+        tool_name?: string
+        tool_input?: Record<string, unknown>
+        content?: string
+      }
+    }
+  | {
+      event: 'agent.subagent.started'
+      data: StreamEnvelope & {
+        message_id: string
+        subagent_name: string
+      }
+    }
+  | {
+      event: 'agent.subagent.delta'
+      data: StreamEnvelope & {
+        message_id: string
+        subagent_name: string
+        delta: string
+      }
+    }
+  | {
+      event: 'agent.subagent.completed'
+      data: StreamEnvelope & {
+        message_id: string
+        subagent_name: string
+        result?: string
+      }
+    }
+  | {
+      event: 'agent.run.awaiting_approval'
+      data: StreamEnvelope & {
+        message_id: string
+        status: string
       }
     }
 

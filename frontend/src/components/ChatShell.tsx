@@ -53,6 +53,8 @@ export function ChatShell() {
 
   const draft = useOrbitStore((s) => s.draft)
   const setDraft = useOrbitStore((s) => s.setDraft)
+  const pendingChatMode = useOrbitStore((s) => s.pendingChatMode)
+  const setPendingChatMode = useOrbitStore((s) => s.setPendingChatMode)
   const errorMessage = useOrbitStore((s) => s.errorMessage)
   const isBooting = useOrbitStore((s) => s.isBooting)
   const setErrorMessage = useOrbitStore((s) => s.setErrorMessage)
@@ -282,6 +284,8 @@ export function ChatShell() {
         onRemoveFile={removeFile}
         isUploading={isUploadingFiles}
         showVisionHint={showVisionHint}
+        chatMode={pendingChatMode}
+        onToggleChatMode={() => setPendingChatMode(pendingChatMode === 'chat' ? 'agent' : 'chat')}
       />
     </main>
   )

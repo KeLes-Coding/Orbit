@@ -18,6 +18,9 @@ interface ChatComposerProps {
   onRemoveFile?: (index: number) => void
   isUploading?: boolean
   showVisionHint?: boolean
+  // Agent 模式切换
+  chatMode?: 'chat' | 'agent'
+  onToggleChatMode?: () => void
 }
 
 export function ChatComposer({
@@ -35,6 +38,8 @@ export function ChatComposer({
   onRemoveFile,
   isUploading = false,
   showVisionHint = false,
+  chatMode = 'chat',
+  onToggleChatMode,
 }: ChatComposerProps) {
   const { ref, resize } = useAutosizeTextarea(168)
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -166,6 +171,19 @@ export function ChatComposer({
           onPaste={handlePaste}
         />
         <div className="composer-actions">
+          {/* chat / agent 模式切换 */}
+          {onToggleChatMode && (
+            <button
+              type="button"
+              className={`chat-mode-toggle${chatMode === 'agent' ? ' is-agent' : ''}`}
+              aria-label={`Switch to ${chatMode === 'chat' ? 'agent' : 'chat'} mode`}
+              title={`${chatMode === 'chat' ? 'Agent' : 'Chat'} mode`}
+              onClick={onToggleChatMode}
+              disabled={isSending}
+            >
+              <span className="mode-badge">{chatMode === 'chat' ? 'chat' : 'agent'}</span>
+            </button>
+          )}
           <input
             ref={fileInputRef}
             type="file"

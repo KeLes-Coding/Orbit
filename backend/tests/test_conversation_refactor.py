@@ -173,11 +173,18 @@ class FakeLLMConfigs:
 class FakeSession:
     def __init__(self) -> None:
         self.commits = 0
+        self._added: list = []
 
     async def commit(self):
         self.commits += 1
 
     async def refresh(self, obj):
+        return None
+
+    def add(self, obj):
+        self._added.append(obj)
+
+    async def flush(self):
         return None
 
 

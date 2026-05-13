@@ -124,6 +124,50 @@ function appendMessageReasoningDelta(messages: Message[], messageId: string, del
   return didUpdate ? nextMessages : messages
 }
 
+/** 向消息的 agentDeltas 数组中追加一条 agent 增量事件。*/
+function appendAgentDelta(
+  messages: Message[],
+  messageId: string,
+  delta: {
+    type:
+      | 'tool_call'
+      | 'tool_result'
+      | 'todo'
+      | 'subagent_started'
+      | 'subagent_delta'
+      | 'subagent_completed'
+    tool_call_id?: string
+    tool_name?: string
+    tool_input?: Record<string, unknown>
+    content?: string
+    subagent_name?: string
+  },
+): Message[] {
+  let didUpdate = false
+  const nextMessages = messages.map((message) => {
+    if (message.id !== messageId) return message
+    didUpdate = true
+    const agentDeltas = [...(message.agentDeltas || []), delta]
+    return { ...message, agentDeltas, status: 'streaming' as const }
+  })
+  if (didUpdate) return nextMessages
+
+  // 某些运行时事件可能早于 message.created 落在客户端；兜底挂到最后一条 assistant。
+  const fallbackIndex = [...messages]
+    .reverse()
+    .findIndex((message) => message.role === 'assistant')
+  if (fallbackIndex < 0) return messages
+  const targetIndex = messages.length - 1 - fallbackIndex
+  const target = messages[targetIndex]
+  const patched = [...messages]
+  patched[targetIndex] = {
+    ...target,
+    agentDeltas: [...(target.agentDeltas || []), delta],
+    status: 'streaming' as const,
+  }
+  return patched
+}
+
 function isMessageVisible(messages: Message[], messageId: string | null | undefined): boolean {
   return Boolean(messageId && messages.some((message) => message.id === messageId))
 }
@@ -178,6 +222,7 @@ export function useConversations(
   const activeConversationId = useOrbitStore((s) => s.activeConversationId)
   const pendingConversationLlmConfigId = useOrbitStore((s) => s.pendingConversationLlmConfigId)
   const pendingConversationLlmModel = useOrbitStore((s) => s.pendingConversationLlmModel)
+  const pendingChatMode = useOrbitStore((s) => s.pendingChatMode)
   const draft = useOrbitStore((s) => s.draft)
   const isCreatingConversationTitle = useOrbitStore((s) => s.isCreatingConversationTitle)
   const receivingConversationIds = useOrbitStore((s) => s.receivingConversationIds)
@@ -466,6 +511,54 @@ export function useConversations(
         return nextStreamKey
       }
 
+      // ── agent 扩展事件 ──
+      if (streamEvent.event === 'message.agent_delta') {
+        const { type, tool_call_id, tool_name, tool_input, content } = streamEvent.data
+        queryClient.setQueryData<Message[]>(['messages', conversationId], (old = []) =>
+          appendAgentDelta(old, streamEvent.data.message_id, {
+            type,
+            tool_call_id,
+            tool_name,
+            tool_input,
+            content,
+          }),
+        )
+        return nextStreamKey
+      }
+
+      if (
+        streamEvent.event === 'agent.subagent.started' ||
+        streamEvent.event === 'agent.subagent.delta' ||
+        streamEvent.event === 'agent.subagent.completed'
+      ) {
+        const basePayload = {
+          subagent_name: streamEvent.data.subagent_name,
+          content:
+            streamEvent.event === 'agent.subagent.started'
+              ? `Subagent ${streamEvent.data.subagent_name} started`
+              : streamEvent.event === 'agent.subagent.completed'
+                ? `Subagent ${streamEvent.data.subagent_name} completed`
+                : streamEvent.data.delta || '',
+        }
+        queryClient.setQueryData<Message[]>(['messages', conversationId], (old = []) =>
+          appendAgentDelta(old, streamEvent.data.message_id, {
+            type:
+              streamEvent.event === 'agent.subagent.started'
+                ? 'subagent_started'
+                : streamEvent.event === 'agent.subagent.completed'
+                  ? 'subagent_completed'
+                  : 'subagent_delta',
+            ...basePayload,
+          }),
+        )
+        return nextStreamKey
+      }
+
+      // HITL 审批：不触发完成清理，保留 stream 等待 resume
+      if (streamEvent.event === 'agent.run.awaiting_approval') {
+        return nextStreamKey
+      }
+
       if (
         streamEvent.event === 'message.completed' ||
         streamEvent.event === 'message.failed' ||
@@ -588,7 +681,8 @@ export function useConversations(
             idempotency_key: idempotencyKey,
             model: model ?? null,
             file_ids: fileIds?.length ? fileIds : undefined,
-          },
+            chat_mode: pendingChatMode,
+          } as any,
           controller.signal,
         )) {
           streamKey = applyStreamEvent(conversationId, streamKey, streamEvent, controller)
@@ -630,7 +724,7 @@ export function useConversations(
           {
             content: content || '',
             llm_config_id: llmConfigId,
-            chat_mode: 'chat',
+            chat_mode: pendingChatMode,
             metadata: {},
             idempotency_key: createIdempotencyKey('new-chat'),
             model: model ?? null,

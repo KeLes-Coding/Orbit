@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.conversation import Conversation
 from app.repositories.conversation import ConversationRepository, MessageRepository
+from app.repositories.conversation_run import ConversationRunRepository
 from app.repositories.llm_config import LLMConfigRepository
 from app.schemas.conversation import MessageRead
 from app.services.generation.title import ConversationTitleGenerator
@@ -35,6 +36,7 @@ class ConversationBaseService:
         self.session = session
         self.conversations = ConversationRepository(session)
         self.messages = MessageRepository(session)
+        self.runs = ConversationRunRepository(session)
         self.llm_configs = LLMConfigRepository(session)
         self.llm_client = LLMClient()
         self.title_generator = ConversationTitleGenerator()

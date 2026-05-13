@@ -37,3 +37,18 @@ class BindStatus(str, Enum):
     pending = "pending"
     bound = "bound"
     deleted = "deleted"
+
+
+class RunStatus(str, Enum):
+    """统一 run 执行状态，所有 runtime 共用。"""
+    streaming = "streaming"
+    completed = "completed"
+    failed = "failed"
+    cancelled = "cancelled"
+    interrupted = "interrupted"  # HITL：等待用户审批后恢复
+
+
+class RuntimeKind(str, Enum):
+    """区分 run 由哪种运行时执行，用于监控和后续收敛评估。"""
+    classic_chat = "classic_chat"
+    langgraph_agent = "langgraph_agent"
