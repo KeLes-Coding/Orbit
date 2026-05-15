@@ -29,6 +29,7 @@ export function ChatShell() {
     activeConversationId,
     pendingConversationLlmConfigId,
     pendingConversationLlmModel,
+    pendingConversationChatMode,
     isLoadingMessages,
     isSending,
     selectConversation,
@@ -41,6 +42,7 @@ export function ChatShell() {
     stopGeneration,
     switchConversationLlm,
     selectPendingConversationLlm,
+    selectPendingConversationChatMode,
     pendingFiles,
     isUploadingFiles,
     addFiles,
@@ -107,6 +109,12 @@ export function ChatShell() {
     const activeConfig = configs.find((c) => c.id === currentLlmConfigId)
     return activeConfig?.models[0] || null
   }, [configs, currentLlmConfigId, messages, pendingConversationLlmModel])
+
+  const currentChatMode = activeConversation?.chat_mode === 'tool'
+    ? 'tool'
+    : activeConversation
+      ? 'chat'
+      : pendingConversationChatMode
 
   const showVisionHint = useMemo(() => {
     const hasImage = pendingFiles.some((pf) => pf.file.type.startsWith("image/"))
@@ -243,6 +251,27 @@ export function ChatShell() {
             onSelect={selectModel}
             onManage={goToConfigs}
           />
+          {!activeConversation && (
+            <div
+              className="ml-3 inline-flex items-center gap-1 rounded-full border border-black/10 bg-white/85 p-1 text-sm shadow-sm dark:border-white/10 dark:bg-black/25"
+              aria-label="Chat mode selector"
+            >
+              <button
+                type="button"
+                className={`rounded-full px-3 py-1 transition ${currentChatMode === 'chat' ? 'bg-black text-white dark:bg-white dark:text-black' : 'text-neutral-600 dark:text-neutral-300'}`}
+                onClick={() => selectPendingConversationChatMode('chat')}
+              >
+                Chat
+              </button>
+              <button
+                type="button"
+                className={`rounded-full px-3 py-1 transition ${currentChatMode === 'tool' ? 'bg-black text-white dark:bg-white dark:text-black' : 'text-neutral-600 dark:text-neutral-300'}`}
+                onClick={() => selectPendingConversationChatMode('tool')}
+              >
+                Tools
+              </button>
+            </div>
+          )}
         </div>
 
         {/* Message area */}

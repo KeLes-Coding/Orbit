@@ -74,6 +74,22 @@ export interface Message {
   updated_at?: string
 }
 
+export interface ToolCallDelta {
+  id?: string | null
+  name?: string | null
+  args?: unknown
+  index?: number | null
+  type?: string | null
+}
+
+export interface ToolResultDelta {
+  tool_call_id?: string | null
+  name: string
+  args?: unknown
+  output: string
+  is_error?: boolean
+}
+
 export interface LlmConfig {
   id: string
   user_id: string
@@ -232,6 +248,20 @@ export type StreamMessageEvent =
       data: StreamEnvelope & {
         message_id: string
         delta: string
+      }
+    }
+  | {
+      event: 'message.tool_call_delta'
+      data: StreamEnvelope & {
+        message_id: string
+        tool_calls: ToolCallDelta[]
+      }
+    }
+  | {
+      event: 'message.tool_result'
+      data: StreamEnvelope & {
+        message_id: string
+        tool_results: ToolResultDelta[]
       }
     }
   | {

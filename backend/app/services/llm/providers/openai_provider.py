@@ -87,21 +87,21 @@ class OpenAICompatibleProvider(BaseLLMProvider):
     def _to_openai_message(self, message: BaseMessage) -> dict[str, Any]:
         # 这里仅发送正文，不把本地保存的 reasoning_content 带回上下文。
         if isinstance(message, SystemMessage):
-            return {"role": "system", "content": self._message_content_text(message.content)}
+            return {"role": "system", "content": self._message_content_value(message.content)}
         if isinstance(message, HumanMessage):
-            return {"role": "user", "content": self._message_content_text(message.content)}
+            return {"role": "user", "content": self._message_content_value(message.content)}
         if isinstance(message, AIMessage):
-            return {"role": "assistant", "content": self._message_content_text(message.content)}
+            return {"role": "assistant", "content": self._message_content_value(message.content)}
         if isinstance(message, ToolMessage):
             return {
                 "role": "tool",
-                "content": self._message_content_text(message.content),
+                "content": self._message_content_value(message.content),
                 "tool_call_id": message.tool_call_id,
             }
         role = getattr(message, "role", None) or message.type
-        return {"role": role, "content": self._message_content_text(message.content)}
+        return {"role": role, "content": self._message_content_value(message.content)}
 
-    def _message_content_text(self, content: Any) -> str | list:
+    def _message_content_value(self, content: Any) -> str | list:
         # 多模态 content_blocks 直接透传给 OpenAI API，只对纯文本做字符串化。
         if isinstance(content, str):
             return content
@@ -112,15 +112,7 @@ class OpenAICompatibleProvider(BaseLLMProvider):
                     block_type = str(block.get("type") or "").lower()
                     if block_type not in {"text", "reasoning", "thinking"}:
                         return content
-            parts: list[str] = []
-            for block in content:
-                if isinstance(block, str):
-                    parts.append(block)
-                elif isinstance(block, dict):
-                    block_type = str(block.get("type") or "").lower()
-                    if block_type not in {"reasoning", "thinking"} and isinstance(block.get("text"), str):
-                        parts.append(block["text"])
-            return "".join(parts)
+            return self.extract_text_from_content(content)
         return str(content) if content is not None else ""
 
     def _to_provider_stream_chunk(
@@ -130,6 +122,7 @@ class OpenAICompatibleProvider(BaseLLMProvider):
         provider: str,
         model: str,
     ) -> LLMProviderStreamChunk:
+        # OpenAI-compatible 的 chunk 形状最杂，这里把 DeepSeek/Qwen/代理网关的差异都收口掉。
         choices = self._get_field(chunk, "choices")
         choice = choices[0] if choices else None
         delta = self._get_field(choice, "delta")
@@ -140,7 +133,10 @@ class OpenAICompatibleProvider(BaseLLMProvider):
             or self._coerce_text(self._get_field(delta, "reasoning"))
             or self._coerce_text(self._get_field(delta, "thinking"))
         )
-        finish_reason = self._get_field(choice, "finish_reason") if choice is not None else None
+        # OpenAI 兼容流式 tool call 会分片挂在 delta.tool_calls，先抽成统一的最小增量结构。
+        tool_calls = self._extract_stream_tool_calls(delta)
+        raw_finish_reason = self._get_field(choice, "finish_reason") if choice is not None else None
+        finish_reason = self.normalize_finish_reason(raw_finish_reason)
         response_metadata = {
             "provider": provider,
             "model": self._get_field(chunk, "model") or model,
@@ -148,15 +144,19 @@ class OpenAICompatibleProvider(BaseLLMProvider):
         raw_id = self._get_field(chunk, "id")
         if raw_id:
             response_metadata["raw_id"] = raw_id
+        if raw_finish_reason is not None:
+            # 原始 finish_reason 保留给排查兼容端点差异使用；上层消费统一值。
+            response_metadata["provider_finish_reason"] = str(raw_finish_reason)
         if finish_reason is not None:
-            response_metadata["finish_reason"] = str(finish_reason)
+            response_metadata["finish_reason"] = finish_reason
 
         return LLMProviderStreamChunk(
             content_delta=content_delta,
             reasoning_delta=reasoning_delta,
+            tool_calls=tool_calls,
             token_usage=self._extract_usage(getattr(chunk, "usage", None)),
             response_metadata=response_metadata,
-            finish_reason=str(finish_reason) if finish_reason is not None else None,
+            finish_reason=finish_reason,
             raw=chunk,
         )
 
@@ -183,13 +183,30 @@ class OpenAICompatibleProvider(BaseLLMProvider):
         return value if isinstance(value, str) else ""
 
     def _extract_usage(self, usage: Any) -> dict[str, Any]:
-        if usage is None:
-            return {}
-        if hasattr(usage, "model_dump"):
-            return usage.model_dump()
-        if isinstance(usage, dict):
-            return usage
-        return {}
+        return self.normalize_token_usage(usage)
+
+    def _extract_stream_tool_calls(self, delta: Any) -> list[dict[str, Any]]:
+        raw_tool_calls = self._get_field(delta, "tool_calls")
+        if not isinstance(raw_tool_calls, list):
+            return []
+
+        result: list[dict[str, Any]] = []
+        for item in raw_tool_calls:
+            if not isinstance(item, dict):
+                dumped = item.model_dump() if hasattr(item, "model_dump") else None
+                item = dumped if isinstance(dumped, dict) else {}
+            function_value = item.get("function")
+            function: dict[str, Any] = function_value if isinstance(function_value, dict) else {}
+            result.append(
+                {
+                    "id": item.get("id"),
+                    "name": function.get("name"),
+                    "args": function.get("arguments"),
+                    "index": item.get("index"),
+                    "type": item.get("type") or "tool_call_chunk",
+                }
+            )
+        return [item for item in result if item.get("name") or item.get("args")]
 
     async def list_models(self, config: LLMRuntimeConfig) -> list[LLMModelInfo]:
         # 兼容协议通常提供 /models；DeepSeek/Qwen 也优先复用这条路径。

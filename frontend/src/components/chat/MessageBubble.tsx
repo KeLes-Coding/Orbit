@@ -3,7 +3,7 @@ import type { ReactNode } from "react"
 import { Copy, GitFork, Pencil, RotateCcw, User } from "lucide-react"
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
-import type { Message } from "@/api/types"
+import type { Message, ToolCallDelta, ToolResultDelta } from "@/api/types"
 import { TypingIndicator } from "./TypingIndicator"
 import { OrbitIcon } from "@/components/OrbitIcon"
 import { FileAttachmentList } from "./FileAttachmentCard"
@@ -106,6 +106,18 @@ export const MessageBubble = memo(function MessageBubble({
     () => (message.reasoning_content || "").trim().length > 0,
     [message.reasoning_content],
   )
+  const toolCalls = useMemo(() => {
+    const responseMetadata = (message.response_metadata || {}) as Record<string, unknown>
+    return Array.isArray(responseMetadata.normalized_tool_calls)
+      ? (responseMetadata.normalized_tool_calls as ToolCallDelta[])
+      : []
+  }, [message.response_metadata])
+  const toolResults = useMemo(() => {
+    const responseMetadata = (message.response_metadata || {}) as Record<string, unknown>
+    return Array.isArray(responseMetadata.normalized_tool_results)
+      ? (responseMetadata.normalized_tool_results as ToolResultDelta[])
+      : []
+  }, [message.response_metadata])
   const isReasoningOpenByDefault = isStreaming && hasReasoning && !hasContent
   const [isReasoningOpen, setIsReasoningOpen] = useState(isReasoningOpenByDefault)
 
@@ -316,6 +328,60 @@ export const MessageBubble = memo(function MessageBubble({
               <div className="reasoning-body">
                 {message.reasoning_content}
               </div>
+            </section>
+          )}
+
+          {(toolCalls.length > 0 || toolResults.length > 0) && (
+            <section
+              className="mb-3 rounded-2xl border border-black/8 bg-black/[0.03] px-3 py-3 text-sm dark:border-white/10 dark:bg-white/[0.03]"
+              aria-label="Tool activity"
+            >
+              <div className="mb-2 font-medium text-neutral-700 dark:text-neutral-200">
+                Tool activity
+              </div>
+              {toolCalls.length > 0 && (
+                <div className="space-y-2">
+                  {toolCalls.map((toolCall, index) => (
+                    <div
+                      key={`${toolCall.id || toolCall.name || "tool"}-${toolCall.index ?? index}`}
+                      className="rounded-xl border border-black/8 bg-white/80 px-3 py-2 dark:border-white/8 dark:bg-black/20"
+                    >
+                      <div className="text-xs font-medium uppercase tracking-[0.08em] text-neutral-500">
+                        Tool Call
+                      </div>
+                      <div className="mt-1 font-medium">{toolCall.name || "unknown_tool"}</div>
+                      {toolCall.args !== undefined && (
+                        <pre className="mt-2 overflow-x-auto whitespace-pre-wrap break-words text-xs text-neutral-600 dark:text-neutral-300">
+                          {typeof toolCall.args === "string"
+                            ? toolCall.args
+                            : JSON.stringify(toolCall.args, null, 2)}
+                        </pre>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+              {toolResults.length > 0 && (
+                <div className="mt-3 space-y-2">
+                  {toolResults.map((toolResult, index) => (
+                    <div
+                      key={`${toolResult.tool_call_id || toolResult.name}-${index}`}
+                      className="rounded-xl border border-black/8 bg-white/80 px-3 py-2 dark:border-white/8 dark:bg-black/20"
+                    >
+                      <div className="text-xs font-medium uppercase tracking-[0.08em] text-neutral-500">
+                        Tool Result
+                      </div>
+                      <div className="mt-1 font-medium">
+                        {toolResult.name}
+                        {toolResult.is_error ? " · error" : ""}
+                      </div>
+                      <pre className="mt-2 overflow-x-auto whitespace-pre-wrap break-words text-xs text-neutral-600 dark:text-neutral-300">
+                        {toolResult.output}
+                      </pre>
+                    </div>
+                  ))}
+                </div>
+              )}
             </section>
           )}
 

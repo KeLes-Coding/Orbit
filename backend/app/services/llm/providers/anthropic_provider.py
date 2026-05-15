@@ -143,7 +143,7 @@ class AnthropicProvider(BaseLLMProvider):
         for message in messages:
             if not isinstance(message, SystemMessage):
                 continue
-            text = self._message_content_text(message.content)
+            text = self.extract_text_from_content(message.content)
             if text:
                 blocks.append({"type": "text", "text": text})
         return blocks
@@ -173,7 +173,7 @@ class AnthropicProvider(BaseLLMProvider):
                                 # ToolMessage 在 Anthropic 协议里要回填成 user 侧的 tool_result block。
                                 "type": "tool_result",
                                 "tool_use_id": message.tool_call_id,
-                                "content": self._message_content_text(message.content),
+                                "content": self.extract_text_from_content(message.content),
                             }
                         ],
                     }
@@ -186,6 +186,7 @@ class AnthropicProvider(BaseLLMProvider):
         return anthropic_messages
 
     def _to_anthropic_content_blocks(self, content: Any) -> str | list[dict[str, Any]]:
+        # Anthropic Messages API 的 content 是 block 数组；这里把 Orbit 的统一 content 形状映射过去。
         if isinstance(content, str):
             return content
         if isinstance(content, list):
@@ -198,32 +199,43 @@ class AnthropicProvider(BaseLLMProvider):
                 if not isinstance(item, dict):
                     continue
                 block_type = str(item.get("type") or "").lower()
-                if block_type in {"reasoning", "thinking"}:
+                if self.is_reasoning_block_type(block_type):
                     # 本地保存的 reasoning 不能再次喂回模型正文，否则会污染后续上下文。
                     continue
                 if block_type == "text" and isinstance(item.get("text"), str):
                     blocks.append({"type": "text", "text": item["text"]})
                     continue
+                if block_type == "image_url":
+                    image_block = self._image_url_block_to_anthropic_image(item)
+                    if image_block is not None:
+                        blocks.append(image_block)
+                    continue
                 if block_type == "image":
                     blocks.append(item)
             if blocks:
                 return blocks
-        return self._message_content_text(content)
+        return self.extract_text_from_content(content)
 
-    def _message_content_text(self, content: Any) -> str:
-        if isinstance(content, str):
-            return content
-        if isinstance(content, list):
-            parts: list[str] = []
-            for item in content:
-                if isinstance(item, str):
-                    parts.append(item)
-                elif isinstance(item, dict) and isinstance(item.get("text"), str):
-                    block_type = str(item.get("type") or "").lower()
-                    if block_type not in {"reasoning", "thinking"}:
-                        parts.append(item["text"])
-            return "".join(parts)
-        return str(content) if content is not None else ""
+    def _image_url_block_to_anthropic_image(self, block: dict[str, Any]) -> dict[str, Any] | None:
+        # Orbit 内部统一存 image_url(data URL)，Anthropic 发送前再改写成 image/source/base64。
+        image_url = block.get("image_url")
+        if not isinstance(image_url, dict):
+            return None
+        url = image_url.get("url")
+        if not isinstance(url, str):
+            return None
+        parsed = self.parse_base64_data_url(url)
+        if parsed is None:
+            return None
+        media_type, data = parsed
+        return {
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": media_type,
+                "data": data,
+            },
+        }
 
     def _event_to_provider_stream_chunk(
         self,
@@ -249,24 +261,22 @@ class AnthropicProvider(BaseLLMProvider):
 
         if event_type == "message_delta":
             delta = getattr(event, "delta", None)
-            finish_reason = getattr(delta, "stop_reason", None)
+            raw_finish_reason = getattr(delta, "stop_reason", None)
+            finish_reason = self.normalize_finish_reason(raw_finish_reason)
             metadata = dict(response_metadata)
+            if raw_finish_reason is not None:
+                # SDK 原始 stop_reason 继续保留，方便后面比较 Claude SDK 与兼容端点差异。
+                metadata["provider_finish_reason"] = str(raw_finish_reason)
             if finish_reason is not None:
-                metadata["finish_reason"] = str(finish_reason)
+                metadata["finish_reason"] = finish_reason
             return LLMProviderStreamChunk(
                 token_usage=self._extract_usage(getattr(event, "usage", None)),
                 response_metadata=metadata,
-                finish_reason=str(finish_reason) if finish_reason is not None else None,
+                finish_reason=finish_reason,
                 raw=event,
             )
 
         return None
 
     def _extract_usage(self, usage: Any) -> dict[str, Any]:
-        if usage is None:
-            return {}
-        if hasattr(usage, "model_dump"):
-            return usage.model_dump()
-        if isinstance(usage, dict):
-            return usage
-        return {}
+        return self.normalize_token_usage(usage)

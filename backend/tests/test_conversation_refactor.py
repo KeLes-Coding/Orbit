@@ -96,6 +96,9 @@ class FakeMessages:
         self.parent: Any = None
         self.idempotent_assistant: Any = None
         self.failed_message: Any = None
+        self.completed_message: Any = None
+        self.partial_message: Any = None
+        self.cancelled_message: Any = None
 
     async def get_by_id(self, *, conversation_id, message_id):
         if self.target and message_id == self.target.id:
@@ -153,10 +156,46 @@ class FakeMessages:
     async def resolve_active_leaf_from(self, *, conversation_id, message):
         return message
 
+    async def list_path_to_message(self, *, conversation_id, message_id):
+        if self.parent and message_id == self.parent.id:
+            return [self.parent]
+        return []
+
     async def fail_assistant_message(self, *, message, error):
         message.status = "failed"
         message.response_metadata = {"error": error}
         self.failed_message = message
+        return message
+
+    async def complete_assistant_message(self, *, message, content, reasoning_content, token_usage, response_metadata):
+        message.status = "completed"
+        message.content = content
+        message.reasoning_content = reasoning_content
+        message.token_usage = token_usage
+        message.response_metadata = response_metadata
+        self.completed_message = message
+        return message
+
+    async def partial_assistant_message(
+        self, *, message, content, error, token_usage=None, response_metadata=None, reasoning_content=""
+    ):
+        message.status = "partial"
+        message.content = content
+        message.reasoning_content = reasoning_content
+        message.token_usage = token_usage or {}
+        message.response_metadata = {**(response_metadata or {}), "error": error}
+        self.partial_message = message
+        return message
+
+    async def cancel_assistant_message(
+        self, *, message, content, reasoning_content="", token_usage=None, response_metadata=None
+    ):
+        message.status = "cancelled"
+        message.content = content
+        message.reasoning_content = reasoning_content
+        message.token_usage = token_usage or {}
+        message.response_metadata = {**(response_metadata or {}), "error": "cancelled_by_user"}
+        self.cancelled_message = message
         return message
 
 
@@ -171,8 +210,9 @@ class FakeLLMConfigs:
 
 
 class FakeSession:
-    def __init__(self) -> None:
+    def __init__(self, conversation: Any | None = None) -> None:
         self.commits = 0
+        self.conversation = conversation
 
     async def commit(self):
         self.commits += 1
@@ -180,19 +220,29 @@ class FakeSession:
     async def refresh(self, obj):
         return None
 
+    async def get(self, model, key):
+        if self.conversation is not None and key == self.conversation.id:
+            return self.conversation
+        return None
+
 
 class FakeStreamStore:
     def __init__(self) -> None:
         self.events = []
         self.stream_by_message = {}
+        self.streams = {}
+        self.cancelled = set()
+        self.completed = []
 
     async def create_stream(self, *, stream_id, conversation_id, message_id, user_id):
-        return SimpleNamespace(
+        stream = SimpleNamespace(
             stream_id=stream_id,
             conversation_id=conversation_id,
             message_id=message_id,
             user_id=user_id,
         )
+        self.streams[stream_id] = stream
+        return stream
 
     async def append_event(self, stream_id, *, event, data):
         self.events.append((stream_id, event, data))
@@ -200,9 +250,21 @@ class FakeStreamStore:
     async def get_stream_by_message_id(self, message_id):
         return self.stream_by_message.get(message_id)
 
+    async def get_stream(self, stream_id):
+        return self.streams.get(stream_id)
+
+    async def attach_producer_task(self, stream_id, task=None):
+        return None
+
+    async def is_cancelled(self, stream_id):
+        return stream_id in self.cancelled
+
+    async def complete_stream(self, stream_id, *, retention_seconds):
+        self.completed.append((stream_id, retention_seconds))
+
 
 def make_service(conversation: Any, messages: FakeMessages) -> tuple[Any, FakeSession]:
-    session = FakeSession()
+    session = FakeSession(conversation)
     service = cast(Any, ConversationService(cast(Any, session)))
     service.conversations = FakeConversations(conversation)
     service.messages = messages
@@ -387,3 +449,108 @@ def test_missing_runtime_stream_marks_streaming_assistant_failed(monkeypatch):
 
     assert messages.failed_message is messages.target
     assert messages.target.status == "failed"
+
+
+def test_produce_stream_emits_tool_call_delta_and_persists_aggregated_tool_calls(monkeypatch):
+    user_id = uuid4()
+    conversation = make_conversation(user_id=user_id)
+    messages = FakeMessages()
+    messages.parent = make_message(role="user")
+    assistant_message = make_message(role="assistant", status="streaming", parent_message_id=messages.parent.id)
+    assistant_message.conversation_id = conversation.id
+    assistant_message.llm_config_id = uuid4()
+    assistant_message.provider = "openai"
+    assistant_message.model = "gpt-test"
+    messages.created_assistant = assistant_message
+    service, _ = make_service(conversation, messages)
+    store = FakeStreamStore()
+    stream_id = f"stream_{assistant_message.id}"
+    run(
+        store.create_stream(
+            stream_id=stream_id,
+            conversation_id=conversation.id,
+            message_id=assistant_message.id,
+            user_id=user_id,
+        )
+    )
+    monkeypatch.setattr(stream_run, "conversation_stream_store", store)
+
+    async def fake_stream(**kwargs):
+        yield SimpleNamespace(
+            content_delta="",
+            reasoning_delta="",
+            tool_calls=[
+                {
+                    "id": "call_1",
+                    "name": "search_docs",
+                    "args": "{\"query\":",
+                    "index": 0,
+                    "type": "tool_call_chunk",
+                }
+            ],
+            token_usage={},
+            response_metadata={},
+            finish_reason=None,
+        )
+        yield SimpleNamespace(
+            content_delta="result",
+            reasoning_delta="",
+            tool_calls=[
+                {
+                    "id": "call_1",
+                    "name": "search_docs",
+                    "args": "\"langgraph\"}",
+                    "index": 0,
+                    "type": "tool_call_chunk",
+                }
+            ],
+            token_usage={"input_tokens": 10, "output_tokens": 5},
+            response_metadata={"provider_finish_reason": "stop"},
+            finish_reason="stop",
+        )
+        yield SimpleNamespace(
+            content_delta="",
+            reasoning_delta="",
+            tool_calls=[],
+            tool_results=[
+                {
+                    "tool_call_id": "call_1",
+                    "name": "search_docs",
+                    "args": {"query": "langgraph"},
+                    "output": "找到 3 篇相关文档。",
+                    "is_error": False,
+                }
+            ],
+            token_usage={},
+            response_metadata={},
+            finish_reason=None,
+        )
+
+    service.llm_client = SimpleNamespace(stream=fake_stream)
+
+    run(service._produce_stream(stream_id=stream_id, conversation_id=conversation.id))
+
+    tool_call_events = [event for event in store.events if event[1] == "message.tool_call_delta"]
+    assert len(tool_call_events) == 2
+    tool_result_events = [event for event in store.events if event[1] == "message.tool_result"]
+    assert len(tool_result_events) == 1
+    assert messages.completed_message is assistant_message
+    assert messages.completed_message.content == "result"
+    assert messages.completed_message.response_metadata["normalized_tool_calls"] == [
+        {
+            "id": "call_1",
+            "name": "search_docs",
+            "args": "{\"query\":\"langgraph\"}",
+            "index": 0,
+            "type": "tool_call_chunk",
+        }
+    ]
+    assert messages.completed_message.response_metadata["normalized_tool_results"] == [
+        {
+            "tool_call_id": "call_1",
+            "name": "search_docs",
+            "args": {"query": "langgraph"},
+            "output": "找到 3 篇相关文档。",
+            "is_error": False,
+        }
+    ]

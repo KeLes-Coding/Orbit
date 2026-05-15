@@ -4,7 +4,7 @@ import { conversationApi } from '@/api/conversations'
 import { fileApi } from '@/api/files'
 import { streamManager } from '@/lib/streamManager'
 import { useOrbitStore } from '@/stores/useOrbitStore'
-import type { Conversation, Message, StreamMessageEvent } from '@/api/types'
+import type { Conversation, Message, StreamMessageEvent, ToolCallDelta, ToolResultDelta } from '@/api/types'
 import type { PendingFile } from '@/components/chat/FilePreviewItem'
 
 interface UseConversationsOptions {
@@ -27,6 +27,62 @@ interface StreamMessageSnapshot {
   message: Message
   content: string
   reasoningContent: string
+}
+
+function mergeToolCallDeltas(
+  existing: ToolCallDelta[] | undefined,
+  incoming: ToolCallDelta[],
+): ToolCallDelta[] {
+  // 前端缓存按和后端一致的 id/index 规则聚合，确保“首块给名字、后续块只给参数”的 provider 也能正确拼回一条调用。
+  const merged = [...(existing || [])].map((item) => ({ ...item }))
+  for (const item of incoming) {
+    const current =
+      (item.id ? merged.find((candidate) => candidate.id === item.id) : undefined) ||
+      (typeof item.index === 'number'
+        ? merged.find((candidate) => candidate.index === item.index)
+        : undefined) ||
+      merged.find(
+        (candidate) =>
+          (candidate.id || (typeof candidate.index === 'number' ? `index:${candidate.index}` : `${candidate.name || ''}:fallback`)) ===
+          (item.id || (typeof item.index === 'number' ? `index:${item.index}` : `${item.name || ''}:fallback`)),
+      )
+    if (!current) {
+      merged.push({ ...item })
+      continue
+    }
+    if (item.id) current.id = item.id
+    if (item.name) current.name = item.name
+    if (item.type) current.type = item.type
+    if (typeof item.index === 'number') current.index = item.index
+    if (typeof item.args === 'string' && item.args) {
+      current.args =
+        typeof current.args === 'string'
+          ? `${current.args}${item.args}`
+          : item.args
+    } else if (item.args !== undefined) {
+      current.args = item.args
+    }
+  }
+  return merged
+}
+
+function mergeToolResultDeltas(
+  existing: ToolResultDelta[] | undefined,
+  incoming: ToolResultDelta[],
+): ToolResultDelta[] {
+  // 工具执行结果天然是一条一条完成事件，这里主要做去重，避免 replay/live 切换时重复展示。
+  const merged = [...(existing || [])].map((item) => ({ ...item }))
+  for (const item of incoming) {
+    const key = item.tool_call_id || `${item.name}:${typeof item.args === 'string' ? item.args : JSON.stringify(item.args ?? {})}`
+    const exists = merged.some(
+      (candidate) =>
+        (candidate.tool_call_id || `${candidate.name}:${typeof candidate.args === 'string' ? candidate.args : JSON.stringify(candidate.args ?? {})}`) === key,
+    )
+    if (!exists) {
+      merged.push({ ...item })
+    }
+  }
+  return merged
 }
 
 function normalizeMessage(message: Message | null | undefined): NormalizedMessage | null {
@@ -124,6 +180,48 @@ function appendMessageReasoningDelta(messages: Message[], messageId: string, del
   return didUpdate ? nextMessages : messages
 }
 
+function appendMessageToolCallDelta(messages: Message[], messageId: string, toolCalls: ToolCallDelta[]): Message[] {
+  let didUpdate = false
+  const nextMessages = messages.map((message) => {
+    if (message.id !== messageId) return message
+    didUpdate = true
+    const responseMetadata = (message.response_metadata || {}) as Record<string, unknown>
+    const currentToolCalls = Array.isArray(responseMetadata.normalized_tool_calls)
+      ? (responseMetadata.normalized_tool_calls as ToolCallDelta[])
+      : []
+    return {
+      ...message,
+      status: 'streaming' as const,
+      response_metadata: {
+        ...responseMetadata,
+        normalized_tool_calls: mergeToolCallDeltas(currentToolCalls, toolCalls),
+      },
+    }
+  })
+  return didUpdate ? nextMessages : messages
+}
+
+function appendMessageToolResult(messages: Message[], messageId: string, toolResults: ToolResultDelta[]): Message[] {
+  let didUpdate = false
+  const nextMessages = messages.map((message) => {
+    if (message.id !== messageId) return message
+    didUpdate = true
+    const responseMetadata = (message.response_metadata || {}) as Record<string, unknown>
+    const currentToolResults = Array.isArray(responseMetadata.normalized_tool_results)
+      ? (responseMetadata.normalized_tool_results as ToolResultDelta[])
+      : []
+    return {
+      ...message,
+      status: 'streaming' as const,
+      response_metadata: {
+        ...responseMetadata,
+        normalized_tool_results: mergeToolResultDeltas(currentToolResults, toolResults),
+      },
+    }
+  })
+  return didUpdate ? nextMessages : messages
+}
+
 function isMessageVisible(messages: Message[], messageId: string | null | undefined): boolean {
   return Boolean(messageId && messages.some((message) => message.id === messageId))
 }
@@ -178,12 +276,14 @@ export function useConversations(
   const activeConversationId = useOrbitStore((s) => s.activeConversationId)
   const pendingConversationLlmConfigId = useOrbitStore((s) => s.pendingConversationLlmConfigId)
   const pendingConversationLlmModel = useOrbitStore((s) => s.pendingConversationLlmModel)
+  const pendingConversationChatMode = useOrbitStore((s) => s.pendingConversationChatMode)
   const draft = useOrbitStore((s) => s.draft)
   const isCreatingConversationTitle = useOrbitStore((s) => s.isCreatingConversationTitle)
   const receivingConversationIds = useOrbitStore((s) => s.receivingConversationIds)
   const setActiveConversationId = useOrbitStore((s) => s.setActiveConversationId)
   const setPendingConversationLlmConfigId = useOrbitStore((s) => s.setPendingConversationLlmConfigId)
   const setPendingConversationLlmModel = useOrbitStore((s) => s.setPendingConversationLlmModel)
+  const setPendingConversationChatMode = useOrbitStore((s) => s.setPendingConversationChatMode)
   const setDraft = useOrbitStore((s) => s.setDraft)
   const setErrorMessage = useOrbitStore((s) => s.setErrorMessage)
   const setActiveView = useOrbitStore((s) => s.setActiveView)
@@ -357,6 +457,46 @@ export function useConversations(
     }
   }, [])
 
+  const appendStreamSnapshotToolCalls = useCallback((messageId: string, toolCalls: ToolCallDelta[]) => {
+    const current = streamMessageSnapshotsRef.current[messageId]
+    if (!current) return
+    const responseMetadata = (current.message.response_metadata || {}) as Record<string, unknown>
+    const currentToolCalls = Array.isArray(responseMetadata.normalized_tool_calls)
+      ? (responseMetadata.normalized_tool_calls as ToolCallDelta[])
+      : []
+    streamMessageSnapshotsRef.current[messageId] = {
+      ...current,
+      message: {
+        ...current.message,
+        status: 'streaming' as const,
+        response_metadata: {
+          ...responseMetadata,
+          normalized_tool_calls: mergeToolCallDeltas(currentToolCalls, toolCalls),
+        },
+      },
+    }
+  }, [])
+
+  const appendStreamSnapshotToolResults = useCallback((messageId: string, toolResults: ToolResultDelta[]) => {
+    const current = streamMessageSnapshotsRef.current[messageId]
+    if (!current) return
+    const responseMetadata = (current.message.response_metadata || {}) as Record<string, unknown>
+    const currentToolResults = Array.isArray(responseMetadata.normalized_tool_results)
+      ? (responseMetadata.normalized_tool_results as ToolResultDelta[])
+      : []
+    streamMessageSnapshotsRef.current[messageId] = {
+      ...current,
+      message: {
+        ...current.message,
+        status: 'streaming' as const,
+        response_metadata: {
+          ...responseMetadata,
+          normalized_tool_results: mergeToolResultDeltas(currentToolResults, toolResults),
+        },
+      },
+    }
+  }, [])
+
   const hydrateCachedStreamSnapshots = useCallback(
     (conversationId: string) => {
       queryClient.setQueryData<Message[]>(['messages', conversationId], (old = []) =>
@@ -466,6 +606,22 @@ export function useConversations(
         return nextStreamKey
       }
 
+      if (streamEvent.event === 'message.tool_call_delta') {
+        appendStreamSnapshotToolCalls(streamEvent.data.message_id, streamEvent.data.tool_calls)
+        queryClient.setQueryData<Message[]>(['messages', conversationId], (old = []) =>
+          appendMessageToolCallDelta(old, streamEvent.data.message_id, streamEvent.data.tool_calls),
+        )
+        return nextStreamKey
+      }
+
+      if (streamEvent.event === 'message.tool_result') {
+        appendStreamSnapshotToolResults(streamEvent.data.message_id, streamEvent.data.tool_results)
+        queryClient.setQueryData<Message[]>(['messages', conversationId], (old = []) =>
+          appendMessageToolResult(old, streamEvent.data.message_id, streamEvent.data.tool_results),
+        )
+        return nextStreamKey
+      }
+
       if (
         streamEvent.event === 'message.completed' ||
         streamEvent.event === 'message.failed' ||
@@ -499,6 +655,8 @@ export function useConversations(
       markConversationStreamState,
       appendStreamSnapshotContent,
       appendStreamSnapshotReasoning,
+      appendStreamSnapshotToolCalls,
+      appendStreamSnapshotToolResults,
       queryClient,
       rememberStreamMessage,
       upsertConversation,
@@ -630,9 +788,11 @@ export function useConversations(
           {
             content: content || '',
             llm_config_id: llmConfigId,
-            chat_mode: 'chat',
+            chat_mode: pendingConversationChatMode,
             metadata: {},
-            idempotency_key: createIdempotencyKey('new-chat'),
+            idempotency_key: createIdempotencyKey(
+              pendingConversationChatMode === 'tool' ? 'new-tool-chat' : 'new-chat',
+            ),
             model: model ?? null,
             file_ids: fileIds?.length ? fileIds : undefined,
           },
@@ -696,6 +856,7 @@ export function useConversations(
       setIsCreatingConversationTitle,
       setPendingConversationLlmConfigId,
       setPendingConversationLlmModel,
+      pendingConversationChatMode,
     ],
   )
 
@@ -1158,6 +1319,7 @@ export function useConversations(
     activeConversationId,
     pendingConversationLlmConfigId,
     pendingConversationLlmModel,
+    pendingConversationChatMode,
     messages,
     isLoadingMessages,
     isSending: isActiveConversationStreaming,
@@ -1176,6 +1338,7 @@ export function useConversations(
       setActiveConversationId(null)
       setPendingConversationLlmConfigId(null)
       setPendingConversationLlmModel(null)
+      setPendingConversationChatMode('chat')
       setPendingFiles([])
       setIsCreatingConversationTitle(false)
       setErrorMessage('')
@@ -1193,6 +1356,9 @@ export function useConversations(
     selectPendingConversationLlm: (configId: string, model?: string | null) => {
       setPendingConversationLlmConfigId(configId)
       setPendingConversationLlmModel(model ?? null)
+    },
+    selectPendingConversationChatMode: (mode: 'chat' | 'tool') => {
+      setPendingConversationChatMode(mode)
     },
   }
 }

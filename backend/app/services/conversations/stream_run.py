@@ -308,6 +308,8 @@ class ConversationStreamRunService(ConversationBaseService):
 
         full_content_parts: list[str] = []
         full_reasoning_parts: list[str] = []
+        normalized_tool_calls: list[dict[str, Any]] = []
+        normalized_tool_results: list[dict[str, Any]] = []
         token_usage: dict[str, Any] = {}
         response_metadata: dict[str, Any] = {
             "provider": llm_config.provider,
@@ -346,6 +348,7 @@ class ConversationStreamRunService(ConversationBaseService):
                 messages=history_messages,
                 summary=conversation.summary,
                 model=assistant_message.model,
+                enable_tools=conversation.chat_mode in {"tool", "agent"},
             ):
                 if await conversation_stream_store.is_cancelled(stream_id):
                     cancelled_message = await self._cancel_streaming_message(
@@ -378,6 +381,37 @@ class ConversationStreamRunService(ConversationBaseService):
                 if chunk.finish_reason:
                     finish_reason = chunk.finish_reason
 
+                chunk_tool_calls = getattr(chunk, "tool_calls", None) or []
+                if chunk_tool_calls:
+                    # 流式工具调用会分多片到达，这里边广播增量、边维护当前 assistant 的聚合态。
+                    normalized_tool_calls = self._merge_tool_call_chunks(
+                        existing=normalized_tool_calls,
+                        incoming=chunk_tool_calls,
+                    )
+                    response_metadata["normalized_tool_calls"] = normalized_tool_calls
+                    await conversation_stream_store.append_event(
+                        stream_id,
+                        event="message.tool_call_delta",
+                        data={
+                            "message_id": str(assistant_message.id),
+                            "tool_calls": chunk_tool_calls,
+                        },
+                    )
+
+                chunk_tool_results = getattr(chunk, "tool_results", None) or []
+                if chunk_tool_results:
+                    # tool result 目前按“一次完整执行结果”广播，便于前端直接展示每次工具返回。
+                    normalized_tool_results.extend(chunk_tool_results)
+                    response_metadata["normalized_tool_results"] = normalized_tool_results
+                    await conversation_stream_store.append_event(
+                        stream_id,
+                        event="message.tool_result",
+                        data={
+                            "message_id": str(assistant_message.id),
+                            "tool_results": chunk_tool_results,
+                        },
+                    )
+
                 if chunk.reasoning_delta:
                     full_reasoning_parts.append(chunk.reasoning_delta)
                     # reasoning 和正文分成两类事件，方便前端分别渲染 thinking 与正文。
@@ -406,6 +440,10 @@ class ConversationStreamRunService(ConversationBaseService):
             if not full_content:
                 raise LLMClientError("模型服务没有返回 assistant 内容")
 
+            if normalized_tool_calls:
+                response_metadata["normalized_tool_calls"] = normalized_tool_calls
+            if normalized_tool_results:
+                response_metadata["normalized_tool_results"] = normalized_tool_results
             if finish_reason:
                 response_metadata["finish_reason"] = finish_reason
             assistant_message = await self.messages.complete_assistant_message(
@@ -600,6 +638,52 @@ class ConversationStreamRunService(ConversationBaseService):
         await self.conversations.touch(conversation_id)
         await self.session.commit()
         return assistant_message
+
+    def _merge_tool_call_chunks(
+        self,
+        *,
+        existing: list[dict[str, Any]],
+        incoming: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        # tool call 的参数常按 chunk 逐步追加，这里在 runtime 内维护一个可序列化的聚合版本。
+        merged: list[dict[str, Any]] = [dict(item) for item in existing]
+        for item in incoming:
+            if not isinstance(item, dict):
+                continue
+            key = self._tool_call_key(item)
+            matched = next((current for current in merged if self._tool_call_key(current) == key), None)
+            if matched is None:
+                merged.append(dict(item))
+                continue
+
+            if item.get("name"):
+                matched["name"] = item["name"]
+            if item.get("type"):
+                matched["type"] = item["type"]
+            if item.get("id"):
+                matched["id"] = item["id"]
+            if item.get("index") is not None:
+                matched["index"] = item["index"]
+
+            incoming_args = item.get("args")
+            if isinstance(incoming_args, str) and incoming_args:
+                previous_args = matched.get("args")
+                if isinstance(previous_args, str):
+                    matched["args"] = f"{previous_args}{incoming_args}"
+                elif previous_args is None:
+                    matched["args"] = incoming_args
+                else:
+                    matched["args"] = incoming_args
+            elif incoming_args is not None:
+                matched["args"] = incoming_args
+        return merged
+
+    def _tool_call_key(self, item: dict[str, Any]) -> str:
+        # 优先用 provider 给的稳定 id；缺失时退回到 name/index 组合键。
+        tool_call_id = item.get("id")
+        if tool_call_id:
+            return str(tool_call_id)
+        return f"{item.get('name') or ''}:{item.get('index') if item.get('index') is not None else ''}"
 
     async def _fail_or_partial_streaming_message(
         self,
