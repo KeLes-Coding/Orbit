@@ -1,4 +1,4 @@
-import { useCallback, useEffect } from "react"
+import { useCallback, useEffect, useMemo } from "react"
 import { useLocation, useNavigate, useParams } from "react-router-dom"
 import { toast } from "sonner"
 import {
@@ -17,6 +17,7 @@ import { useOrbitStore } from "@/stores/useOrbitStore"
 import { Button } from "@/components/ui/button"
 import { MessageList } from "@/components/chat/MessageList"
 import { ChatComposer } from "@/components/chat/ChatComposer"
+import type { SlashItem } from "@/components/chat/SlashMenu"
 import { EmptyChatState } from "@/components/chat/EmptyChatState"
 import { ModelSelector } from "@/components/chat/ModelSelector"
 import "./ChatShell.css"
@@ -58,6 +59,24 @@ export function ChatShell() {
   const { configs } = useLlmConfigs(hasUser)
   const navigate = useNavigate()
   const location = useLocation()
+
+  const slashItems = useMemo(() => {
+    const items: SlashItem[] = [
+      { id: "chat", label: "Chat", detail: "Chat mode", group: "mode" },
+      { id: "tool", label: "Agent", detail: "Agent mode", group: "mode" },
+    ]
+    for (const config of configs) {
+      for (const model of config.models) {
+        items.push({
+          id: `${config.id}:${model}`,
+          label: model,
+          detail: config.name,
+          group: "model",
+        })
+      }
+    }
+    return items
+  }, [configs])
 
   const draft = useOrbitStore((s) => s.draft)
   const setDraft = useOrbitStore((s) => s.setDraft)
@@ -142,6 +161,18 @@ export function ChatShell() {
       }
     },
     [activeConversationId, configs, selectPendingConversationLlm, switchConversationLlm],
+  )
+
+  const handleSlashSelect = useCallback(
+    (item: SlashItem) => {
+      if (item.group === "mode") {
+        if (item.id === "chat" || item.id === "tool") setChatMode(item.id)
+      } else {
+        const [configId, model] = item.id.split(":")
+        selectModel(configId, model)
+      }
+    },
+    [setChatMode, selectModel],
   )
 
   const goToConfigs = useCallback(() => {
@@ -302,6 +333,8 @@ export function ChatShell() {
         showVisionHint={showVisionHint}
         chatMode={chatMode}
         onChatModeChange={setChatMode}
+        slashItems={slashItems}
+        onSlashSelect={handleSlashSelect}
       />
     </main>
   )
