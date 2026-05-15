@@ -18,6 +18,8 @@ interface ChatComposerProps {
   onRemoveFile?: (index: number) => void
   isUploading?: boolean
   showVisionHint?: boolean
+  chatMode?: 'chat' | 'tool'
+  onChatModeChange?: (mode: 'chat' | 'tool') => void
 }
 
 export function ChatComposer({
@@ -35,6 +37,8 @@ export function ChatComposer({
   onRemoveFile,
   isUploading = false,
   showVisionHint = false,
+  chatMode = 'chat',
+  onChatModeChange,
 }: ChatComposerProps) {
   const { ref, resize } = useAutosizeTextarea(168)
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -148,6 +152,24 @@ export function ChatComposer({
         <p className="status-message" style={{ paddingInline: 12 }}>
           This model doesn&apos;t have vision support enabled. Images will be sent as file references, not as pixels.
         </p>
+      )}
+      {onChatModeChange && (
+        <div className="pointer-events-auto flex items-center gap-1 self-start rounded-full border border-black/10 bg-white/85 p-1 text-sm shadow-sm dark:border-white/10 dark:bg-black/25">
+          <button
+            type="button"
+            className={`rounded-full px-3 py-1 transition ${chatMode === 'chat' ? 'bg-black text-white dark:bg-white dark:text-black' : 'text-neutral-600 dark:text-neutral-300'}`}
+            onClick={() => onChatModeChange('chat')}
+          >
+            Chat
+          </button>
+          <button
+            type="button"
+            className={`rounded-full px-3 py-1 transition ${chatMode === 'tool' ? 'bg-black text-white dark:bg-white dark:text-black' : 'text-neutral-600 dark:text-neutral-300'}`}
+            onClick={() => onChatModeChange('tool')}
+          >
+            Tools
+          </button>
+        </div>
       )}
       <div className={`composer${isSending ? " is-sending" : ""}${isDragging ? " composer-dragover-inner" : ""}`}>
         <textarea

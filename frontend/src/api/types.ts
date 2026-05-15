@@ -162,6 +162,7 @@ export interface SendMessagePayload {
   parent_message_id?: string | null
   idempotency_key?: string | null
   model?: string | null
+  chat_mode?: string | null
   file_ids?: string[]
 }
 

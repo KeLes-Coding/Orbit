@@ -1,39 +1,41 @@
-import { memo, useEffect, useMemo, useRef, useState } from "react"
+import { memo, useEffect, useMemo, useState } from "react"
 import type { ReactNode } from "react"
-import { Copy, GitFork, Pencil, RotateCcw, User } from "lucide-react"
+import { Copy, GitFork, Pencil, RotateCcw, User, Brain, Wrench, FileCheck } from "lucide-react"
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 import type { Message, ToolCallDelta, ToolResultDelta } from "@/api/types"
+import { useMessageEdit } from "@/hooks/useMessageEdit"
 import { TypingIndicator } from "./TypingIndicator"
+import { TimelinePhase } from "./TimelinePhase"
 import { OrbitIcon } from "@/components/OrbitIcon"
 import { FileAttachmentList } from "./FileAttachmentCard"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
+import { ChevronLeftIcon, ChevronRightIcon } from "./icons"
 
-/* DeepSeek-inspired chevron SVGs */
-function ChevronLeftIcon() {
-  return (
-    <svg width="13" height="13" viewBox="0 0 14 14" fill="none">
-      <path
-        d="M8.5 2.15137L8.07617 2.57617L5.34863 5.30273C5.09294 5.55843 4.86618 5.78438 4.70215 5.98828C4.53117 6.20088 4.38244 6.44405 4.33398 6.75C4.30778 6.91565 4.30778 7.08435 4.33398 7.25C4.38244 7.55595 4.53117 7.79912 4.70215 8.01172C4.86618 8.21561 5.09294 8.44157 5.34863 8.69727L8.07617 11.4238L8.5 11.8486L9.34863 11L8.92383 10.5762L6.19727 7.84863C5.92268 7.57405 5.75151 7.40124 5.6377 7.25977C5.53096 7.12709 5.52187 7.07728 5.51953 7.0625C5.51297 7.02105 5.51297 6.97895 5.51953 6.9375C5.52187 6.92272 5.53096 6.87291 5.6377 6.74023C5.75152 6.59876 5.92268 6.42595 6.19727 6.15137L8.92383 3.42383L9.34863 3L8.5 2.15137Z"
-        fill="currentColor"
-      />
-    </svg>
-  )
+interface SearchResult {
+  url?: string
+  title?: string
+  snippet?: string
+  description?: string
 }
 
-function ChevronRightIcon() {
-  return (
-    <svg width="13" height="13" viewBox="0 0 14 14" fill="none">
-      <path
-        d="M5.5 2.15137L5.92383 2.57617L8.65137 5.30273C8.90706 5.55843 9.13382 5.78438 9.29785 5.98828C9.46883 6.20088 9.61756 6.44405 9.66602 6.75C9.69222 6.91565 9.69222 7.08435 9.66602 7.25C9.61756 7.55595 9.46883 7.79912 9.29785 8.01172C9.13382 8.21561 8.90706 8.44157 8.65137 8.69727L5.92383 11.4238L5.5 11.8486L4.65137 11L5.07617 10.5762L7.80273 7.84863C8.07732 7.57405 8.24849 7.40124 8.3623 7.25977C8.46904 7.12709 8.47813 7.07728 8.48047 7.0625C8.48703 7.02105 8.48703 6.97895 8.48047 6.9375C8.47813 6.92272 8.46904 6.87291 8.3623 6.74023C8.24848 6.59876 8.07732 6.42595 7.80273 6.15137L5.07617 3.42383L4.65137 3L5.5 2.15137Z"
-        fill="currentColor"
-      />
-    </svg>
-  )
+function parseSearchResults(output: string): SearchResult[] | null {
+  try {
+    const data = JSON.parse(output)
+    if (Array.isArray(data) && data.length > 0 && data[0].url) return data as SearchResult[]
+    if (Array.isArray(data?.results) && data.results.length > 0) return data.results as SearchResult[]
+    return null
+  } catch {
+    return null
+  }
+}
+
+function extractDomain(url: string): string {
+  try { return new URL(url).hostname.replace(/^www\./, '') } catch { return url }
 }
 
 interface MessageBubbleProps {
-  message: Message & { paragraphs?: string[] }
+  message: Message
   isCurrentBranchLeaf?: boolean
   isCurrentBranchRunning?: boolean
   onRetry?: (messageId: string) => void
@@ -118,75 +120,44 @@ export const MessageBubble = memo(function MessageBubble({
       ? (responseMetadata.normalized_tool_results as ToolResultDelta[])
       : []
   }, [message.response_metadata])
-  const isReasoningOpenByDefault = isStreaming && hasReasoning && !hasContent
-  const [isReasoningOpen, setIsReasoningOpen] = useState(isReasoningOpenByDefault)
+  const {
+    isEditing,
+    editContent,
+    setEditContent,
+    textareaRef,
+    startEdit,
+    saveEdit,
+    cancelEdit,
+    handleKeyDown: handleEditKeyDown,
+  } = useMessageEdit({
+    messageId: message.id,
+    messageContent: message.content || "",
+    regenerateMessageId,
+    onEdit,
+    onRegenerate,
+  })
 
-  const [isEditing, setIsEditing] = useState(false)
-  const [editContent, setEditContent] = useState("")
-  const editTextareaRef = useRef<HTMLTextAreaElement>(null)
+  const hasAgentPhases = hasReasoning || toolCalls.length > 0 || toolResults.length > 0
+  const [thoughtOpen, setThoughtOpen] = useState(false)
+  const [expandedTools, setExpandedTools] = useState<Set<string>>(new Set())
 
+  const toggleTool = (key: string) => {
+    setExpandedTools((prev) => {
+      const next = new Set(prev)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
+      return next
+    })
+  }
+
+  // Auto-open thought block during streaming before content arrives; auto-close once content is ready.
   useEffect(() => {
     if (isStreaming && hasReasoning && !hasContent) {
-      setIsReasoningOpen(true)
-      return
-    }
-    if (hasContent) {
-      setIsReasoningOpen(false)
+      setThoughtOpen(true)
+    } else if (hasContent) {
+      setThoughtOpen(false)
     }
   }, [hasContent, hasReasoning, isStreaming])
-
-  useEffect(() => {
-    if (isEditing && editTextareaRef.current) {
-      const ta = editTextareaRef.current
-      ta.focus()
-      ta.selectionStart = ta.value.length
-      ta.selectionEnd = ta.value.length
-    }
-  }, [isEditing])
-
-  const handleStartEdit = () => {
-    setEditContent(message.content || "")
-    setIsEditing(true)
-  }
-
-  const handleSaveEdit = () => {
-    const trimmed = editContent.trim()
-    if (!trimmed) {
-      setIsEditing(false)
-      return
-    }
-    if (trimmed === (message.content || "").trim()) {
-      if (regenerateMessageId) {
-        onRegenerate?.(regenerateMessageId)
-      }
-      setIsEditing(false)
-      return
-    }
-    onEdit?.(message.id, trimmed)
-    setIsEditing(false)
-  }
-
-  const handleCancelEdit = () => {
-    setIsEditing(false)
-  }
-
-  const handleEditKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault()
-      handleSaveEdit()
-    } else if (e.key === "Escape") {
-      e.preventDefault()
-      handleCancelEdit()
-    }
-  }
-
-  useEffect(() => {
-    if (editTextareaRef.current) {
-      const ta = editTextareaRef.current
-      ta.style.height = "auto"
-      ta.style.height = ta.scrollHeight + "px"
-    }
-  }, [editContent])
 
   /* Copy message content to clipboard */
   const handleCopy = () => {
@@ -239,7 +210,7 @@ export const MessageBubble = memo(function MessageBubble({
             {isEditing ? (
               <div className="user-bubble editing">
                 <textarea
-                  ref={editTextareaRef}
+                  ref={textareaRef}
                   className="edit-textarea"
                   value={editContent}
                   onChange={(e) => setEditContent(e.target.value)}
@@ -250,14 +221,14 @@ export const MessageBubble = memo(function MessageBubble({
                   <button
                     type="button"
                     className="edit-cancel-btn"
-                    onClick={handleCancelEdit}
+                    onClick={cancelEdit}
                   >
                     Cancel
                   </button>
                   <button
                     type="button"
                     className="edit-save-btn"
-                    onClick={handleSaveEdit}
+                    onClick={saveEdit}
                   >
                     Save &amp; Submit
                   </button>
@@ -279,7 +250,7 @@ export const MessageBubble = memo(function MessageBubble({
                 <MessageAction
                   label="Edit message"
                   disabled={!canAct}
-                  onClick={handleStartEdit}
+                  onClick={startEdit}
                 >
                   <Pencil />
                 </MessageAction>
@@ -300,19 +271,17 @@ export const MessageBubble = memo(function MessageBubble({
       ) : (
         <div className="assistant-copy">
           {branchStateBadge && <div className="branch-state-row">{branchStateBadge}</div>}
-          {hasReasoning && (
-            <section
-              className={`reasoning-block${isReasoningOpen ? " open" : ""}`}
-              aria-label="Thought process"
-            >
+
+          {/* Thought block — wraps all agent phases */}
+          {hasAgentPhases && (
+            <div className={`thought-block${thoughtOpen ? " open" : ""}`}>
               <button
                 type="button"
-                className="reasoning-toggle"
-                aria-expanded={isReasoningOpen}
-                onClick={() => setIsReasoningOpen((open) => !open)}
+                className="thought-toggle"
+                onClick={() => setThoughtOpen((v) => !v)}
               >
                 <svg
-                  className="chevron-icon"
+                  className="thought-chevron"
                   width="12"
                   height="12"
                   viewBox="0 0 14 14"
@@ -323,71 +292,143 @@ export const MessageBubble = memo(function MessageBubble({
                     fill="currentColor"
                   />
                 </svg>
-                {isStreaming && !hasContent ? "Thinking" : "Thought process"}
+                {isStreaming && !hasContent ? "Thinking..." : "Thought process"}
               </button>
-              <div className="reasoning-body">
-                {message.reasoning_content}
-              </div>
-            </section>
-          )}
-
-          {(toolCalls.length > 0 || toolResults.length > 0) && (
-            <section
-              className="mb-3 rounded-2xl border border-black/8 bg-black/[0.03] px-3 py-3 text-sm dark:border-white/10 dark:bg-white/[0.03]"
-              aria-label="Tool activity"
-            >
-              <div className="mb-2 font-medium text-neutral-700 dark:text-neutral-200">
-                Tool activity
-              </div>
-              {toolCalls.length > 0 && (
-                <div className="space-y-2">
-                  {toolCalls.map((toolCall, index) => (
-                    <div
-                      key={`${toolCall.id || toolCall.name || "tool"}-${toolCall.index ?? index}`}
-                      className="rounded-xl border border-black/8 bg-white/80 px-3 py-2 dark:border-white/8 dark:bg-black/20"
+              {thoughtOpen && (
+                <div className="thought-body">
+                  {hasReasoning && (
+                    <TimelinePhase
+                      icon={<Brain className="h-3 w-3" />}
+                      label="Thinking"
+                      isLast={toolCalls.length === 0 && toolResults.length === 0}
                     >
-                      <div className="text-xs font-medium uppercase tracking-[0.08em] text-neutral-500">
-                        Tool Call
-                      </div>
-                      <div className="mt-1 font-medium">{toolCall.name || "unknown_tool"}</div>
-                      {toolCall.args !== undefined && (
-                        <pre className="mt-2 overflow-x-auto whitespace-pre-wrap break-words text-xs text-neutral-600 dark:text-neutral-300">
-                          {typeof toolCall.args === "string"
-                            ? toolCall.args
-                            : JSON.stringify(toolCall.args, null, 2)}
-                        </pre>
-                      )}
-                    </div>
-                  ))}
+                      {message.reasoning_content}
+                    </TimelinePhase>
+                  )}
+
+                  {toolCalls.map((tc, i) => {
+                    const isLast = i === toolCalls.length - 1 && toolResults.length === 0
+                    const key = tc.id || tc.name || `tc-${i}`
+                    const open = expandedTools.has(key)
+                    return (
+                      <TimelinePhase
+                        key={key}
+                        icon={<Wrench className="h-3 w-3" />}
+                        label="Tool call"
+                        detail={tc.name ?? undefined}
+                        isLast={isLast}
+                      >
+                        {tc.args !== undefined && (
+                          <div className={`tl-tool-card${open ? " tl-tool-open" : ""}`}>
+                            <button
+                              type="button"
+                              className="tl-tool-toggle"
+                              onClick={() => toggleTool(key)}
+                            >
+                              <span className="tl-tool-name">
+                                {tc.name || "unknown_tool"}
+                              </span>
+                              <span className="tl-tool-chevron">
+                                <ChevronRightIcon />
+                              </span>
+                            </button>
+                            {open && (
+                              <pre className="tl-tool-args">
+                                {typeof tc.args === "string"
+                                  ? tc.args
+                                  : JSON.stringify(tc.args, null, 2)}
+                              </pre>
+                            )}
+                          </div>
+                        )}
+                      </TimelinePhase>
+                    )
+                  })}
+
+                  {toolResults.map((tr, i) => {
+                    const isLast = i === toolResults.length - 1
+                    const key = tr.tool_call_id || `${tr.name}-${i}`
+                    const open = expandedTools.has(key)
+                    const searchResults = parseSearchResults(tr.output)
+                    return (
+                      <TimelinePhase
+                        key={key}
+                        icon={<FileCheck className="h-3 w-3" />}
+                        label="Tool result"
+                        detail={tr.name}
+                        isLast={isLast}
+                      >
+                        <div className={`tl-tool-card${open ? " tl-tool-open" : ""}`}>
+                          <button
+                            type="button"
+                            className="tl-tool-toggle"
+                            onClick={() => toggleTool(key)}
+                          >
+                            <span className="tl-tool-name">
+                              {tr.name}
+                              {tr.is_error && <span className="tl-tool-badge">Error</span>}
+                            </span>
+                            {searchResults && (
+                              <span className="tl-tool-badge">
+                                {searchResults.length} results
+                              </span>
+                            )}
+                            <span className={`tl-tool-chevron${open ? " tl-tool-chevron-open" : ""}`}>
+                              <ChevronRightIcon />
+                            </span>
+                          </button>
+                          {open && (
+                            <>
+                              {searchResults ? (
+                                <div className="tl-search-results">
+                                  {searchResults.map((r, si) => (
+                                    <a
+                                      key={si}
+                                      href={r.url}
+                                      target="_blank"
+                                      rel="noopener noreferrer"
+                                      className="tl-search-card"
+                                    >
+                                      <div className="tl-search-domain">
+                                        <img
+                                          src={`https://www.google.com/s2/favicons?domain=${extractDomain(r.url || '')}&sz=32`}
+                                          alt=""
+                                          width="16"
+                                          height="16"
+                                          className="tl-search-favicon"
+                                        />
+                                        {extractDomain(r.url || '')}
+                                      </div>
+                                      <div className="tl-search-title">{r.title || r.url}</div>
+                                      {(r.snippet || r.description) && (
+                                        <div className="tl-search-snippet">
+                                          {r.snippet || r.description}
+                                        </div>
+                                      )}
+                                    </a>
+                                  ))}
+                                </div>
+                              ) : (
+                                <pre className={`tl-tool-output${tr.is_error ? " is-error" : ""}`}>
+                                  {tr.output}
+                                </pre>
+                              )}
+                            </>
+                          )}
+                        </div>
+                      </TimelinePhase>
+                    )
+                  })}
                 </div>
               )}
-              {toolResults.length > 0 && (
-                <div className="mt-3 space-y-2">
-                  {toolResults.map((toolResult, index) => (
-                    <div
-                      key={`${toolResult.tool_call_id || toolResult.name}-${index}`}
-                      className="rounded-xl border border-black/8 bg-white/80 px-3 py-2 dark:border-white/8 dark:bg-black/20"
-                    >
-                      <div className="text-xs font-medium uppercase tracking-[0.08em] text-neutral-500">
-                        Tool Result
-                      </div>
-                      <div className="mt-1 font-medium">
-                        {toolResult.name}
-                        {toolResult.is_error ? " · error" : ""}
-                      </div>
-                      <pre className="mt-2 overflow-x-auto whitespace-pre-wrap break-words text-xs text-neutral-600 dark:text-neutral-300">
-                        {toolResult.output}
-                      </pre>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </section>
+            </div>
           )}
 
-          {isStreaming && !hasContent ? (
+          {isStreaming && !hasContent && !hasReasoning && (
             <TypingIndicator />
-          ) : (
+          )}
+
+          {hasContent && (
             <>
               <div className="markdown-body">
                 <ReactMarkdown remarkPlugins={[remarkGfm]}>

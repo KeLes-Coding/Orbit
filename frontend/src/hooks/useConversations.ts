@@ -1,18 +1,24 @@
 import { useMemo, useCallback, useEffect, useRef, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { conversationApi } from '@/api/conversations'
-import { fileApi } from '@/api/files'
 import { streamManager } from '@/lib/streamManager'
 import { useOrbitStore } from '@/stores/useOrbitStore'
 import type { Conversation, Message, StreamMessageEvent, ToolCallDelta, ToolResultDelta } from '@/api/types'
-import type { PendingFile } from '@/components/chat/FilePreviewItem'
 
 interface UseConversationsOptions {
   enableStreamResume?: boolean
 }
 
-interface NormalizedMessage extends Message {
-  paragraphs: string[]
+type NormalizedMessage = Message
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof DOMException && error.name === 'AbortError'
+}
+
+function removeStreamIfActive(streamKey: string | null | undefined, controller: AbortController): void {
+  if (streamKey && streamManager.get(streamKey)?.controller === controller) {
+    streamManager.remove(streamKey)
+  }
 }
 
 interface ActiveStreamHandle {
@@ -91,7 +97,6 @@ function normalizeMessage(message: Message | null | undefined): NormalizedMessag
     ...message,
     content: message.content || '',
     reasoning_content: message.reasoning_content || '',
-    paragraphs: (message.content || '').split(/\n{2,}/).filter(Boolean),
   }
 }
 
@@ -276,14 +281,14 @@ export function useConversations(
   const activeConversationId = useOrbitStore((s) => s.activeConversationId)
   const pendingConversationLlmConfigId = useOrbitStore((s) => s.pendingConversationLlmConfigId)
   const pendingConversationLlmModel = useOrbitStore((s) => s.pendingConversationLlmModel)
-  const pendingConversationChatMode = useOrbitStore((s) => s.pendingConversationChatMode)
+  const chatMode = useOrbitStore((s) => s.chatMode)
   const draft = useOrbitStore((s) => s.draft)
   const isCreatingConversationTitle = useOrbitStore((s) => s.isCreatingConversationTitle)
   const receivingConversationIds = useOrbitStore((s) => s.receivingConversationIds)
   const setActiveConversationId = useOrbitStore((s) => s.setActiveConversationId)
   const setPendingConversationLlmConfigId = useOrbitStore((s) => s.setPendingConversationLlmConfigId)
   const setPendingConversationLlmModel = useOrbitStore((s) => s.setPendingConversationLlmModel)
-  const setPendingConversationChatMode = useOrbitStore((s) => s.setPendingConversationChatMode)
+  const setChatMode = useOrbitStore((s) => s.setChatMode)
   const setDraft = useOrbitStore((s) => s.setDraft)
   const setErrorMessage = useOrbitStore((s) => s.setErrorMessage)
   const setActiveView = useOrbitStore((s) => s.setActiveView)
@@ -292,8 +297,6 @@ export function useConversations(
   const clearConversationCompletionNotice = useOrbitStore((s) => s.clearConversationCompletionNotice)
   const queryClient = useQueryClient()
   const [isPendingNewConversationStream, setIsPendingNewConversationStream] = useState(false)
-  const [pendingFiles, setPendingFiles] = useState<PendingFile[]>([])
-  const [isUploadingFiles, setIsUploadingFiles] = useState(false)
   const pendingNewConversationStreamRef = useRef<ActiveStreamHandle | null>(null)
   const activeConversationIdRef = useRef(activeConversationId)
   const resumeAttemptRef = useRef<Record<string, boolean>>({})
@@ -539,9 +542,7 @@ export function useConversations(
         )
         if (!streamEvent.data.has_active_run) {
           markConversationStreamState(conversationId, false)
-          if (streamManager.get(nextStreamKey)?.controller === controller) {
-            streamManager.remove(nextStreamKey)
-          }
+          removeStreamIfActive(nextStreamKey, controller)
         }
         return nextStreamKey
       }
@@ -636,9 +637,7 @@ export function useConversations(
                 ? 'failed'
                 : 'cancelled',
         })
-        if (streamManager.get(nextStreamKey)?.controller === controller) {
-          streamManager.remove(nextStreamKey)
-        }
+        removeStreamIfActive(nextStreamKey, controller)
         if (streamEvent.event === 'message.completed' && activeConversationIdRef.current !== conversationId) {
           markConversationCompletedOffscreen(conversationId)
         }
@@ -688,6 +687,7 @@ export function useConversations(
       content: string,
       llmConfigId?: string | null,
       model?: string | null,
+      chatMode?: string | null,
       fileIds?: string[],
     ) => {
       await queryClient.cancelQueries({ queryKey: ['messages', conversationId] })
@@ -745,6 +745,7 @@ export function useConversations(
             parent_message_id: parentMessageId,
             idempotency_key: idempotencyKey,
             model: model ?? null,
+            chat_mode: chatMode ?? null,
             file_ids: fileIds?.length ? fileIds : undefined,
           },
           controller.signal,
@@ -753,22 +754,18 @@ export function useConversations(
         }
         queryClient.invalidateQueries({ queryKey: ['conversations'] })
       } catch (error) {
-        if (error instanceof DOMException && error.name === 'AbortError') {
-          return
-        }
+        if (isAbortError(error)) return
         queryClient.setQueryData(['messages', conversationId], previousMessages)
         setErrorMessage(error instanceof Error ? error.message : 'Streaming request failed.')
       } finally {
-        if (streamManager.get(streamKey)?.controller === controller) {
-          streamManager.remove(streamKey)
-        }
+        removeStreamIfActive(streamKey, controller)
       }
     },
     [applyStreamEvent, queryClient, setErrorMessage],
   )
 
   const streamNewConversationMessage = useCallback(
-    async (content: string, llmConfigId: string | null, model?: string | null, fileIds?: string[]) => {
+    async (content: string, llmConfigId: string | null, chatMode: 'chat' | 'tool', model?: string | null, fileIds?: string[]) => {
       const controller = new AbortController()
       let conversationId: string | null = null
       let streamKey: string | null = null
@@ -788,10 +785,10 @@ export function useConversations(
           {
             content: content || '',
             llm_config_id: llmConfigId,
-            chat_mode: pendingConversationChatMode,
+            chat_mode: chatMode,
             metadata: {},
             idempotency_key: createIdempotencyKey(
-              pendingConversationChatMode === 'tool' ? 'new-tool-chat' : 'new-chat',
+              chatMode === 'tool' ? 'new-tool-chat' : 'new-chat',
             ),
             model: model ?? null,
             file_ids: fileIds?.length ? fileIds : undefined,
@@ -834,15 +831,11 @@ export function useConversations(
         }
         queryClient.invalidateQueries({ queryKey: ['conversations'] })
       } catch (error) {
-        if (error instanceof DOMException && error.name === 'AbortError') {
-          return
-        }
+        if (isAbortError(error)) return
         setErrorMessage(error instanceof Error ? error.message : 'Streaming request failed.')
       } finally {
         pendingNewConversationStreamRef.current = null
-        if (streamKey && streamManager.get(streamKey)?.controller === controller) {
-          streamManager.remove(streamKey)
-        }
+        removeStreamIfActive(streamKey, controller)
         setIsCreatingConversationTitle(false)
         setIsPendingNewConversationStream(false)
       }
@@ -856,86 +849,16 @@ export function useConversations(
       setIsCreatingConversationTitle,
       setPendingConversationLlmConfigId,
       setPendingConversationLlmModel,
-      pendingConversationChatMode,
     ],
   )
 
-  const addFiles = useCallback((files: File[]) => {
-    const newFiles: PendingFile[] = files.map((file) => {
-      const isImage = file.type.startsWith("image/")
-      return {
-        file,
-        status: "pending" as const,
-        preview: isImage ? URL.createObjectURL(file) : undefined,
-      }
-    })
-    setPendingFiles((prev) => [...prev, ...newFiles])
-  }, [])
-
-  const removeFile = useCallback((index: number) => {
-    setPendingFiles((prev) => {
-      const next = [...prev]
-      const removed = next[index]
-      if (removed?.preview) URL.revokeObjectURL(removed.preview)
-      next.splice(index, 1)
-      return next
-    })
-  }, [])
-
-  const uploadPendingFiles = useCallback(
-    async (conversationId: string | null): Promise<string[]> => {
-      const files = pendingFiles.filter((pf) => pf.status !== "ready")
-      if (files.length === 0) {
-        return pendingFiles
-          .filter((pf) => pf.serverFile?.id)
-          .map((pf) => pf.serverFile!.id)
-      }
-
-      setIsUploadingFiles(true)
-      const fileIds: string[] = []
-      const updated: PendingFile[] = [...pendingFiles]
-
-      for (let i = 0; i < updated.length; i++) {
-        const pf = updated[i]
-        if (pf.status === "ready" && pf.serverFile?.id) {
-          fileIds.push(pf.serverFile.id)
-          continue
-        }
-        updated[i] = { ...pf, status: "uploading" }
-        setPendingFiles([...updated])
-
-        try {
-          let serverFile
-          if (conversationId) {
-            serverFile = await fileApi.uploadToConversation(conversationId, pf.file)
-          } else {
-            serverFile = await fileApi.uploadPending(pf.file)
-          }
-          fileIds.push(serverFile.id)
-          updated[i] = { ...pf, status: "ready", serverFile }
-        } catch (err) {
-          updated[i] = {
-            ...pf,
-            status: "error",
-            error: err instanceof Error ? err.message : "Upload failed",
-          }
-        }
-        setPendingFiles([...updated])
-      }
-
-      setIsUploadingFiles(false)
-      return fileIds
-    },
-    [pendingFiles],
-  )
-
-  const sendMessage = useCallback((selectedLlmConfigId?: string | null, selectedModel?: string | null) => {
+  const sendMessage = useCallback((selectedLlmConfigId?: string | null, selectedModel?: string | null, chatMode?: 'chat' | 'tool', fileIds?: string[]) => {
     const content = draft.trim()
-    const hasFiles = pendingFiles.length > 0
     const isCurrentThreadStreaming = activeConversationId
       ? currentBranchIsStreaming || currentBranchHasPendingLocalStream
       : isPendingNewConversationStream
-    if ((!content && !hasFiles) || isCurrentThreadStreaming || isUploadingFiles) return
+    const hasFiles = fileIds && fileIds.length > 0
+    if ((!content && !hasFiles) || isCurrentThreadStreaming) return
     if (!hasUser) {
       setErrorMessage('Sign in before sending messages.')
       return
@@ -944,31 +867,26 @@ export function useConversations(
     setErrorMessage('')
 
     const conversationId = activeConversationId
-    // Upload files, then send with file_ids
-    const doSend = async () => {
-      const fileIds = await uploadPendingFiles(conversationId)
-      if (!conversationId) {
-        void streamNewConversationMessage(
-          content,
-          selectedLlmConfigId ?? pendingConversationLlmConfigId,
-          selectedModel ?? pendingConversationLlmModel,
-          fileIds,
-        )
-        return
-      }
-      void streamMessage(
-        conversationId,
+    if (!conversationId) {
+      void streamNewConversationMessage(
         content,
         selectedLlmConfigId ?? pendingConversationLlmConfigId,
+        chatMode ?? 'chat',
         selectedModel ?? pendingConversationLlmModel,
         fileIds,
       )
+      return
     }
-    void doSend().then(() => setPendingFiles([]))
+    void streamMessage(
+      conversationId,
+      content,
+      selectedLlmConfigId ?? pendingConversationLlmConfigId,
+      selectedModel ?? pendingConversationLlmModel,
+      chatMode ?? null,
+      fileIds,
+    )
   }, [
     draft,
-    pendingFiles,
-    isUploadingFiles,
     activeConversationId,
     pendingConversationLlmConfigId,
     pendingConversationLlmModel,
@@ -976,7 +894,6 @@ export function useConversations(
     isPendingNewConversationStream,
     currentBranchIsStreaming,
     currentBranchHasPendingLocalStream,
-    uploadPendingFiles,
     streamMessage,
     streamNewConversationMessage,
     setDraft,
@@ -984,7 +901,7 @@ export function useConversations(
   ])
 
   const regenerateAssistant = useCallback(
-    async (messageId: string, llmConfigId?: string | null, model?: string | null) => {
+    async (messageId: string, llmConfigId?: string | null, model?: string | null, chatMode?: string | null) => {
       if (!activeConversationId || !isUuid(messageId)) return
       const controller = new AbortController()
       let streamKey = streamManager.makePendingKey(activeConversationId, 'regen')
@@ -1008,19 +925,16 @@ export function useConversations(
           controller.signal,
           model ?? null,
           llmConfigId ?? null,
+          chatMode ?? null,
         )) {
           streamKey = applyStreamEvent(activeConversationId, streamKey, streamEvent, controller)
         }
         queryClient.invalidateQueries({ queryKey: ['conversations'] })
       } catch (error) {
-        if (error instanceof DOMException && error.name === 'AbortError') {
-          return
-        }
+        if (isAbortError(error)) return
         setErrorMessage(error instanceof Error ? error.message : 'Regenerate request failed.')
       } finally {
-        if (streamManager.get(streamKey)?.controller === controller) {
-          streamManager.remove(streamKey)
-        }
+        removeStreamIfActive(streamKey, controller)
       }
     },
     [
@@ -1033,7 +947,7 @@ export function useConversations(
   )
 
   const editUserMessage = useCallback(
-    async (messageId: string, content: string, llmConfigId?: string | null, model?: string | null) => {
+    async (messageId: string, content: string, llmConfigId?: string | null, model?: string | null, chatMode?: string | null) => {
       if (!activeConversationId || !isUuid(messageId)) return
       const controller = new AbortController()
       let streamKey = streamManager.makePendingKey(activeConversationId, 'edit')
@@ -1057,6 +971,7 @@ export function useConversations(
             llm_config_id: llmConfigId ?? null,
             idempotency_key: createIdempotencyKey('edit'),
             model: model ?? null,
+            chat_mode: chatMode ?? null,
           },
           controller.signal,
         )) {
@@ -1064,14 +979,10 @@ export function useConversations(
         }
         queryClient.invalidateQueries({ queryKey: ['conversations'] })
       } catch (error) {
-        if (error instanceof DOMException && error.name === 'AbortError') {
-          return
-        }
+        if (isAbortError(error)) return
         setErrorMessage(error instanceof Error ? error.message : 'Edit request failed.')
       } finally {
-        if (streamManager.get(streamKey)?.controller === controller) {
-          streamManager.remove(streamKey)
-        }
+        removeStreamIfActive(streamKey, controller)
       }
     },
     [
@@ -1239,9 +1150,7 @@ export function useConversations(
         }
         queryClient.invalidateQueries({ queryKey: ['conversations'] })
       } catch (error) {
-        if (error instanceof DOMException && error.name === 'AbortError') {
-          return
-        }
+        if (isAbortError(error)) return
         const message = error instanceof Error ? error.message : 'Resume stream request failed.'
         if (message === '当前分支没有活跃流' || message === '流不存在或已过期') {
           queryClient.invalidateQueries({ queryKey: ['conversations'] })
@@ -1250,9 +1159,7 @@ export function useConversations(
           setErrorMessage(message)
         }
       } finally {
-        if (streamKey && streamManager.get(streamKey)?.controller === controller) {
-          streamManager.remove(streamKey)
-        }
+        removeStreamIfActive(streamKey, controller)
         delete resumeAttemptRef.current[attemptKey]
       }
     })()
@@ -1319,14 +1226,10 @@ export function useConversations(
     activeConversationId,
     pendingConversationLlmConfigId,
     pendingConversationLlmModel,
-    pendingConversationChatMode,
+    chatMode,
     messages,
     isLoadingMessages,
     isSending: isActiveConversationStreaming,
-    pendingFiles,
-    isUploadingFiles,
-    addFiles,
-    removeFile,
     formatConversationTitle,
     selectConversation,
     createNewThread: () => {
@@ -1338,8 +1241,7 @@ export function useConversations(
       setActiveConversationId(null)
       setPendingConversationLlmConfigId(null)
       setPendingConversationLlmModel(null)
-      setPendingConversationChatMode('chat')
-      setPendingFiles([])
+      setChatMode('chat')
       setIsCreatingConversationTitle(false)
       setErrorMessage('')
     },
@@ -1357,8 +1259,8 @@ export function useConversations(
       setPendingConversationLlmConfigId(configId)
       setPendingConversationLlmModel(model ?? null)
     },
-    selectPendingConversationChatMode: (mode: 'chat' | 'tool') => {
-      setPendingConversationChatMode(mode)
+    setChatMode: (mode: 'chat' | 'tool') => {
+      setChatMode(mode)
     },
   }
 }

@@ -1,4 +1,4 @@
-import { useMemo, useCallback, useEffect } from "react"
+import { useCallback, useEffect } from "react"
 import { useLocation, useNavigate, useParams } from "react-router-dom"
 import { toast } from "sonner"
 import {
@@ -11,6 +11,7 @@ import {
 import { useAuth } from "@/hooks/useAuth"
 import { useConversations } from "@/hooks/useConversations"
 import { useLlmConfigs } from "@/hooks/useLlmConfigs"
+import { useFileUpload } from "@/hooks/useFileUpload"
 import { useTheme } from "@/hooks/useTheme"
 import { useOrbitStore } from "@/stores/useOrbitStore"
 import { Button } from "@/components/ui/button"
@@ -29,7 +30,7 @@ export function ChatShell() {
     activeConversationId,
     pendingConversationLlmConfigId,
     pendingConversationLlmModel,
-    pendingConversationChatMode,
+    chatMode,
     isLoadingMessages,
     isSending,
     selectConversation,
@@ -42,12 +43,17 @@ export function ChatShell() {
     stopGeneration,
     switchConversationLlm,
     selectPendingConversationLlm,
-    selectPendingConversationChatMode,
+    setChatMode,
+  } = useConversations(hasUser)
+
+  const {
     pendingFiles,
     isUploadingFiles,
     addFiles,
     removeFile,
-  } = useConversations(hasUser)
+    uploadPendingFiles,
+    clearPendingFiles,
+  } = useFileUpload()
 
   const { configs } = useLlmConfigs(hasUser)
   const navigate = useNavigate()
@@ -62,19 +68,20 @@ export function ChatShell() {
 
   const { isDark, toggleTheme } = useTheme()
 
+  // Keep URL and store in sync bidirectionally:
+  // - URL → store: when navigating directly to /conversations/:id
+  // - store → URL: when creating/selecting a conversation from the sidebar
   useEffect(() => {
     if (routeConversationId && routeConversationId !== activeConversationId) {
       selectConversation(routeConversationId)
+      return
     }
-  }, [activeConversationId, routeConversationId, selectConversation])
-
-  useEffect(() => {
     if (activeConversationId && !routeConversationId && location.pathname === "/") {
       navigate(`/conversations/${activeConversationId}`, { replace: true })
     }
-  }, [activeConversationId, location.pathname, navigate, routeConversationId])
+  }, [activeConversationId, routeConversationId, location.pathname, navigate, selectConversation])
 
-  const currentLlmConfigId = useMemo(() => {
+  const currentLlmConfigId = (() => {
     const pendingConfig = configs.find((c) => c.id === pendingConversationLlmConfigId)
     if (pendingConfig) return pendingConfig.id
     const latestAssistantConfigId = [...messages]
@@ -93,9 +100,9 @@ export function ChatShell() {
     const defaultConfig = configs.find((c) => c.is_default)
     if (defaultConfig) return defaultConfig.id
     return null
-  }, [activeConversation, configs, messages, pendingConversationLlmConfigId])
+  })()
 
-  const currentModel = useMemo(() => {
+  const currentModel = (() => {
     if (pendingConversationLlmModel) return pendingConversationLlmModel
     const latestAssistantModel = [...messages]
       .reverse()
@@ -108,20 +115,14 @@ export function ChatShell() {
     if (latestAssistantModel) return latestAssistantModel
     const activeConfig = configs.find((c) => c.id === currentLlmConfigId)
     return activeConfig?.models[0] || null
-  }, [configs, currentLlmConfigId, messages, pendingConversationLlmModel])
+  })()
 
-  const currentChatMode = activeConversation?.chat_mode === 'tool'
-    ? 'tool'
-    : activeConversation
-      ? 'chat'
-      : pendingConversationChatMode
-
-  const showVisionHint = useMemo(() => {
+  const showVisionHint = (() => {
     const hasImage = pendingFiles.some((pf) => pf.file.type.startsWith("image/"))
     if (!hasImage) return false
     const activeConfig = configs.find((c) => c.id === currentLlmConfigId)
     return activeConfig ? !activeConfig.supports_vision : false
-  }, [pendingFiles, configs, currentLlmConfigId])
+  })()
 
   const selectModel = useCallback(
     async (configId: string, model: string) => {
@@ -153,8 +154,9 @@ export function ChatShell() {
       openAuth()
       return
     }
+    clearPendingFiles()
     createNewThread()
-  }, [createNewThread, openAuth, user])
+  }, [createNewThread, openAuth, user, clearPendingFiles])
 
   const handleSendMessage = useCallback(() => {
     if (!user) {
@@ -167,31 +169,39 @@ export function ChatShell() {
       navigate("/model-configs")
       return
     }
-    sendMessage(currentLlmConfigId, currentModel)
+    const doSend = async () => {
+      const fileIds = await uploadPendingFiles(activeConversationId)
+      sendMessage(currentLlmConfigId, currentModel, chatMode, fileIds)
+    }
+    void doSend().then(() => clearPendingFiles())
   }, [
+    activeConversationId,
     configs.length,
     currentLlmConfigId,
     currentModel,
+    chatMode,
     navigate,
     openAuth,
     sendMessage,
     setActiveView,
     setErrorMessage,
     user,
+    uploadPendingFiles,
+    clearPendingFiles,
   ])
 
   const handleEditMessage = useCallback(
     (messageId: string, newContent: string) => {
-      void editUserMessage(messageId, newContent, currentLlmConfigId, currentModel)
+      void editUserMessage(messageId, newContent, currentLlmConfigId, currentModel, chatMode)
     },
-    [currentLlmConfigId, currentModel, editUserMessage],
+    [currentLlmConfigId, currentModel, chatMode, editUserMessage],
   )
 
   const handleRegenerateAssistant = useCallback(
     (messageId: string) => {
-      void regenerateAssistant(messageId, currentLlmConfigId, currentModel)
+      void regenerateAssistant(messageId, currentLlmConfigId, currentModel, chatMode)
     },
-    [currentLlmConfigId, currentModel, regenerateAssistant],
+    [currentLlmConfigId, currentModel, chatMode, regenerateAssistant],
   )
 
   const handleForkMessage = useCallback(
@@ -251,27 +261,6 @@ export function ChatShell() {
             onSelect={selectModel}
             onManage={goToConfigs}
           />
-          {!activeConversation && (
-            <div
-              className="ml-3 inline-flex items-center gap-1 rounded-full border border-black/10 bg-white/85 p-1 text-sm shadow-sm dark:border-white/10 dark:bg-black/25"
-              aria-label="Chat mode selector"
-            >
-              <button
-                type="button"
-                className={`rounded-full px-3 py-1 transition ${currentChatMode === 'chat' ? 'bg-black text-white dark:bg-white dark:text-black' : 'text-neutral-600 dark:text-neutral-300'}`}
-                onClick={() => selectPendingConversationChatMode('chat')}
-              >
-                Chat
-              </button>
-              <button
-                type="button"
-                className={`rounded-full px-3 py-1 transition ${currentChatMode === 'tool' ? 'bg-black text-white dark:bg-white dark:text-black' : 'text-neutral-600 dark:text-neutral-300'}`}
-                onClick={() => selectPendingConversationChatMode('tool')}
-              >
-                Tools
-              </button>
-            </div>
-          )}
         </div>
 
         {/* Message area */}
@@ -311,6 +300,8 @@ export function ChatShell() {
         onRemoveFile={removeFile}
         isUploading={isUploadingFiles}
         showVisionHint={showVisionHint}
+        chatMode={chatMode}
+        onChatModeChange={setChatMode}
       />
     </main>
   )

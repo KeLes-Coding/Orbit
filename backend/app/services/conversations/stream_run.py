@@ -343,12 +343,13 @@ class ConversationStreamRunService(ConversationBaseService):
                 )
                 return
 
+            effective_chat_mode = getattr(assistant_message, "chat_mode", None) or conversation.chat_mode
             async for chunk in self.llm_client.stream(
                 config=llm_config,
                 messages=history_messages,
                 summary=conversation.summary,
                 model=assistant_message.model,
-                enable_tools=conversation.chat_mode in {"tool", "agent"},
+                enable_tools=effective_chat_mode in {"tool", "agent"},
             ):
                 if await conversation_stream_store.is_cancelled(stream_id):
                     cancelled_message = await self._cancel_streaming_message(

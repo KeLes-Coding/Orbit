@@ -142,6 +142,7 @@ async def stream_user_message(
         parent_message_id=payload.parent_message_id,
         idempotency_key=payload.idempotency_key,
         model=payload.model,
+        chat_mode=payload.chat_mode,
         file_ids=payload.file_ids if payload.file_ids else None,
     )
     return stream_response(
@@ -170,6 +171,7 @@ async def stream_regenerate_assistant(
         llm_config_id=payload.llm_config_id if payload else None,
         idempotency_key=payload.idempotency_key if payload else None,
         model=payload.model if payload else None,
+        chat_mode=payload.chat_mode if payload else None,
     )
     return stream_response(
         service=service,

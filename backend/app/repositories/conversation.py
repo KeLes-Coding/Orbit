@@ -294,6 +294,7 @@ class MessageRepository:
         source_message_id: UUID | None = None,
         revision_type: str = "normal",
         idempotency_key: str | None = None,
+        chat_mode: str | None = None,
     ) -> Message:
         # 先写入 streaming 占位；它也是树上的普通 child，可被取消、重发或切换。
         sequence_no = await ConversationRepository(self.session).allocate_message_sequence_no(conversation_id)
@@ -311,6 +312,7 @@ class MessageRepository:
             llm_config_id=llm_config_id,
             provider=provider,
             model=model,
+            chat_mode=chat_mode,
         )
         self.session.add(message)
         await self.session.flush()

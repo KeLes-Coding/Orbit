@@ -5,7 +5,7 @@ import type { Message } from "@/api/types"
 import { MessageBubble } from "./MessageBubble"
 
 interface MessageListProps {
-  messages: (Message & { paragraphs?: string[] })[]
+  messages: Message[]
   currentLeafMessageId?: string | null
   hasActiveRun?: boolean
   onRetry?: (messageId: string) => void
@@ -186,7 +186,7 @@ export function MessageList({
   }, [])
 
   /* Check if a round separator should be shown between two messages */
-  const shouldShowSeparator = (current: Message & { paragraphs?: string[] }, prev: Message & { paragraphs?: string[] } | null) => {
+  const shouldShowSeparator = (current: Message, prev: Message | null) => {
     if (!prev) return false
     if (current.role !== "user") return false
     return prev.role === "assistant"
@@ -198,7 +198,7 @@ export function MessageList({
 
   return (
     <>
-      {rounds.length > 1 && (
+      {rounds.length > 0 && (
         <nav
           className="message-jump-nav"
           aria-label="Conversation rounds"

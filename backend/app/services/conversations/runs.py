@@ -20,6 +20,7 @@ class ConversationRunService(ConversationStreamRunService):
         parent_message_id: UUID | None = None,
         idempotency_key: str | None = None,
         model: str | None = None,
+        chat_mode: str | None = None,
         file_ids: list[UUID] | None = None,
     ) -> str:
         conversation = await self._get_owned_conversation(
@@ -88,6 +89,7 @@ class ConversationRunService(ConversationStreamRunService):
                 content=content,
                 llm_config=llm_config,
                 model=resolved_model,
+                chat_mode=chat_mode,
             )
 
         # 先写入 created 事件，再启动 producer；这样首个订阅者一定能先收到占位消息。
@@ -162,6 +164,7 @@ class ConversationRunService(ConversationStreamRunService):
             content=payload.content,
             llm_config=llm_config,
             model=resolved_model,
+            chat_mode=payload.chat_mode,
         )
         await self.session.refresh(conversation)
 
@@ -212,6 +215,7 @@ class ConversationRunService(ConversationStreamRunService):
         llm_config_id: UUID | None = None,
         idempotency_key: str | None = None,
         model: str | None = None,
+        chat_mode: str | None = None,
     ) -> str:
         conversation = await self._get_owned_conversation(
             user_id=user_id, conversation_id=conversation_id
@@ -276,6 +280,7 @@ class ConversationRunService(ConversationStreamRunService):
                 source_message_id=target.id,
                 revision_type="regenerate",
                 idempotency_key=idempotency_key,
+                chat_mode=chat_mode,
             )
             await self.messages.set_conversation_active_leaf(
                 conversation=conversation, message=assistant_message
@@ -392,6 +397,7 @@ class ConversationRunService(ConversationStreamRunService):
                 content=payload.content,
                 llm_config=llm_config,
                 model=resolved_model,
+                chat_mode=payload.chat_mode,
             )
 
         await self._create_runtime_stream(
@@ -456,6 +462,7 @@ class ConversationRunService(ConversationStreamRunService):
         revision_type: str = "normal",
         idempotency_key: str | None = None,
         content_parts: list | None = None,
+        chat_mode: str | None = None,
     ):
         # 所有 user -> assistant placeholder 的写入都走同一段，保证 active_leaf 与 has_active_run 一致。
         user_message = await self.messages.create_user_message(
@@ -476,6 +483,7 @@ class ConversationRunService(ConversationStreamRunService):
             provider=llm_config.provider,
             model=model or "",
             parent_message=user_message,
+            chat_mode=chat_mode,
         )
         await self.messages.set_conversation_active_leaf(
             conversation=conversation, message=assistant_message
