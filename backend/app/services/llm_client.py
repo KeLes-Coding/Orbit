@@ -264,7 +264,9 @@ class LLMClient:
             part.get("type") == "file" and (part.get("mime_type") or "").startswith("image/")
             for part in content_parts
         )
-        supports_vision = config is not None and config.supports_vision
+        # 测试里经常用 SimpleNamespace 作为轻量配置对象，这里用 getattr 避免因为缺字段
+        # 触发无意义的 AttributeError，同时保持生产路径语义不变。
+        supports_vision = bool(config is not None and getattr(config, "supports_vision", False))
 
         if not has_images or not supports_vision:
             # 纯文本路径：拼接文本和附件引用。

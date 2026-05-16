@@ -526,6 +526,8 @@ def test_produce_stream_emits_tool_call_delta_and_persists_aggregated_tool_calls
             finish_reason=None,
         )
 
+    # Phase 1：tool/agent 模式走旧路径，设置 chat_mode="tool" 确保路由到 legacy
+    conversation.chat_mode = "tool"
     service.llm_client = SimpleNamespace(stream=fake_stream)
 
     run(service._produce_stream(stream_id=stream_id, conversation_id=conversation.id))
@@ -554,3 +556,93 @@ def test_produce_stream_emits_tool_call_delta_and_persists_aggregated_tool_calls
             "is_error": False,
         }
     ]
+
+
+def test_produce_stream_chat_mode_routes_to_langgraph_runtime(monkeypatch):
+    user_id = uuid4()
+    conversation = make_conversation(user_id=user_id)
+    messages = FakeMessages()
+    parent = make_message(role="user")
+    assistant_message = make_message(
+        role="assistant",
+        status="streaming",
+        parent_message_id=parent.id,
+    )
+    assistant_message.llm_config_id = uuid4()
+    assistant_message.conversation_id = conversation.id
+    messages.parent = parent
+    messages.created_assistant = assistant_message
+    store = FakeStreamStore()
+    store.streams["stream-chat"] = SimpleNamespace(
+        stream_id="stream-chat",
+        conversation_id=conversation.id,
+        message_id=assistant_message.id,
+        user_id=user_id,
+    )
+    service, _ = make_service(conversation, messages)
+    calls = {"runtime_used": False, "stream_called": False}
+
+    async def fake_stream(**kwargs):
+        calls["stream_called"] = True
+        yield SimpleNamespace(
+            content_delta="你好",
+            reasoning_delta="思考",
+            token_usage={"output_tokens": 2},
+            response_metadata={"provider": "openai", "model": "gpt-test"},
+            finish_reason="stop",
+        )
+
+    class FakeRuntime:
+        def __init__(self, *, stream_factory):
+            self._stream_factory = stream_factory
+
+        async def run_stream(self, *, state, stream_adapter):
+            calls["runtime_used"] = True
+            async for chunk in self._stream_factory():
+                if chunk.reasoning_delta:
+                    await stream_adapter.emit_custom_event(
+                        {"type": "reasoning_delta", "delta": chunk.reasoning_delta}
+                    )
+                if chunk.content_delta:
+                    await stream_adapter.emit_custom_event(
+                        {"type": "content_delta", "delta": chunk.content_delta}
+                    )
+                if chunk.token_usage:
+                    await stream_adapter.emit_custom_event(
+                        {"type": "token_usage", "usage": chunk.token_usage}
+                    )
+                if chunk.response_metadata:
+                    await stream_adapter.emit_custom_event(
+                        {"type": "response_metadata", "metadata": chunk.response_metadata}
+                    )
+                if chunk.finish_reason:
+                    await stream_adapter.emit_custom_event(
+                        {"type": "finish_reason", "finish_reason": chunk.finish_reason}
+                    )
+            return {
+                **state,
+                "response_text": "你好",
+                "reasoning_text": "思考",
+                "token_usage": {"output_tokens": 2},
+                "response_metadata": {
+                    "provider": "openai",
+                    "model": "gpt-test",
+                    "finish_reason": "stop",
+                },
+                "error": None,
+            }
+
+    service.llm_client = SimpleNamespace(stream=fake_stream)
+    monkeypatch.setattr(stream_run, "conversation_stream_store", store)
+    monkeypatch.setattr(stream_run, "LangGraphChatRuntime", FakeRuntime)
+
+    run(service._produce_stream(stream_id="stream-chat", conversation_id=conversation.id))
+
+    assert calls == {"runtime_used": True, "stream_called": True}
+    assert messages.completed_message is assistant_message
+    assert messages.completed_message.content == "你好"
+    assert messages.completed_message.reasoning_content == "思考"
+    assert messages.completed_message.response_metadata["finish_reason"] == "stop"
+    assert any(event[1] == "message.delta" for event in store.events)
+    assert any(event[1] == "message.reasoning_delta" for event in store.events)
+    assert any(event[1] == "message.completed" for event in store.events)
