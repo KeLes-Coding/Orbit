@@ -127,7 +127,10 @@ function replaceVisibleTail(
   assistantMessage: Message,
 ): Message[] {
   const withoutLocal = messages.filter((message) => !String(message.id).startsWith('local-'))
-  const parentId = userMessage?.parent_message_id ?? assistantMessage.parent_message_id
+  // 编辑首轮 user message 时，user_message.parent_message_id 会是 null。
+  // 这里必须把 null 当成“真实 root 父节点”，不能再回退到 assistant.parent_message_id，
+  // 否则会把刚创建出来的新 user 误当成父节点，导致可见路径替换失准。
+  const parentId = userMessage ? (userMessage.parent_message_id ?? null) : (assistantMessage.parent_message_id ?? null)
   const parentIndex = parentId
     ? withoutLocal.findIndex((message) => message.id === parentId)
     : -1
@@ -564,9 +567,9 @@ export function useConversations(
         markConversationStreamState(conversationId, true)
         let didApplyToVisiblePath = false
         queryClient.setQueryData<Message[]>(['messages', conversationId], (old = []) => {
-          const parentMessageId =
-            streamEvent.data.user_message?.parent_message_id ??
-            streamEvent.data.assistant_message.parent_message_id
+          const parentMessageId = streamEvent.data.user_message
+            ? (streamEvent.data.user_message.parent_message_id ?? null)
+            : (streamEvent.data.assistant_message.parent_message_id ?? null)
           if (old.length > 0 && parentMessageId && !isMessageVisible(old, parentMessageId)) {
             return old
           }
