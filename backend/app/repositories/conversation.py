@@ -294,6 +294,7 @@ class MessageRepository:
         source_message_id: UUID | None = None,
         revision_type: str = "normal",
         idempotency_key: str | None = None,
+        chat_mode: str | None = None,
     ) -> Message:
         # 先写入 streaming 占位；它也是树上的普通 child，可被取消、重发或切换。
         sequence_no = await ConversationRepository(self.session).allocate_message_sequence_no(conversation_id)
@@ -311,6 +312,7 @@ class MessageRepository:
             llm_config_id=llm_config_id,
             provider=provider,
             model=model,
+            chat_mode=chat_mode,
         )
         self.session.add(message)
         await self.session.flush()
@@ -360,18 +362,24 @@ class MessageRepository:
 
     async def get_message_read_state(self, message: Message) -> dict[str, Any]:
         # 给前端补充 1/n 和左右切换所需的 sibling 信息。
+        response_metadata = dict(message.response_metadata or {})
+        thought_events = response_metadata.get("thought_events")
+        if not isinstance(thought_events, list):
+            thought_events = []
         siblings = await self.list_siblings(message)
         sibling_ids = [sibling.id for sibling in siblings]
         try:
             index = sibling_ids.index(message.id)
         except ValueError:
             return {
+                "thought_events": thought_events,
                 "sibling_index": 1,
                 "sibling_count": 1,
                 "previous_sibling_id": None,
                 "next_sibling_id": None,
             }
         return {
+            "thought_events": thought_events,
             "sibling_index": index + 1,
             "sibling_count": len(siblings),
             "previous_sibling_id": sibling_ids[index - 1] if index > 0 else None,

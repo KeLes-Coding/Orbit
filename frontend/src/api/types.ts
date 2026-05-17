@@ -72,6 +72,32 @@ export interface Message {
   token_count?: number
   created_at: string
   updated_at?: string
+  /** Phase 2: structured thought events for agentic_chat mode */
+  thought_events?: ThoughtEventData[]
+}
+
+export interface ThoughtEventData {
+  message_id: string
+  type: 'thought.planning' | 'thought.tool' | 'thought.summary' | 'thought.reason'
+  phase: 'planning' | 'loop' | 'reason'
+  text: string
+  meta?: Record<string, unknown>
+}
+
+export interface ToolCallDelta {
+  id?: string | null
+  name?: string | null
+  args?: unknown
+  index?: number | null
+  type?: string | null
+}
+
+export interface ToolResultDelta {
+  tool_call_id?: string | null
+  name: string
+  args?: unknown
+  output: string
+  is_error?: boolean
 }
 
 export interface LlmConfig {
@@ -146,6 +172,7 @@ export interface SendMessagePayload {
   parent_message_id?: string | null
   idempotency_key?: string | null
   model?: string | null
+  chat_mode?: string | null
   file_ids?: string[]
 }
 
@@ -233,6 +260,24 @@ export type StreamMessageEvent =
         message_id: string
         delta: string
       }
+    }
+  | {
+      event: 'message.tool_call_delta'
+      data: StreamEnvelope & {
+        message_id: string
+        tool_calls: ToolCallDelta[]
+      }
+    }
+  | {
+      event: 'message.tool_result'
+      data: StreamEnvelope & {
+        message_id: string
+        tool_results: ToolResultDelta[]
+      }
+    }
+  | {
+      event: 'message.thought'
+      data: StreamEnvelope & ThoughtEventData
     }
   | {
       event: 'message.completed' | 'message.failed' | 'message.cancelled'

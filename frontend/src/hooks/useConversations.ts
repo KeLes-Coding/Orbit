@@ -1,18 +1,24 @@
 import { useMemo, useCallback, useEffect, useRef, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { conversationApi } from '@/api/conversations'
-import { fileApi } from '@/api/files'
 import { streamManager } from '@/lib/streamManager'
 import { useOrbitStore } from '@/stores/useOrbitStore'
-import type { Conversation, Message, StreamMessageEvent } from '@/api/types'
-import type { PendingFile } from '@/components/chat/FilePreviewItem'
+import type { Conversation, Message, StreamMessageEvent, ThoughtEventData, ToolCallDelta, ToolResultDelta } from '@/api/types'
 
 interface UseConversationsOptions {
   enableStreamResume?: boolean
 }
 
-interface NormalizedMessage extends Message {
-  paragraphs: string[]
+type NormalizedMessage = Message
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof DOMException && error.name === 'AbortError'
+}
+
+function removeStreamIfActive(streamKey: string | null | undefined, controller: AbortController): void {
+  if (streamKey && streamManager.get(streamKey)?.controller === controller) {
+    streamManager.remove(streamKey)
+  }
 }
 
 interface ActiveStreamHandle {
@@ -29,13 +35,108 @@ interface StreamMessageSnapshot {
   reasoningContent: string
 }
 
+function shouldMergeThoughtEvent(
+  previous: ThoughtEventData | undefined,
+  incoming: ThoughtEventData,
+): boolean {
+  if (!previous) return false
+  if (previous.type !== incoming.type || previous.phase !== incoming.phase) return false
+  if (incoming.type === 'thought.tool') return false
+  if (incoming.type === 'thought.summary') {
+    return previous.meta?.round === incoming.meta?.round
+  }
+  return true
+}
+
+function mergeThoughtEvents(
+  existing: ThoughtEventData[] | undefined,
+  incoming: ThoughtEventData,
+): ThoughtEventData[] {
+  const items = [...(existing || [])]
+  const last = items[items.length - 1]
+  if (!shouldMergeThoughtEvent(last, incoming)) {
+    items.push(incoming)
+    return items
+  }
+  items[items.length - 1] = {
+    ...last,
+    text: `${last.text}${incoming.text}`,
+    meta: incoming.meta ?? last.meta,
+  }
+  return items
+}
+
+function normalizeThoughtEvents(events: ThoughtEventData[] | undefined): ThoughtEventData[] {
+  let merged: ThoughtEventData[] = []
+  for (const event of events || []) {
+    merged = mergeThoughtEvents(merged, event)
+  }
+  return merged
+}
+
+function mergeToolCallDeltas(
+  existing: ToolCallDelta[] | undefined,
+  incoming: ToolCallDelta[],
+): ToolCallDelta[] {
+  // 前端缓存按和后端一致的 id/index 规则聚合，确保“首块给名字、后续块只给参数”的 provider 也能正确拼回一条调用。
+  const merged = [...(existing || [])].map((item) => ({ ...item }))
+  for (const item of incoming) {
+    const current =
+      (item.id ? merged.find((candidate) => candidate.id === item.id) : undefined) ||
+      (typeof item.index === 'number'
+        ? merged.find((candidate) => candidate.index === item.index)
+        : undefined) ||
+      merged.find(
+        (candidate) =>
+          (candidate.id || (typeof candidate.index === 'number' ? `index:${candidate.index}` : `${candidate.name || ''}:fallback`)) ===
+          (item.id || (typeof item.index === 'number' ? `index:${item.index}` : `${item.name || ''}:fallback`)),
+      )
+    if (!current) {
+      merged.push({ ...item })
+      continue
+    }
+    if (item.id) current.id = item.id
+    if (item.name) current.name = item.name
+    if (item.type) current.type = item.type
+    if (typeof item.index === 'number') current.index = item.index
+    if (typeof item.args === 'string' && item.args) {
+      current.args =
+        typeof current.args === 'string'
+          ? `${current.args}${item.args}`
+          : item.args
+    } else if (item.args !== undefined) {
+      current.args = item.args
+    }
+  }
+  return merged
+}
+
+function mergeToolResultDeltas(
+  existing: ToolResultDelta[] | undefined,
+  incoming: ToolResultDelta[],
+): ToolResultDelta[] {
+  // 工具执行结果天然是一条一条完成事件，这里主要做去重，避免 replay/live 切换时重复展示。
+  const merged = [...(existing || [])].map((item) => ({ ...item }))
+  for (const item of incoming) {
+    const key = item.tool_call_id || `${item.name}:${typeof item.args === 'string' ? item.args : JSON.stringify(item.args ?? {})}`
+    const exists = merged.some(
+      (candidate) =>
+        (candidate.tool_call_id || `${candidate.name}:${typeof candidate.args === 'string' ? candidate.args : JSON.stringify(candidate.args ?? {})}`) === key,
+    )
+    if (!exists) {
+      merged.push({ ...item })
+    }
+  }
+  return merged
+}
+
 function normalizeMessage(message: Message | null | undefined): NormalizedMessage | null {
   if (!message) return null
   return {
     ...message,
     content: message.content || '',
     reasoning_content: message.reasoning_content || '',
-    paragraphs: (message.content || '').split(/\n{2,}/).filter(Boolean),
+    thought_events: normalizeThoughtEvents(message.thought_events),
   }
 }
 
@@ -66,7 +167,10 @@ function replaceVisibleTail(
   assistantMessage: Message,
 ): Message[] {
   const withoutLocal = messages.filter((message) => !String(message.id).startsWith('local-'))
-  const parentId = userMessage?.parent_message_id ?? assistantMessage.parent_message_id
+  // 编辑首轮 user message 时，user_message.parent_message_id 会是 null。
+  // 这里必须把 null 当成“真实 root 父节点”，不能再回退到 assistant.parent_message_id，
+  // 否则会把刚创建出来的新 user 误当成父节点，导致可见路径替换失准。
+  const parentId = userMessage ? (userMessage.parent_message_id ?? null) : (assistantMessage.parent_message_id ?? null)
   const parentIndex = parentId
     ? withoutLocal.findIndex((message) => message.id === parentId)
     : -1
@@ -119,6 +223,67 @@ function appendMessageReasoningDelta(messages: Message[], messageId: string, del
       ...message,
       reasoning_content: `${message.reasoning_content || ''}${delta}`,
       status: 'streaming' as const,
+    }
+  })
+  return didUpdate ? nextMessages : messages
+}
+
+function appendMessageToolCallDelta(messages: Message[], messageId: string, toolCalls: ToolCallDelta[]): Message[] {
+  let didUpdate = false
+  const nextMessages = messages.map((message) => {
+    if (message.id !== messageId) return message
+    didUpdate = true
+    const responseMetadata = (message.response_metadata || {}) as Record<string, unknown>
+    const currentToolCalls = Array.isArray(responseMetadata.normalized_tool_calls)
+      ? (responseMetadata.normalized_tool_calls as ToolCallDelta[])
+      : []
+    return {
+      ...message,
+      status: 'streaming' as const,
+      response_metadata: {
+        ...responseMetadata,
+        normalized_tool_calls: mergeToolCallDeltas(currentToolCalls, toolCalls),
+      },
+    }
+  })
+  return didUpdate ? nextMessages : messages
+}
+
+function appendMessageToolResult(messages: Message[], messageId: string, toolResults: ToolResultDelta[]): Message[] {
+  let didUpdate = false
+  const nextMessages = messages.map((message) => {
+    if (message.id !== messageId) return message
+    didUpdate = true
+    const responseMetadata = (message.response_metadata || {}) as Record<string, unknown>
+    const currentToolResults = Array.isArray(responseMetadata.normalized_tool_results)
+      ? (responseMetadata.normalized_tool_results as ToolResultDelta[])
+      : []
+    return {
+      ...message,
+      status: 'streaming' as const,
+      response_metadata: {
+        ...responseMetadata,
+        normalized_tool_results: mergeToolResultDeltas(currentToolResults, toolResults),
+      },
+    }
+  })
+  return didUpdate ? nextMessages : messages
+}
+
+function appendMessageThoughtEvent(
+  messages: Message[],
+  messageId: string,
+  event: ThoughtEventData,
+): Message[] {
+  let didUpdate = false
+  const nextMessages = messages.map((message) => {
+    if (message.id !== messageId) return message
+    didUpdate = true
+    const currentThoughtEvents = message.thought_events || []
+    return {
+      ...message,
+      status: 'streaming' as const,
+      thought_events: mergeThoughtEvents(currentThoughtEvents, event),
     }
   })
   return didUpdate ? nextMessages : messages
@@ -178,12 +343,14 @@ export function useConversations(
   const activeConversationId = useOrbitStore((s) => s.activeConversationId)
   const pendingConversationLlmConfigId = useOrbitStore((s) => s.pendingConversationLlmConfigId)
   const pendingConversationLlmModel = useOrbitStore((s) => s.pendingConversationLlmModel)
+  const chatMode = useOrbitStore((s) => s.chatMode)
   const draft = useOrbitStore((s) => s.draft)
   const isCreatingConversationTitle = useOrbitStore((s) => s.isCreatingConversationTitle)
   const receivingConversationIds = useOrbitStore((s) => s.receivingConversationIds)
   const setActiveConversationId = useOrbitStore((s) => s.setActiveConversationId)
   const setPendingConversationLlmConfigId = useOrbitStore((s) => s.setPendingConversationLlmConfigId)
   const setPendingConversationLlmModel = useOrbitStore((s) => s.setPendingConversationLlmModel)
+  const setChatMode = useOrbitStore((s) => s.setChatMode)
   const setDraft = useOrbitStore((s) => s.setDraft)
   const setErrorMessage = useOrbitStore((s) => s.setErrorMessage)
   const setActiveView = useOrbitStore((s) => s.setActiveView)
@@ -192,8 +359,6 @@ export function useConversations(
   const clearConversationCompletionNotice = useOrbitStore((s) => s.clearConversationCompletionNotice)
   const queryClient = useQueryClient()
   const [isPendingNewConversationStream, setIsPendingNewConversationStream] = useState(false)
-  const [pendingFiles, setPendingFiles] = useState<PendingFile[]>([])
-  const [isUploadingFiles, setIsUploadingFiles] = useState(false)
   const pendingNewConversationStreamRef = useRef<ActiveStreamHandle | null>(null)
   const activeConversationIdRef = useRef(activeConversationId)
   const resumeAttemptRef = useRef<Record<string, boolean>>({})
@@ -357,6 +522,60 @@ export function useConversations(
     }
   }, [])
 
+  const appendStreamSnapshotToolCalls = useCallback((messageId: string, toolCalls: ToolCallDelta[]) => {
+    const current = streamMessageSnapshotsRef.current[messageId]
+    if (!current) return
+    const responseMetadata = (current.message.response_metadata || {}) as Record<string, unknown>
+    const currentToolCalls = Array.isArray(responseMetadata.normalized_tool_calls)
+      ? (responseMetadata.normalized_tool_calls as ToolCallDelta[])
+      : []
+    streamMessageSnapshotsRef.current[messageId] = {
+      ...current,
+      message: {
+        ...current.message,
+        status: 'streaming' as const,
+        response_metadata: {
+          ...responseMetadata,
+          normalized_tool_calls: mergeToolCallDeltas(currentToolCalls, toolCalls),
+        },
+      },
+    }
+  }, [])
+
+  const appendStreamSnapshotToolResults = useCallback((messageId: string, toolResults: ToolResultDelta[]) => {
+    const current = streamMessageSnapshotsRef.current[messageId]
+    if (!current) return
+    const responseMetadata = (current.message.response_metadata || {}) as Record<string, unknown>
+    const currentToolResults = Array.isArray(responseMetadata.normalized_tool_results)
+      ? (responseMetadata.normalized_tool_results as ToolResultDelta[])
+      : []
+    streamMessageSnapshotsRef.current[messageId] = {
+      ...current,
+      message: {
+        ...current.message,
+        status: 'streaming' as const,
+        response_metadata: {
+          ...responseMetadata,
+          normalized_tool_results: mergeToolResultDeltas(currentToolResults, toolResults),
+        },
+      },
+    }
+  }, [])
+
+  const appendStreamSnapshotThoughtEvent = useCallback((messageId: string, event: ThoughtEventData) => {
+    const current = streamMessageSnapshotsRef.current[messageId]
+    if (!current) return
+    const currentThoughtEvents = current.message.thought_events || []
+    streamMessageSnapshotsRef.current[messageId] = {
+      ...current,
+      message: {
+        ...current.message,
+        status: 'streaming' as const,
+        thought_events: mergeThoughtEvents(currentThoughtEvents, event),
+      },
+    }
+  }, [])
+
   const hydrateCachedStreamSnapshots = useCallback(
     (conversationId: string) => {
       queryClient.setQueryData<Message[]>(['messages', conversationId], (old = []) =>
@@ -399,9 +618,7 @@ export function useConversations(
         )
         if (!streamEvent.data.has_active_run) {
           markConversationStreamState(conversationId, false)
-          if (streamManager.get(nextStreamKey)?.controller === controller) {
-            streamManager.remove(nextStreamKey)
-          }
+          removeStreamIfActive(nextStreamKey, controller)
         }
         return nextStreamKey
       }
@@ -423,9 +640,9 @@ export function useConversations(
         markConversationStreamState(conversationId, true)
         let didApplyToVisiblePath = false
         queryClient.setQueryData<Message[]>(['messages', conversationId], (old = []) => {
-          const parentMessageId =
-            streamEvent.data.user_message?.parent_message_id ??
-            streamEvent.data.assistant_message.parent_message_id
+          const parentMessageId = streamEvent.data.user_message
+            ? (streamEvent.data.user_message.parent_message_id ?? null)
+            : (streamEvent.data.assistant_message.parent_message_id ?? null)
           if (old.length > 0 && parentMessageId && !isMessageVisible(old, parentMessageId)) {
             return old
           }
@@ -466,6 +683,30 @@ export function useConversations(
         return nextStreamKey
       }
 
+      if (streamEvent.event === 'message.tool_call_delta') {
+        appendStreamSnapshotToolCalls(streamEvent.data.message_id, streamEvent.data.tool_calls)
+        queryClient.setQueryData<Message[]>(['messages', conversationId], (old = []) =>
+          appendMessageToolCallDelta(old, streamEvent.data.message_id, streamEvent.data.tool_calls),
+        )
+        return nextStreamKey
+      }
+
+      if (streamEvent.event === 'message.tool_result') {
+        appendStreamSnapshotToolResults(streamEvent.data.message_id, streamEvent.data.tool_results)
+        queryClient.setQueryData<Message[]>(['messages', conversationId], (old = []) =>
+          appendMessageToolResult(old, streamEvent.data.message_id, streamEvent.data.tool_results),
+        )
+        return nextStreamKey
+      }
+
+      if (streamEvent.event === 'message.thought') {
+        appendStreamSnapshotThoughtEvent(streamEvent.data.message_id, streamEvent.data)
+        queryClient.setQueryData<Message[]>(['messages', conversationId], (old = []) =>
+          appendMessageThoughtEvent(old, streamEvent.data.message_id, streamEvent.data),
+        )
+        return nextStreamKey
+      }
+
       if (
         streamEvent.event === 'message.completed' ||
         streamEvent.event === 'message.failed' ||
@@ -480,9 +721,7 @@ export function useConversations(
                 ? 'failed'
                 : 'cancelled',
         })
-        if (streamManager.get(nextStreamKey)?.controller === controller) {
-          streamManager.remove(nextStreamKey)
-        }
+        removeStreamIfActive(nextStreamKey, controller)
         if (streamEvent.event === 'message.completed' && activeConversationIdRef.current !== conversationId) {
           markConversationCompletedOffscreen(conversationId)
         }
@@ -499,6 +738,9 @@ export function useConversations(
       markConversationStreamState,
       appendStreamSnapshotContent,
       appendStreamSnapshotReasoning,
+      appendStreamSnapshotToolCalls,
+      appendStreamSnapshotToolResults,
+      appendStreamSnapshotThoughtEvent,
       queryClient,
       rememberStreamMessage,
       upsertConversation,
@@ -530,6 +772,7 @@ export function useConversations(
       content: string,
       llmConfigId?: string | null,
       model?: string | null,
+      chatMode?: string | null,
       fileIds?: string[],
     ) => {
       await queryClient.cancelQueries({ queryKey: ['messages', conversationId] })
@@ -587,6 +830,7 @@ export function useConversations(
             parent_message_id: parentMessageId,
             idempotency_key: idempotencyKey,
             model: model ?? null,
+            chat_mode: chatMode ?? null,
             file_ids: fileIds?.length ? fileIds : undefined,
           },
           controller.signal,
@@ -595,22 +839,18 @@ export function useConversations(
         }
         queryClient.invalidateQueries({ queryKey: ['conversations'] })
       } catch (error) {
-        if (error instanceof DOMException && error.name === 'AbortError') {
-          return
-        }
+        if (isAbortError(error)) return
         queryClient.setQueryData(['messages', conversationId], previousMessages)
         setErrorMessage(error instanceof Error ? error.message : 'Streaming request failed.')
       } finally {
-        if (streamManager.get(streamKey)?.controller === controller) {
-          streamManager.remove(streamKey)
-        }
+        removeStreamIfActive(streamKey, controller)
       }
     },
     [applyStreamEvent, queryClient, setErrorMessage],
   )
 
   const streamNewConversationMessage = useCallback(
-    async (content: string, llmConfigId: string | null, model?: string | null, fileIds?: string[]) => {
+    async (content: string, llmConfigId: string | null, chatMode: 'chat' | 'agent', model?: string | null, fileIds?: string[]) => {
       const controller = new AbortController()
       let conversationId: string | null = null
       let streamKey: string | null = null
@@ -630,9 +870,11 @@ export function useConversations(
           {
             content: content || '',
             llm_config_id: llmConfigId,
-            chat_mode: 'chat',
+            chat_mode: chatMode,
             metadata: {},
-            idempotency_key: createIdempotencyKey('new-chat'),
+            idempotency_key: createIdempotencyKey(
+              chatMode === 'agent' ? 'new-agent-chat' : 'new-chat',
+            ),
             model: model ?? null,
             file_ids: fileIds?.length ? fileIds : undefined,
           },
@@ -674,15 +916,11 @@ export function useConversations(
         }
         queryClient.invalidateQueries({ queryKey: ['conversations'] })
       } catch (error) {
-        if (error instanceof DOMException && error.name === 'AbortError') {
-          return
-        }
+        if (isAbortError(error)) return
         setErrorMessage(error instanceof Error ? error.message : 'Streaming request failed.')
       } finally {
         pendingNewConversationStreamRef.current = null
-        if (streamKey && streamManager.get(streamKey)?.controller === controller) {
-          streamManager.remove(streamKey)
-        }
+        removeStreamIfActive(streamKey, controller)
         setIsCreatingConversationTitle(false)
         setIsPendingNewConversationStream(false)
       }
@@ -699,82 +937,13 @@ export function useConversations(
     ],
   )
 
-  const addFiles = useCallback((files: File[]) => {
-    const newFiles: PendingFile[] = files.map((file) => {
-      const isImage = file.type.startsWith("image/")
-      return {
-        file,
-        status: "pending" as const,
-        preview: isImage ? URL.createObjectURL(file) : undefined,
-      }
-    })
-    setPendingFiles((prev) => [...prev, ...newFiles])
-  }, [])
-
-  const removeFile = useCallback((index: number) => {
-    setPendingFiles((prev) => {
-      const next = [...prev]
-      const removed = next[index]
-      if (removed?.preview) URL.revokeObjectURL(removed.preview)
-      next.splice(index, 1)
-      return next
-    })
-  }, [])
-
-  const uploadPendingFiles = useCallback(
-    async (conversationId: string | null): Promise<string[]> => {
-      const files = pendingFiles.filter((pf) => pf.status !== "ready")
-      if (files.length === 0) {
-        return pendingFiles
-          .filter((pf) => pf.serverFile?.id)
-          .map((pf) => pf.serverFile!.id)
-      }
-
-      setIsUploadingFiles(true)
-      const fileIds: string[] = []
-      const updated: PendingFile[] = [...pendingFiles]
-
-      for (let i = 0; i < updated.length; i++) {
-        const pf = updated[i]
-        if (pf.status === "ready" && pf.serverFile?.id) {
-          fileIds.push(pf.serverFile.id)
-          continue
-        }
-        updated[i] = { ...pf, status: "uploading" }
-        setPendingFiles([...updated])
-
-        try {
-          let serverFile
-          if (conversationId) {
-            serverFile = await fileApi.uploadToConversation(conversationId, pf.file)
-          } else {
-            serverFile = await fileApi.uploadPending(pf.file)
-          }
-          fileIds.push(serverFile.id)
-          updated[i] = { ...pf, status: "ready", serverFile }
-        } catch (err) {
-          updated[i] = {
-            ...pf,
-            status: "error",
-            error: err instanceof Error ? err.message : "Upload failed",
-          }
-        }
-        setPendingFiles([...updated])
-      }
-
-      setIsUploadingFiles(false)
-      return fileIds
-    },
-    [pendingFiles],
-  )
-
-  const sendMessage = useCallback((selectedLlmConfigId?: string | null, selectedModel?: string | null) => {
+  const sendMessage = useCallback((selectedLlmConfigId?: string | null, selectedModel?: string | null, chatMode?: 'chat' | 'agent', fileIds?: string[]) => {
     const content = draft.trim()
-    const hasFiles = pendingFiles.length > 0
     const isCurrentThreadStreaming = activeConversationId
       ? currentBranchIsStreaming || currentBranchHasPendingLocalStream
       : isPendingNewConversationStream
-    if ((!content && !hasFiles) || isCurrentThreadStreaming || isUploadingFiles) return
+    const hasFiles = fileIds && fileIds.length > 0
+    if ((!content && !hasFiles) || isCurrentThreadStreaming) return
     if (!hasUser) {
       setErrorMessage('Sign in before sending messages.')
       return
@@ -783,31 +952,26 @@ export function useConversations(
     setErrorMessage('')
 
     const conversationId = activeConversationId
-    // Upload files, then send with file_ids
-    const doSend = async () => {
-      const fileIds = await uploadPendingFiles(conversationId)
-      if (!conversationId) {
-        void streamNewConversationMessage(
-          content,
-          selectedLlmConfigId ?? pendingConversationLlmConfigId,
-          selectedModel ?? pendingConversationLlmModel,
-          fileIds,
-        )
-        return
-      }
-      void streamMessage(
-        conversationId,
+    if (!conversationId) {
+      void streamNewConversationMessage(
         content,
         selectedLlmConfigId ?? pendingConversationLlmConfigId,
+        chatMode ?? 'chat',
         selectedModel ?? pendingConversationLlmModel,
         fileIds,
       )
+      return
     }
-    void doSend().then(() => setPendingFiles([]))
+    void streamMessage(
+      conversationId,
+      content,
+      selectedLlmConfigId ?? pendingConversationLlmConfigId,
+      selectedModel ?? pendingConversationLlmModel,
+      chatMode ?? null,
+      fileIds,
+    )
   }, [
     draft,
-    pendingFiles,
-    isUploadingFiles,
     activeConversationId,
     pendingConversationLlmConfigId,
     pendingConversationLlmModel,
@@ -815,7 +979,6 @@ export function useConversations(
     isPendingNewConversationStream,
     currentBranchIsStreaming,
     currentBranchHasPendingLocalStream,
-    uploadPendingFiles,
     streamMessage,
     streamNewConversationMessage,
     setDraft,
@@ -823,7 +986,7 @@ export function useConversations(
   ])
 
   const regenerateAssistant = useCallback(
-    async (messageId: string, llmConfigId?: string | null, model?: string | null) => {
+    async (messageId: string, llmConfigId?: string | null, model?: string | null, chatMode?: string | null) => {
       if (!activeConversationId || !isUuid(messageId)) return
       const controller = new AbortController()
       let streamKey = streamManager.makePendingKey(activeConversationId, 'regen')
@@ -847,19 +1010,16 @@ export function useConversations(
           controller.signal,
           model ?? null,
           llmConfigId ?? null,
+          chatMode ?? null,
         )) {
           streamKey = applyStreamEvent(activeConversationId, streamKey, streamEvent, controller)
         }
         queryClient.invalidateQueries({ queryKey: ['conversations'] })
       } catch (error) {
-        if (error instanceof DOMException && error.name === 'AbortError') {
-          return
-        }
+        if (isAbortError(error)) return
         setErrorMessage(error instanceof Error ? error.message : 'Regenerate request failed.')
       } finally {
-        if (streamManager.get(streamKey)?.controller === controller) {
-          streamManager.remove(streamKey)
-        }
+        removeStreamIfActive(streamKey, controller)
       }
     },
     [
@@ -872,7 +1032,7 @@ export function useConversations(
   )
 
   const editUserMessage = useCallback(
-    async (messageId: string, content: string, llmConfigId?: string | null, model?: string | null) => {
+    async (messageId: string, content: string, llmConfigId?: string | null, model?: string | null, chatMode?: string | null) => {
       if (!activeConversationId || !isUuid(messageId)) return
       const controller = new AbortController()
       let streamKey = streamManager.makePendingKey(activeConversationId, 'edit')
@@ -896,6 +1056,7 @@ export function useConversations(
             llm_config_id: llmConfigId ?? null,
             idempotency_key: createIdempotencyKey('edit'),
             model: model ?? null,
+            chat_mode: chatMode ?? null,
           },
           controller.signal,
         )) {
@@ -903,14 +1064,10 @@ export function useConversations(
         }
         queryClient.invalidateQueries({ queryKey: ['conversations'] })
       } catch (error) {
-        if (error instanceof DOMException && error.name === 'AbortError') {
-          return
-        }
+        if (isAbortError(error)) return
         setErrorMessage(error instanceof Error ? error.message : 'Edit request failed.')
       } finally {
-        if (streamManager.get(streamKey)?.controller === controller) {
-          streamManager.remove(streamKey)
-        }
+        removeStreamIfActive(streamKey, controller)
       }
     },
     [
@@ -1078,9 +1235,7 @@ export function useConversations(
         }
         queryClient.invalidateQueries({ queryKey: ['conversations'] })
       } catch (error) {
-        if (error instanceof DOMException && error.name === 'AbortError') {
-          return
-        }
+        if (isAbortError(error)) return
         const message = error instanceof Error ? error.message : 'Resume stream request failed.'
         if (message === '当前分支没有活跃流' || message === '流不存在或已过期') {
           queryClient.invalidateQueries({ queryKey: ['conversations'] })
@@ -1089,9 +1244,7 @@ export function useConversations(
           setErrorMessage(message)
         }
       } finally {
-        if (streamKey && streamManager.get(streamKey)?.controller === controller) {
-          streamManager.remove(streamKey)
-        }
+        removeStreamIfActive(streamKey, controller)
         delete resumeAttemptRef.current[attemptKey]
       }
     })()
@@ -1158,13 +1311,10 @@ export function useConversations(
     activeConversationId,
     pendingConversationLlmConfigId,
     pendingConversationLlmModel,
+    chatMode,
     messages,
     isLoadingMessages,
     isSending: isActiveConversationStreaming,
-    pendingFiles,
-    isUploadingFiles,
-    addFiles,
-    removeFile,
     formatConversationTitle,
     selectConversation,
     createNewThread: () => {
@@ -1176,7 +1326,7 @@ export function useConversations(
       setActiveConversationId(null)
       setPendingConversationLlmConfigId(null)
       setPendingConversationLlmModel(null)
-      setPendingFiles([])
+      setChatMode('chat')
       setIsCreatingConversationTitle(false)
       setErrorMessage('')
     },
@@ -1193,6 +1343,9 @@ export function useConversations(
     selectPendingConversationLlm: (configId: string, model?: string | null) => {
       setPendingConversationLlmConfigId(configId)
       setPendingConversationLlmModel(model ?? null)
+    },
+    setChatMode: (mode: 'chat' | 'agent') => {
+      setChatMode(mode)
     },
   }
 }

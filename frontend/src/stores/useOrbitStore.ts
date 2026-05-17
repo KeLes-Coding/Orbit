@@ -37,6 +37,7 @@ interface OrbitStore {
   activeConversationId: string | null
   pendingConversationLlmConfigId: string | null
   pendingConversationLlmModel: string | null
+  chatMode: 'chat' | 'agent'
   editingThreadId: string | null
   editingTitle: string
   sidebarCollapsed: boolean
@@ -61,6 +62,7 @@ interface OrbitStore {
   setActiveConversationId: (id: string | null) => void
   setPendingConversationLlmConfigId: (id: string | null) => void
   setPendingConversationLlmModel: (model: string | null) => void
+  setChatMode: (mode: 'chat' | 'agent') => void
   setEditingThreadId: (id: string | null) => void
   setEditingTitle: (title: string) => void
   markConversationCompletedOffscreen: (id: string) => void
@@ -88,6 +90,7 @@ export const useOrbitStore = create<OrbitStore>((set) => ({
   activeConversationId: null,
   pendingConversationLlmConfigId: null,
   pendingConversationLlmModel: null,
+  chatMode: 'chat',
   editingThreadId: null,
   editingTitle: '',
   sidebarCollapsed: getInitialSidebarCollapsed(),
@@ -130,6 +133,7 @@ export const useOrbitStore = create<OrbitStore>((set) => ({
   setActiveConversationId: (id) => set({ activeConversationId: id }),
   setPendingConversationLlmConfigId: (id) => set({ pendingConversationLlmConfigId: id }),
   setPendingConversationLlmModel: (model) => set({ pendingConversationLlmModel: model }),
+  setChatMode: (mode) => set({ chatMode: mode }),
   setEditingThreadId: (id) => set({ editingThreadId: id }),
   setEditingTitle: (title) => set({ editingTitle: title }),
   markConversationCompletedOffscreen: (id) =>
@@ -164,7 +168,8 @@ export const useOrbitStore = create<OrbitStore>((set) => ({
       draft: '',
       activeConversationId: null,
       pendingConversationLlmConfigId: null,
-  pendingConversationLlmModel: null,
+      pendingConversationLlmModel: null,
+      chatMode: 'chat',
       isCreatingConversationTitle: false,
       editingThreadId: null,
       editingTitle: '',
