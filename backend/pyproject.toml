@@ -22,6 +22,7 @@ dependencies = [
     "PyJWT",
     "pydantic-settings",
     "python-multipart",
+    "pytest",
     "sqlalchemy",
     "uvicorn",
 ]

@@ -5,6 +5,7 @@ from typing import Any
 from uuid import UUID
 
 from fastapi import HTTPException, UploadFile, status
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.models.conversation_file import ConversationFile
@@ -17,9 +18,8 @@ logger = logging.getLogger(__name__)
 
 class FileService:
     # 文件服务负责上传编排：校验 MIME / 大小、SHA-256 去重、存储落盘、启动后台解析。
-    def __init__(self, session: "AsyncSession") -> None:  # type: ignore[valid-type]
-        from sqlalchemy.ext.asyncio import AsyncSession as _AS
-        self.session: _AS = session
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
         self.repo = ConversationFileRepository(session)
         self.storage = LocalFileStorage()
         self.parser = DocumentParser(max_chars=get_settings().file_max_extracted_chars)
@@ -149,9 +149,7 @@ class FileService:
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail=f"File is already bound to another conversation: {file_id}",
                 )
-            await self.repo.bind_to_conversation(
-                file=conv_file, conversation_id=conversation_id
-            )
+            await self.repo.bind_to_conversation(file=conv_file, conversation_id=conversation_id)
             files.append(conv_file)
         await self.session.commit()
         return files
@@ -164,9 +162,7 @@ class FileService:
             timeout_seconds = get_settings().file_extraction_wait_seconds
 
         deadline = asyncio.get_event_loop().time() + timeout_seconds
-        pending_ids = {
-            f.id for f in files if f.extraction_status in ("pending", "processing")
-        }
+        pending_ids = {f.id for f in files if f.extraction_status in ("pending", "processing")}
 
         if not pending_ids:
             return files
@@ -210,7 +206,9 @@ class FileService:
             parts.append(part)
         return parts
 
-    async def get_file_content(self, *, user_id: UUID, file_id: UUID) -> tuple[ConversationFile, bytes]:
+    async def get_file_content(
+        self, *, user_id: UUID, file_id: UUID
+    ) -> tuple[ConversationFile, bytes]:
         # 校验用户归属后返回文件元数据和内容，用于下载/预览。
         conv_file = await self.repo.get_by_id(user_id=user_id, file_id=file_id)
         if conv_file is None:

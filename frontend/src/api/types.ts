@@ -149,11 +149,6 @@ export interface SendMessagePayload {
   file_ids?: string[]
 }
 
-export interface SendMessageResponse {
-  user_message: Message
-  assistant_message: Message
-}
-
 export interface ConversationFile {
   id: string
   user_id: string

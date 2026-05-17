@@ -1,5 +1,4 @@
 import json
-from collections.abc import AsyncIterator
 from typing import Annotated
 from uuid import UUID
 
@@ -20,7 +19,6 @@ from app.schemas.conversation import (
     ConversationRead,
     ConversationUpdate,
     MessageEdit,
-    MessageExchangeRead,
     MessageCreate,
     MessageRegenerate,
     MessageRead,
@@ -65,22 +63,11 @@ async def stream_new_conversation_message(
         user_id=current_user.id,
         payload=payload,
     )
-
-    async def event_generator() -> AsyncIterator[str]:
-        async for event in service.subscribe_stream(
-            user_id=current_user.id,
-            conversation_id=conversation_id,
-            stream_id=stream_id,
-        ):
-            yield encode_sse_event(event)
-
-    return StreamingResponse(
-        event_generator(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",
-        },
+    return stream_response(
+        service=service,
+        user_id=current_user.id,
+        conversation_id=conversation_id,
+        stream_id=stream_id,
     )
 
 
@@ -139,25 +126,6 @@ async def list_messages(
     )
 
 
-@router.post("/{conversation_id}/messages", response_model=MessageExchangeRead, status_code=201)
-async def create_user_message(
-    conversation_id: UUID,
-    payload: MessageCreate,
-    current_user: Annotated[User, Depends(get_current_user)],
-    session: Annotated[AsyncSession, Depends(get_db_session)],
-) -> MessageExchangeRead:
-    return await ConversationService(session).create_user_message(
-        user_id=current_user.id,
-        conversation_id=conversation_id,
-        content=payload.content,
-        llm_config_id=payload.llm_config_id,
-        parent_message_id=payload.parent_message_id,
-        idempotency_key=payload.idempotency_key,
-        model=payload.model,
-        file_ids=payload.file_ids if payload.file_ids else None,
-    )
-
-
 @router.post("/{conversation_id}/messages/stream")
 async def stream_user_message(
     conversation_id: UUID,
@@ -176,67 +144,11 @@ async def stream_user_message(
         model=payload.model,
         file_ids=payload.file_ids if payload.file_ids else None,
     )
-
-    async def event_generator() -> AsyncIterator[str]:
-        async for event in service.subscribe_stream(
-            user_id=current_user.id,
-            conversation_id=conversation_id,
-            stream_id=stream_id,
-        ):
-            yield encode_sse_event(event)
-
-    return StreamingResponse(
-        event_generator(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",
-        },
-    )
-
-
-@router.post(
-    "/{conversation_id}/messages/{message_id}/regenerate",
-    response_model=MessageRead,
-    status_code=status.HTTP_201_CREATED,
-)
-async def regenerate_assistant(
-    conversation_id: UUID,
-    message_id: UUID,
-    *,
-    payload: MessageRegenerate | None = None,
-    current_user: Annotated[User, Depends(get_current_user)],
-    session: Annotated[AsyncSession, Depends(get_db_session)],
-) -> MessageRead:
-    # 重发 assistant 时，在原 assistant 的 parent 下创建新的 assistant sibling。
-    return await ConversationService(session).regenerate_assistant(
+    return stream_response(
+        service=service,
         user_id=current_user.id,
         conversation_id=conversation_id,
-        message_id=message_id,
-        llm_config_id=payload.llm_config_id if payload else None,
-        idempotency_key=payload.idempotency_key if payload else None,
-        model=payload.model if payload else None,
-    )
-
-
-@router.post(
-    "/{conversation_id}/messages/{message_id}/edit",
-    response_model=MessageExchangeRead,
-    status_code=status.HTTP_201_CREATED,
-)
-async def edit_user_message(
-    conversation_id: UUID,
-    message_id: UUID,
-    payload: MessageEdit,
-    current_user: Annotated[User, Depends(get_current_user)],
-    session: Annotated[AsyncSession, Depends(get_db_session)],
-) -> MessageExchangeRead:
-    # 编辑 user 时创建新的 user sibling，并从新 user 继续生成 assistant。
-    return await ConversationService(session).edit_user_message(
-        user_id=current_user.id,
-        conversation_id=conversation_id,
-        message_id=message_id,
-        payload=payload,
+        stream_id=stream_id,
     )
 
 
@@ -259,22 +171,11 @@ async def stream_regenerate_assistant(
         idempotency_key=payload.idempotency_key if payload else None,
         model=payload.model if payload else None,
     )
-
-    async def event_generator() -> AsyncIterator[str]:
-        async for event in service.subscribe_stream(
-            user_id=current_user.id,
-            conversation_id=conversation_id,
-            stream_id=stream_id,
-        ):
-            yield encode_sse_event(event)
-
-    return StreamingResponse(
-        event_generator(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",
-        },
+    return stream_response(
+        service=service,
+        user_id=current_user.id,
+        conversation_id=conversation_id,
+        stream_id=stream_id,
     )
 
 
@@ -294,26 +195,17 @@ async def stream_edit_user_message(
         message_id=message_id,
         payload=payload,
     )
-
-    async def event_generator() -> AsyncIterator[str]:
-        async for event in service.subscribe_stream(
-            user_id=current_user.id,
-            conversation_id=conversation_id,
-            stream_id=stream_id,
-        ):
-            yield encode_sse_event(event)
-
-    return StreamingResponse(
-        event_generator(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",
-        },
+    return stream_response(
+        service=service,
+        user_id=current_user.id,
+        conversation_id=conversation_id,
+        stream_id=stream_id,
     )
 
 
-@router.get("/{conversation_id}/messages/{message_id}/active-stream", response_model=ActiveStreamRead)
+@router.get(
+    "/{conversation_id}/messages/{message_id}/active-stream", response_model=ActiveStreamRead
+)
 async def get_message_active_stream(
     conversation_id: UUID,
     message_id: UUID,
@@ -336,23 +228,11 @@ async def subscribe_stream_by_id(
     session: Annotated[AsyncSession, Depends(get_db_session)],
 ) -> StreamingResponse:
     service = ConversationService(session)
-
-    async def event_generator() -> AsyncIterator[str]:
-        # 已知 stream_id 时，直接对这条运行实例做 replay + live 订阅。
-        async for event in service.subscribe_stream(
-            user_id=current_user.id,
-            conversation_id=conversation_id,
-            stream_id=stream_id,
-        ):
-            yield encode_sse_event(event)
-
-    return StreamingResponse(
-        event_generator(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",
-        },
+    return stream_response(
+        service=service,
+        user_id=current_user.id,
+        conversation_id=conversation_id,
+        stream_id=stream_id,
     )
 
 
@@ -411,6 +291,32 @@ async def cancel_message_generation(
         user_id=current_user.id,
         conversation_id=conversation_id,
         message_id=message_id,
+    )
+
+
+def stream_response(
+    *,
+    service: ConversationService,
+    user_id: UUID,
+    conversation_id: UUID,
+    stream_id: str,
+) -> StreamingResponse:
+    # 所有 SSE 路由共用同一个响应包装，避免 headers 和订阅逻辑在多个入口漂移。
+    async def event_generator():
+        async for event in service.subscribe_stream(
+            user_id=user_id,
+            conversation_id=conversation_id,
+            stream_id=stream_id,
+        ):
+            yield encode_sse_event(event)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
     )
 
 

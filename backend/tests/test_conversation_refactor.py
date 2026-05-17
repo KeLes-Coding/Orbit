@@ -1,0 +1,389 @@
+import asyncio
+from io import BytesIO
+from types import SimpleNamespace
+from typing import Any, cast
+from uuid import uuid4
+
+import pytest
+from fastapi import HTTPException, UploadFile
+from fastapi.routing import APIRoute
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.api.v1 import conversations as conversations_api
+from app.api.v1 import files as files_api
+from app.models.user import User
+from app.schemas.conversation import MessageEdit
+from app.services.conversation import ConversationService
+from app.services.conversations import runs, stream_run
+
+
+def run(coro: Any) -> Any:
+    return asyncio.run(coro)
+
+
+def make_message(*, role: str, status: str = "completed", parent_message_id=None) -> Any:
+    message_id = uuid4()
+    return SimpleNamespace(
+        id=message_id,
+        conversation_id=uuid4(),
+        sequence_no=1,
+        langgraph_message_id=None,
+        parent_message_id=parent_message_id,
+        active_child_message_id=None,
+        depth=0,
+        source_message_id=None,
+        revision_type="normal",
+        role=role,
+        content="hello" if role == "user" else "",
+        reasoning_content="",
+        content_parts=[],
+        status=status,
+        llm_config_id=uuid4() if role == "assistant" else None,
+        provider="openai" if role == "assistant" else None,
+        model="gpt-test" if role == "assistant" else None,
+        token_usage={},
+        response_metadata={},
+        created_at="2026-05-12T00:00:00Z",
+    )
+
+
+def make_conversation(*, user_id=None, conversation_id=None) -> Any:
+    return SimpleNamespace(
+        id=conversation_id or uuid4(),
+        user_id=user_id or uuid4(),
+        thread_id="thread-test",
+        title="Test",
+        llm_config_id=uuid4(),
+        chat_mode="chat",
+        summary=None,
+        summary_updated_at=None,
+        summary_message_count=0,
+        has_active_run=False,
+        next_message_sequence_no=1,
+        active_leaf_message_id=None,
+        forked_from_conversation_id=None,
+        forked_from_message_id=None,
+        summary_leaf_message_id=None,
+        metadata_={},
+        created_at="2026-05-12T00:00:00Z",
+        updated_at="2026-05-12T00:00:00Z",
+    )
+
+
+class FakeConversations:
+    def __init__(self, conversation: Any) -> None:
+        self.conversation = conversation
+        self.touched = []
+
+    async def get_active(self, *, user_id, conversation_id, for_update=False):
+        if user_id != self.conversation.user_id or conversation_id != self.conversation.id:
+            return None
+        return self.conversation
+
+    async def touch(self, conversation_id):
+        self.touched.append(conversation_id)
+
+    async def recompute_has_active_run(self, conversation_id):
+        self.conversation.has_active_run = False
+        return False
+
+
+class FakeMessages:
+    def __init__(self) -> None:
+        self.created_user: Any = None
+        self.created_assistant: Any = None
+        self.target: Any = None
+        self.parent: Any = None
+        self.idempotent_assistant: Any = None
+        self.failed_message: Any = None
+
+    async def get_by_id(self, *, conversation_id, message_id):
+        if self.target and message_id == self.target.id:
+            return self.target
+        if self.parent and message_id == self.parent.id:
+            return self.parent
+        if self.created_assistant and message_id == self.created_assistant.id:
+            return self.created_assistant
+        return None
+
+    async def get_by_id_for_update(self, *, conversation_id, message_id):
+        return await self.get_by_id(conversation_id=conversation_id, message_id=message_id)
+
+    async def find_user_message_by_idempotency(self, **kwargs):
+        return None
+
+    async def find_assistant_message_by_idempotency(self, **kwargs):
+        return self.idempotent_assistant
+
+    async def create_user_message(self, **kwargs):
+        parent_message = kwargs.get("parent_message")
+        self.created_user = make_message(
+            role="user",
+            parent_message_id=parent_message.id if parent_message else None,
+        )
+        self.created_user.content = kwargs["content"]
+        self.created_user.content_parts = kwargs.get("content_parts") or []
+        self.created_user.source_message_id = kwargs.get("source_message_id")
+        self.created_user.revision_type = kwargs.get("revision_type")
+        return self.created_user
+
+    async def create_assistant_placeholder(self, **kwargs):
+        self.created_assistant = make_message(
+            role="assistant", status="streaming", parent_message_id=kwargs["parent_message"].id
+        )
+        self.created_assistant.conversation_id = kwargs["conversation_id"]
+        self.created_assistant.llm_config_id = kwargs["llm_config_id"]
+        self.created_assistant.provider = kwargs["provider"]
+        self.created_assistant.model = kwargs["model"]
+        self.created_assistant.source_message_id = kwargs.get("source_message_id")
+        self.created_assistant.revision_type = kwargs.get("revision_type")
+        return self.created_assistant
+
+    async def set_conversation_active_leaf(self, *, conversation, message):
+        conversation.active_leaf_message_id = message.id if message else None
+
+    async def get_message_read_state(self, message):
+        return {
+            "sibling_index": 1,
+            "sibling_count": 1,
+            "previous_sibling_id": None,
+            "next_sibling_id": None,
+        }
+
+    async def resolve_active_leaf_from(self, *, conversation_id, message):
+        return message
+
+    async def fail_assistant_message(self, *, message, error):
+        message.status = "failed"
+        message.response_metadata = {"error": error}
+        self.failed_message = message
+        return message
+
+
+class FakeLLMConfigs:
+    async def get_active(self, *, user_id, config_id):
+        return SimpleNamespace(
+            id=config_id,
+            provider="openai",
+            models=["gpt-test"],
+            is_enabled=True,
+        )
+
+
+class FakeSession:
+    def __init__(self) -> None:
+        self.commits = 0
+
+    async def commit(self):
+        self.commits += 1
+
+    async def refresh(self, obj):
+        return None
+
+
+class FakeStreamStore:
+    def __init__(self) -> None:
+        self.events = []
+        self.stream_by_message = {}
+
+    async def create_stream(self, *, stream_id, conversation_id, message_id, user_id):
+        return SimpleNamespace(
+            stream_id=stream_id,
+            conversation_id=conversation_id,
+            message_id=message_id,
+            user_id=user_id,
+        )
+
+    async def append_event(self, stream_id, *, event, data):
+        self.events.append((stream_id, event, data))
+
+    async def get_stream_by_message_id(self, message_id):
+        return self.stream_by_message.get(message_id)
+
+
+def make_service(conversation: Any, messages: FakeMessages) -> tuple[Any, FakeSession]:
+    session = FakeSession()
+    service = cast(Any, ConversationService(cast(Any, session)))
+    service.conversations = FakeConversations(conversation)
+    service.messages = messages
+    service.llm_configs = FakeLLMConfigs()
+    service._spawn_stream_producer = lambda **kwargs: None
+    service._spawn_title_producer = lambda **kwargs: None
+    return service, session
+
+
+def test_non_stream_generation_routes_are_removed():
+    # 生成类写入口只保留 SSE 版本，非流式路由不应再进入 OpenAPI/router。
+    routes = {
+        (next(iter(api_route.methods)), api_route.path)
+        for api_route in (
+            cast(APIRoute, route)
+            for route in conversations_api.router.routes
+            if isinstance(route, APIRoute)
+        )
+    }
+
+    assert ("POST", "/conversations/{conversation_id}/messages") not in routes
+    assert (
+        "POST",
+        "/conversations/{conversation_id}/messages/{message_id}/regenerate",
+    ) not in routes
+    assert ("POST", "/conversations/{conversation_id}/messages/{message_id}/edit") not in routes
+
+
+def test_upload_to_conversation_checks_conversation_ownership_before_binding(monkeypatch):
+    # 上传到已有会话时，必须先过 conversation 归属校验，再进入 FileService 绑定流程。
+    conversation_id = uuid4()
+    user = User(id=uuid4(), email="user@example.com", password_hash="hash")
+    calls = {"checked": False, "uploaded": False}
+
+    class GuardConversationService:
+        def __init__(self, session):
+            pass
+
+        async def get_conversation(self, *, user_id, conversation_id):
+            calls["checked"] = True
+            raise HTTPException(status_code=404, detail="会话不存在")
+
+    class GuardFileService:
+        def __init__(self, session):
+            pass
+
+        async def upload_to_conversation(self, **kwargs):
+            calls["uploaded"] = True
+
+    monkeypatch.setattr(files_api, "ConversationService", GuardConversationService)
+    monkeypatch.setattr(files_api, "FileService", GuardFileService)
+
+    with pytest.raises(HTTPException):
+        run(
+            files_api.upload_conversation_file(
+                conversation_id=conversation_id,
+                file=UploadFile(filename="x.txt", file=BytesIO(b"x")),
+                current_user=user,
+                session=cast(AsyncSession, object()),
+            )
+        )
+
+    assert calls == {"checked": True, "uploaded": False}
+
+
+def test_stream_send_creates_placeholder_and_initial_event(monkeypatch):
+    user_id = uuid4()
+    conversation = make_conversation(user_id=user_id)
+    messages = FakeMessages()
+    service, _ = make_service(conversation, messages)
+    store = FakeStreamStore()
+    monkeypatch.setattr(runs, "conversation_stream_store", store)
+
+    stream_id = run(
+        service.start_stream_user_message(
+            user_id=user_id,
+            conversation_id=conversation.id,
+            content="hello",
+        )
+    )
+
+    assert stream_id == f"stream_{messages.created_assistant.id}"
+    assert conversation.active_leaf_message_id == messages.created_assistant.id
+    assert store.events[0][1] == "message.created"
+    assert store.events[0][2]["user_message"]["id"] == str(messages.created_user.id)
+    assert store.events[0][2]["assistant_message"]["id"] == str(messages.created_assistant.id)
+
+
+def test_stream_edit_with_files_binds_files_and_writes_content_parts(monkeypatch):
+    user_id = uuid4()
+    conversation = make_conversation(user_id=user_id)
+    messages = FakeMessages()
+    messages.target = make_message(role="user")
+    service, _ = make_service(conversation, messages)
+    store = FakeStreamStore()
+    monkeypatch.setattr(runs, "conversation_stream_store", store)
+
+    class FakeFileService:
+        def __init__(self, session):
+            pass
+
+        async def bind_pending_files(self, *, user_id, file_ids, conversation_id):
+            return [SimpleNamespace(id=file_ids[0], original_name="doc.txt")]
+
+        async def wait_for_extraction(self, *, files):
+            return files
+
+        def build_content_parts(self, *, content, files):
+            return [
+                {"type": "text", "text": content},
+                {"type": "file", "file_id": str(files[0].id)},
+            ]
+
+    import app.services.file_service as file_service_module
+
+    monkeypatch.setattr(file_service_module, "FileService", FakeFileService)
+    file_id = uuid4()
+
+    run(
+        service.start_stream_edit_user_message(
+            user_id=user_id,
+            conversation_id=conversation.id,
+            message_id=messages.target.id,
+            payload=MessageEdit(content="edited", file_ids=[file_id]),
+        )
+    )
+
+    assert messages.created_user.source_message_id == messages.target.id
+    assert messages.created_user.revision_type == "edit"
+    assert messages.created_user.content_parts == [
+        {"type": "text", "text": "edited"},
+        {"type": "file", "file_id": str(file_id)},
+    ]
+
+
+def test_regenerate_idempotency_reuses_active_stream(monkeypatch):
+    user_id = uuid4()
+    conversation = make_conversation(user_id=user_id)
+    messages = FakeMessages()
+    messages.parent = make_message(role="user")
+    messages.target = make_message(role="assistant", parent_message_id=messages.parent.id)
+    messages.idempotent_assistant = make_message(
+        role="assistant", status="streaming", parent_message_id=messages.parent.id
+    )
+    service, _ = make_service(conversation, messages)
+    store = FakeStreamStore()
+    store.stream_by_message[messages.idempotent_assistant.id] = SimpleNamespace(
+        stream_id="stream-existing"
+    )
+    monkeypatch.setattr(runs, "conversation_stream_store", store)
+
+    stream_id = run(
+        service.start_stream_regenerate_assistant(
+            user_id=user_id,
+            conversation_id=conversation.id,
+            message_id=messages.target.id,
+            idempotency_key="regen-1",
+        )
+    )
+
+    assert stream_id == "stream-existing"
+    assert messages.created_assistant is None
+
+
+def test_missing_runtime_stream_marks_streaming_assistant_failed(monkeypatch):
+    user_id = uuid4()
+    conversation = make_conversation(user_id=user_id)
+    messages = FakeMessages()
+    messages.target = make_message(role="assistant", status="streaming")
+    service, _ = make_service(conversation, messages)
+    store = FakeStreamStore()
+    monkeypatch.setattr(stream_run, "conversation_stream_store", store)
+
+    with pytest.raises(HTTPException):
+        run(
+            service.get_message_active_stream(
+                user_id=user_id,
+                conversation_id=conversation.id,
+                message_id=messages.target.id,
+            )
+        )
+
+    assert messages.failed_message is messages.target
+    assert messages.target.status == "failed"
