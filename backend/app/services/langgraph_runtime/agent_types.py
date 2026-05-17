@@ -23,7 +23,7 @@ class AgentBudget:
     max_tool_calls: int = 25
     """最大工具调用总次数"""
 
-    max_search_calls_per_round: int = 2
+    max_search_calls_per_round: int = 5
     """单轮最多允许的 websearch 次数"""
 
     timeout_seconds: float = 60.0
