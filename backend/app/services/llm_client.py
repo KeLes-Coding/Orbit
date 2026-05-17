@@ -44,7 +44,7 @@ class LLMClientError(Exception):
 
 class LLMClient:
     # MVP 先通过 LangChain 支持 OpenAI Chat Completions 兼容协议和 Ollama。
-    MAX_TOOL_ROUNDS = 4
+    MAX_TOOL_ROUNDS = 6
 
     def __init__(self, tool_runtime: OrbitToolRuntime | None = None) -> None:
         # 工具运行时独立成一层，后续引入 agent runtime 时可以直接复用同一套工具定义。
@@ -162,6 +162,146 @@ class LLMClient:
                 provider=provider,
                 fallback_provider=config.provider,
                 fallback_model=resolved_model,
+            ):
+                yield chunk
+            return
+
+        try:
+            async for chunk in chat_model.astream(chat_messages):
+                response_metadata = self._normalize_response_metadata(
+                    provider=provider,
+                    response_metadata=getattr(chunk, "response_metadata", None),
+                    fallback_provider=config.provider,
+                    fallback_model=resolved_model,
+                )
+                token_usage = self._extract_token_usage(
+                    provider=provider,
+                    response=chunk,
+                    response_metadata=response_metadata,
+                )
+                content_delta, reasoning_delta = self._split_message_content(chunk)
+                tool_calls = self._extract_stream_tool_calls(chunk)
+                log_llm_object(
+                    phase="stream.chunk",
+                    provider=config.provider,
+                    model=resolved_model,
+                    value=chunk,
+                    extracted={
+                        "content_delta": content_delta,
+                        "reasoning_delta": reasoning_delta,
+                        "tool_calls": tool_calls,
+                        "tool_results": [],
+                        "token_usage": token_usage,
+                        "finish_reason": self._extract_finish_reason(
+                            provider=provider,
+                            response_metadata=response_metadata,
+                        ),
+                    },
+                )
+                yield LLMStreamChunk(
+                    content_delta=content_delta,
+                    reasoning_delta=reasoning_delta,
+                    tool_calls=tool_calls,
+                    tool_results=[],
+                    token_usage=token_usage,
+                    response_metadata=response_metadata,
+                    finish_reason=self._extract_finish_reason(
+                        provider=provider,
+                        response_metadata=response_metadata,
+                    ),
+                )
+        except LLMClientError:
+            raise
+        except Exception as exc:
+            raise LLMClientError(f"模型服务流式请求失败：{exc}") from exc
+
+    async def stream_with_messages(
+        self,
+        *,
+        config: LLMConfig,
+        messages: list[BaseMessage],
+        model: str | None = None,
+        enable_tools: bool = False,
+        system_prompt: str | None = None,
+        tools: list | None = None,
+        tool_runtime=None,
+        max_tool_rounds: int | None = None,
+    ) -> AsyncIterator[LLMStreamChunk]:
+        """与 stream() 复用同一套 provider/chunk 归一化，但接受 LangChain BaseMessage。
+
+        DeepAgent 需要多次 LLM 调用且消息列表在 agent loop 中动态增长，
+        此方法跳过 ORM→LangChain 转换，直接使用调用方提供的 BaseMessage 列表。
+        tools 和 tool_runtime 可选覆盖默认工具集和执行器。
+        """
+        provider = get_provider(config.provider)
+        if provider is None:
+            raise LLMClientError(f"暂不支持的模型供应商：{config.provider}")
+
+        resolved_model = model or (config.models[0] if config.models else "")
+
+        # 构建消息列表，可选前置 system prompt
+        chat_messages: list[BaseMessage] = []
+        if system_prompt:
+            chat_messages.append(SystemMessage(content=system_prompt))
+        chat_messages.extend(messages)
+
+        try:
+            runtime_config = provider.from_model_config(config, model=model)
+            if enable_tools:
+                runtime_config = self._prepare_runtime_config_for_tools(
+                    provider=provider,
+                    runtime_config=runtime_config,
+                )
+            if provider.supports_native_stream(runtime_config) and not enable_tools:
+                async for chunk in provider.stream_chat(config=runtime_config, messages=chat_messages):
+                    response_metadata = self._normalize_response_metadata(
+                        provider=provider,
+                        response_metadata=chunk.response_metadata,
+                        fallback_provider=config.provider,
+                        fallback_model=resolved_model,
+                    )
+                    log_llm_object(
+                        phase="provider.stream.chunk",
+                        provider=config.provider,
+                        model=resolved_model,
+                        value=chunk.raw,
+                        extracted={
+                            "content_delta": chunk.content_delta,
+                            "reasoning_delta": chunk.reasoning_delta,
+                            "tool_calls": chunk.tool_calls,
+                            "tool_results": chunk.tool_results,
+                            "token_usage": chunk.token_usage,
+                            "finish_reason": chunk.finish_reason,
+                        },
+                    )
+                    yield LLMStreamChunk(
+                        content_delta=chunk.content_delta,
+                        reasoning_delta=chunk.reasoning_delta,
+                        tool_calls=chunk.tool_calls,
+                        tool_results=chunk.tool_results,
+                        token_usage=chunk.token_usage,
+                        response_metadata=response_metadata,
+                        finish_reason=chunk.finish_reason,
+                    )
+                return
+
+            chat_model = provider.build_chat_model(runtime_config)
+            if enable_tools:
+                chat_model = self._bind_tools(chat_model, tools)
+        except LLMProviderError as exc:
+            raise LLMClientError(str(exc)) from exc
+        except Exception as exc:
+            raise LLMClientError(f"模型配置初始化失败：{exc}") from exc
+
+        if enable_tools:
+            async for chunk in self._astream_with_tool_loop(
+                model=chat_model,
+                messages=chat_messages,
+                provider=provider,
+                fallback_provider=config.provider,
+                fallback_model=resolved_model,
+                tool_runtime=tool_runtime,
+                max_tool_rounds=max_tool_rounds,
             ):
                 yield chunk
             return
@@ -613,10 +753,11 @@ class LLMClient:
 
         return self._extract_tool_calls(chunk)
 
-    def _bind_tools(self, model: Any) -> Any:
+    def _bind_tools(self, model: Any, tools: list | None = None) -> Any:
         # 仅在 tool 模式下给模型挂工具 schema，避免影响普通 chat 模式的流式行为和返回形状。
         try:
-            return model.bind_tools(self.tool_runtime.get_langchain_tools())
+            resolved = tools if tools is not None else self.tool_runtime.get_langchain_tools()
+            return model.bind_tools(resolved)
         except Exception as exc:
             raise LLMClientError(f"当前模型不支持工具调用：{exc}") from exc
 
@@ -720,12 +861,16 @@ class LLMClient:
         provider: BaseLLMProvider,
         fallback_provider: str,
         fallback_model: str,
+        tool_runtime=None,
+        max_tool_rounds: int | None = None,
     ) -> AsyncIterator[LLMStreamChunk]:
         # 流式工具模式与非流式共用同一套工具执行语义，只是把中间 tool call / tool result 增量继续向外广播。
         runtime_messages = list(messages)
         aggregated_tool_calls: list[dict[str, Any]] = []
+        _tool_rt = tool_runtime or self.tool_runtime
+        tool_round_limit = max_tool_rounds if max_tool_rounds is not None else self.MAX_TOOL_ROUNDS
 
-        for _ in range(self.MAX_TOOL_ROUNDS + 1):
+        for _ in range(tool_round_limit + 1):
             round_tool_calls: list[dict[str, Any]] = []
             saw_any_chunk = False
 
@@ -768,7 +913,7 @@ class LLMClient:
                 )
 
             if round_tool_calls:
-                tool_results = await self.tool_runtime.execute_tool_calls(round_tool_calls)
+                tool_results = await _tool_rt.execute_tool_calls(round_tool_calls)
                 tool_result_payload = [self._tool_result_to_dict(item) for item in tool_results]
                 yield LLMStreamChunk(
                     tool_results=tool_result_payload,

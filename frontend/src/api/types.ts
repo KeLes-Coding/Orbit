@@ -72,6 +72,16 @@ export interface Message {
   token_count?: number
   created_at: string
   updated_at?: string
+  /** Phase 2: structured thought events for agentic_chat mode */
+  thought_events?: ThoughtEventData[]
+}
+
+export interface ThoughtEventData {
+  message_id: string
+  type: 'thought.planning' | 'thought.tool' | 'thought.summary' | 'thought.reason'
+  phase: 'planning' | 'loop' | 'reason'
+  text: string
+  meta?: Record<string, unknown>
 }
 
 export interface ToolCallDelta {
@@ -264,6 +274,10 @@ export type StreamMessageEvent =
         message_id: string
         tool_results: ToolResultDelta[]
       }
+    }
+  | {
+      event: 'message.thought'
+      data: StreamEnvelope & ThoughtEventData
     }
   | {
       event: 'message.completed' | 'message.failed' | 'message.cancelled'

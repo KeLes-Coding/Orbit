@@ -37,7 +37,7 @@ interface OrbitStore {
   activeConversationId: string | null
   pendingConversationLlmConfigId: string | null
   pendingConversationLlmModel: string | null
-  chatMode: 'chat' | 'tool'
+  chatMode: 'chat' | 'agent'
   editingThreadId: string | null
   editingTitle: string
   sidebarCollapsed: boolean
@@ -62,7 +62,7 @@ interface OrbitStore {
   setActiveConversationId: (id: string | null) => void
   setPendingConversationLlmConfigId: (id: string | null) => void
   setPendingConversationLlmModel: (model: string | null) => void
-  setChatMode: (mode: 'chat' | 'tool') => void
+  setChatMode: (mode: 'chat' | 'agent') => void
   setEditingThreadId: (id: string | null) => void
   setEditingTitle: (title: string) => void
   markConversationCompletedOffscreen: (id: string) => void

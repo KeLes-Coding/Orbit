@@ -3,7 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { conversationApi } from '@/api/conversations'
 import { streamManager } from '@/lib/streamManager'
 import { useOrbitStore } from '@/stores/useOrbitStore'
-import type { Conversation, Message, StreamMessageEvent, ToolCallDelta, ToolResultDelta } from '@/api/types'
+import type { Conversation, Message, StreamMessageEvent, ThoughtEventData, ToolCallDelta, ToolResultDelta } from '@/api/types'
 
 interface UseConversationsOptions {
   enableStreamResume?: boolean
@@ -33,6 +33,45 @@ interface StreamMessageSnapshot {
   message: Message
   content: string
   reasoningContent: string
+}
+
+function shouldMergeThoughtEvent(
+  previous: ThoughtEventData | undefined,
+  incoming: ThoughtEventData,
+): boolean {
+  if (!previous) return false
+  if (previous.type !== incoming.type || previous.phase !== incoming.phase) return false
+  if (incoming.type === 'thought.tool') return false
+  if (incoming.type === 'thought.summary') {
+    return previous.meta?.round === incoming.meta?.round
+  }
+  return true
+}
+
+function mergeThoughtEvents(
+  existing: ThoughtEventData[] | undefined,
+  incoming: ThoughtEventData,
+): ThoughtEventData[] {
+  const items = [...(existing || [])]
+  const last = items[items.length - 1]
+  if (!shouldMergeThoughtEvent(last, incoming)) {
+    items.push(incoming)
+    return items
+  }
+  items[items.length - 1] = {
+    ...last,
+    text: `${last.text}${incoming.text}`,
+    meta: incoming.meta ?? last.meta,
+  }
+  return items
+}
+
+function normalizeThoughtEvents(events: ThoughtEventData[] | undefined): ThoughtEventData[] {
+  let merged: ThoughtEventData[] = []
+  for (const event of events || []) {
+    merged = mergeThoughtEvents(merged, event)
+  }
+  return merged
 }
 
 function mergeToolCallDeltas(
@@ -97,6 +136,7 @@ function normalizeMessage(message: Message | null | undefined): NormalizedMessag
     ...message,
     content: message.content || '',
     reasoning_content: message.reasoning_content || '',
+    thought_events: normalizeThoughtEvents(message.thought_events),
   }
 }
 
@@ -225,6 +265,25 @@ function appendMessageToolResult(messages: Message[], messageId: string, toolRes
         ...responseMetadata,
         normalized_tool_results: mergeToolResultDeltas(currentToolResults, toolResults),
       },
+    }
+  })
+  return didUpdate ? nextMessages : messages
+}
+
+function appendMessageThoughtEvent(
+  messages: Message[],
+  messageId: string,
+  event: ThoughtEventData,
+): Message[] {
+  let didUpdate = false
+  const nextMessages = messages.map((message) => {
+    if (message.id !== messageId) return message
+    didUpdate = true
+    const currentThoughtEvents = message.thought_events || []
+    return {
+      ...message,
+      status: 'streaming' as const,
+      thought_events: mergeThoughtEvents(currentThoughtEvents, event),
     }
   })
   return didUpdate ? nextMessages : messages
@@ -503,6 +562,20 @@ export function useConversations(
     }
   }, [])
 
+  const appendStreamSnapshotThoughtEvent = useCallback((messageId: string, event: ThoughtEventData) => {
+    const current = streamMessageSnapshotsRef.current[messageId]
+    if (!current) return
+    const currentThoughtEvents = current.message.thought_events || []
+    streamMessageSnapshotsRef.current[messageId] = {
+      ...current,
+      message: {
+        ...current.message,
+        status: 'streaming' as const,
+        thought_events: mergeThoughtEvents(currentThoughtEvents, event),
+      },
+    }
+  }, [])
+
   const hydrateCachedStreamSnapshots = useCallback(
     (conversationId: string) => {
       queryClient.setQueryData<Message[]>(['messages', conversationId], (old = []) =>
@@ -626,6 +699,14 @@ export function useConversations(
         return nextStreamKey
       }
 
+      if (streamEvent.event === 'message.thought') {
+        appendStreamSnapshotThoughtEvent(streamEvent.data.message_id, streamEvent.data)
+        queryClient.setQueryData<Message[]>(['messages', conversationId], (old = []) =>
+          appendMessageThoughtEvent(old, streamEvent.data.message_id, streamEvent.data),
+        )
+        return nextStreamKey
+      }
+
       if (
         streamEvent.event === 'message.completed' ||
         streamEvent.event === 'message.failed' ||
@@ -659,6 +740,7 @@ export function useConversations(
       appendStreamSnapshotReasoning,
       appendStreamSnapshotToolCalls,
       appendStreamSnapshotToolResults,
+      appendStreamSnapshotThoughtEvent,
       queryClient,
       rememberStreamMessage,
       upsertConversation,
@@ -768,7 +850,7 @@ export function useConversations(
   )
 
   const streamNewConversationMessage = useCallback(
-    async (content: string, llmConfigId: string | null, chatMode: 'chat' | 'tool', model?: string | null, fileIds?: string[]) => {
+    async (content: string, llmConfigId: string | null, chatMode: 'chat' | 'agent', model?: string | null, fileIds?: string[]) => {
       const controller = new AbortController()
       let conversationId: string | null = null
       let streamKey: string | null = null
@@ -791,7 +873,7 @@ export function useConversations(
             chat_mode: chatMode,
             metadata: {},
             idempotency_key: createIdempotencyKey(
-              chatMode === 'tool' ? 'new-tool-chat' : 'new-chat',
+              chatMode === 'agent' ? 'new-agent-chat' : 'new-chat',
             ),
             model: model ?? null,
             file_ids: fileIds?.length ? fileIds : undefined,
@@ -855,7 +937,7 @@ export function useConversations(
     ],
   )
 
-  const sendMessage = useCallback((selectedLlmConfigId?: string | null, selectedModel?: string | null, chatMode?: 'chat' | 'tool', fileIds?: string[]) => {
+  const sendMessage = useCallback((selectedLlmConfigId?: string | null, selectedModel?: string | null, chatMode?: 'chat' | 'agent', fileIds?: string[]) => {
     const content = draft.trim()
     const isCurrentThreadStreaming = activeConversationId
       ? currentBranchIsStreaming || currentBranchHasPendingLocalStream
@@ -1262,7 +1344,7 @@ export function useConversations(
       setPendingConversationLlmConfigId(configId)
       setPendingConversationLlmModel(model ?? null)
     },
-    setChatMode: (mode: 'chat' | 'tool') => {
+    setChatMode: (mode: 'chat' | 'agent') => {
       setChatMode(mode)
     },
   }

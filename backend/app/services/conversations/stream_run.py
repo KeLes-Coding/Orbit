@@ -311,11 +311,11 @@ class ConversationStreamRunService(ConversationBaseService):
             message_id=assistant_message.parent_message_id,
         )
 
-        # 判断执行模式：tool/agent 走旧路径（Phase 2 统一到 LangGraph 内部 agent loop）
+        # 判断执行模式：tool 走旧路径，agent 走 LangGraph agentic_chat，chat 走 LangGraph normal_chat
         effective_chat_mode = (
             getattr(assistant_message, "chat_mode", None) or conversation.chat_mode
         )
-        if effective_chat_mode in {"tool", "agent"}:
+        if effective_chat_mode == "tool":
             await self._produce_stream_legacy(
                 stream_id=stream_id,
                 conversation=conversation,
@@ -334,6 +334,7 @@ class ConversationStreamRunService(ConversationBaseService):
             conversation=conversation,
             llm_config=llm_config,
             history_messages=history_messages,
+            chat_mode=effective_chat_mode,
         )
 
         # 创建流事件适配器，负责将 LangGraph 自定义事件写入 stream_store
@@ -343,18 +344,45 @@ class ConversationStreamRunService(ConversationBaseService):
         )
 
         # 创建 LangGraph runtime 并执行
-        # 提前捕获 model，避免类型检查器认为 assistant_message 在闭包中可能为 None
+        # 提前捕获 model/config，避免类型检查器认为在闭包中可能为 None
         _model = assistant_message.model
+        _llm_config = llm_config
+        _llm_client = self.llm_client
+
+        # agentic_chat 的 LLM 调用闭包：封装 stream_with_messages，
+        # 使 DeepAgent 可多次调用 LLM（planning / agent loop / final）
+        async def _agent_llm_invoke(
+            messages,
+            system_prompt,
+            enable_tools,
+            tools,
+            tool_runtime,
+            max_tool_rounds,
+        ):
+            async for chunk in _llm_client.stream_with_messages(
+                config=_llm_config,
+                messages=messages,
+                model=_model,
+                enable_tools=enable_tools,
+                system_prompt=system_prompt,
+                tools=tools,
+                tool_runtime=tool_runtime,
+                max_tool_rounds=max_tool_rounds,
+            ):
+                yield chunk
+
         runtime = LangGraphChatRuntime(
-            # 通过闭包把 ORM 配置和原始消息上下文传给运行时，避免把密钥等敏感信息
-            # 放进 LangGraph checkpoint state，同时复用现有 LLMClient.stream() 归一化逻辑。
+            # normal_chat 使用：复用现有 LLMClient.stream() 归一化逻辑
             stream_factory=lambda: self.llm_client.stream(
                 config=llm_config,
                 messages=history_messages,
                 summary=conversation.summary,
                 model=_model,
                 enable_tools=False,
-            )
+            ),
+            # agentic_chat 使用：直接操作 LangChain 消息层
+            llm_invoke=_agent_llm_invoke,
+            tool_runtime=self.llm_client.tool_runtime,
         )
         final_state = initial_state.copy()
 
@@ -448,16 +476,20 @@ class ConversationStreamRunService(ConversationBaseService):
             # 处理 LangGraph 执行结果
             error = final_state.get("error")
             accumulated = stream_adapter.get_accumulated_state()
+            persisted_output = self._merge_langgraph_persisted_output(
+                accumulated=accumulated,
+                final_state=final_state,
+            )
 
             if error == "cancelled":
                 # call_model 节点检测到 cancel 信号
                 cancelled_message = await self._cancel_streaming_message(
                     conversation_id=conversation_id,
                     assistant_message=assistant_message,
-                    content=accumulated.get("response_text", ""),
-                    reasoning_content=accumulated.get("reasoning_text", ""),
-                    token_usage=accumulated.get("token_usage", {}),
-                    response_metadata=accumulated.get("response_metadata", {}),
+                    content=persisted_output["response_text"],
+                    reasoning_content=persisted_output["reasoning_text"],
+                    token_usage=persisted_output["token_usage"],
+                    response_metadata=persisted_output["response_metadata"],
                 )
                 await self._finalize_stream_conversation_state(
                     conversation=conversation,
@@ -479,11 +511,11 @@ class ConversationStreamRunService(ConversationBaseService):
                 failed_message = await self._fail_or_partial_streaming_message(
                     conversation_id=conversation_id,
                     assistant_message=assistant_message,
-                    content=accumulated.get("response_text", ""),
-                    reasoning_content=accumulated.get("reasoning_text", ""),
+                    content=persisted_output["response_text"],
+                    reasoning_content=persisted_output["reasoning_text"],
                     error=error,
-                    token_usage=accumulated.get("token_usage", {}),
-                    response_metadata=accumulated.get("response_metadata", {}),
+                    token_usage=persisted_output["token_usage"],
+                    response_metadata=persisted_output["response_metadata"],
                 )
                 await self._finalize_stream_conversation_state(
                     conversation=conversation,
@@ -501,10 +533,10 @@ class ConversationStreamRunService(ConversationBaseService):
             # 正常完成：持久化 assistant message
             assistant_message = await self.messages.complete_assistant_message(
                 message=assistant_message,
-                content=accumulated.get("response_text", ""),
-                reasoning_content=accumulated.get("reasoning_text", ""),
-                token_usage=accumulated.get("token_usage", {}),
-                response_metadata=accumulated.get("response_metadata", {}),
+                content=persisted_output["response_text"],
+                reasoning_content=persisted_output["reasoning_text"],
+                token_usage=persisted_output["token_usage"],
+                response_metadata=persisted_output["response_metadata"],
             )
             await self._finalize_stream_conversation_state(
                 conversation=conversation,
@@ -555,11 +587,11 @@ class ConversationStreamRunService(ConversationBaseService):
         conversation,
         llm_config,
         history_messages: list,
+        chat_mode: str = "chat",
     ) -> ChatState:
         """根据当前请求上下文构建 LangGraph ChatState。
 
-        Phase 1 只把会话标识、模型标识和输入上下文放进 state，不把 API Key 等敏感配置
-        放进去，避免 checkpoint 中出现明文密钥。
+        不把 API Key 等敏感配置放进 state，避免 checkpoint 中出现明文密钥。
         """
         resolved_model = assistant_message.model or (
             llm_config.models[0] if llm_config.models else ""
@@ -581,6 +613,12 @@ class ConversationStreamRunService(ConversationBaseService):
             provider=llm_config.provider,
             model=resolved_model,
             input_messages=input_messages,
+            # Phase 2 新增
+            chat_mode=chat_mode,
+            execution_mode="",
+            thought_events=[],
+            workspace_files=[],
+            # 输出
             response_text="",
             reasoning_text="",
             token_usage={},
@@ -590,6 +628,25 @@ class ConversationStreamRunService(ConversationBaseService):
             },
             error=None,
         )
+
+    @staticmethod
+    def _merge_langgraph_persisted_output(
+        *,
+        accumulated: dict[str, Any],
+        final_state: ChatState,
+    ) -> dict[str, Any]:
+        """合并流式累积态和 graph 最终态，避免只依赖 SSE delta 导致落库为空。"""
+        response_metadata = dict(final_state.get("response_metadata") or {})
+        response_metadata.update(accumulated.get("response_metadata", {}) or {})
+        thought_events = accumulated.get("thought_events") or final_state.get("thought_events", [])
+        if thought_events:
+            response_metadata["thought_events"] = thought_events
+        return {
+            "response_text": accumulated.get("response_text") or final_state.get("response_text", ""),
+            "reasoning_text": accumulated.get("reasoning_text") or final_state.get("reasoning_text", ""),
+            "token_usage": accumulated.get("token_usage") or final_state.get("token_usage", {}),
+            "response_metadata": response_metadata,
+        }
 
     async def _produce_stream_legacy(
         self,

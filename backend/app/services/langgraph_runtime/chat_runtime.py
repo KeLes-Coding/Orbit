@@ -1,85 +1,125 @@
-"""LangGraph Chat Runtime —— 最小 ChatGraph 构建与执行。
+"""LangGraph Chat Runtime —— ChatGraph 构建与执行。
 
-Phase 1 只包含 3 个线性节点：
-  prepare_context → call_model → finalize_message
+Phase 2 将 Phase 1 的 3 节点线性 graph 扩展为带分支的 5 节点结构：
 
-这一版刻意复用现有 `LLMClient.stream()` 的标准化输出，而不是重新直连 provider。
-这样 LangGraph 路径和旧聊天链路仍共享同一套 chunk 归一化逻辑，避免 Phase 1
-就出现 provider 行为分叉。
+  prepare_context → route_execution → normal_chat ──┐
+                                    → agentic_chat ─┤
+                                                  finalize_message → END
+
+normal_chat 沿用 Phase 1 普通聊天逻辑，
+agentic_chat 通过 DeepAgent 实现 LLM 驱动的搜索/研究工作流。
 """
 
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Callable
-from typing import cast
+from typing import Any, cast
 
-from langchain_core.runnables.config import RunnableConfig
+from langchain_core.messages import BaseMessage, HumanMessage
+from langchain_core.tools import StructuredTool
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.config import get_stream_writer
 from langgraph.graph import END, START, StateGraph
 
+from app.services.langgraph_runtime.agent_types import AgentBudget, AgentEvent
+from app.services.langgraph_runtime.agent_workspace import AgentWorkspace
+from app.services.langgraph_runtime.deep_agent import DeepAgent, LlmInvoker
 from app.services.langgraph_runtime.state import ChatState
 from app.services.langgraph_runtime.stream_adapter import StreamAdapter
 from app.services.llm_client import LLMClientError, LLMStreamChunk
 from app.services.streaming import conversation_stream_store
+from app.services.tools import OrbitToolRuntime
 
 
 class LangGraphChatRuntime:
     """LangGraph Chat 运行时。
 
     负责：
-    - 构建并编译最小 ChatGraph
+    - 构建并编译包含 normal_chat / agentic_chat 双分支的 ChatGraph
     - 提供 run_stream() 作为统一的流式执行入口
-    - 通过注入的 stream_factory 复用现有 LLMClient 流式归一化逻辑
+    - normal_chat: 通过 stream_factory 复用 LLMClient 流式归一化
+    - agentic_chat: 通过 llm_invoke 复用 LLMClient 的 tool-calling 能力
 
-    注意：
-    - Phase 1 仍然只做 Chat，不做 tool loop / agent routing
-    - 为了避免把密钥等敏感信息写入 checkpoint，模型调用参数不放入 ChatState，
-      而是通过运行时注入的 stream_factory 闭包传入
+    Phase 2 中 agentic_chat 仅在 llm_invoke 非空时可用。
     """
 
     def __init__(
         self,
         *,
         stream_factory: Callable[[], AsyncIterator[LLMStreamChunk]],
+        llm_invoke: LlmInvoker | None = None,
+        tool_runtime: OrbitToolRuntime | None = None,
     ) -> None:
         self._stream_factory = stream_factory
-        # Phase 1 先使用内存级 checkpointer，为后续 resume 预留 thread_id 语义。
+        self._llm_invoke = llm_invoke
+        self._tool_runtime = tool_runtime or OrbitToolRuntime()
         self._checkpointer = MemorySaver()
         self._graph = self._build_graph()
 
+    # ── Graph 构建 ─────────────────────────────────────────────────
+
     def _build_graph(self):
-        """构建最小 ChatGraph：prepare_context → call_model → finalize_message。"""
+        """构建 Phase 2 ChatGraph。
+
+        prepare_context → route_execution
+                            ├─ normal_chat ──┐
+                            └─ agentic_chat ─┘
+                                        finalize_message → END
+        """
         builder = StateGraph(ChatState)
 
         builder.add_node("prepare_context", self._prepare_context)
-        builder.add_node("call_model", self._call_model)
+        builder.add_node("route_execution", self._route_execution)
+        builder.add_node("normal_chat", self._normal_chat)
+        builder.add_node("agentic_chat", self._agentic_chat)
         builder.add_node("finalize_message", self._finalize_message)
 
         builder.add_edge(START, "prepare_context")
-        builder.add_edge("prepare_context", "call_model")
-        builder.add_edge("call_model", "finalize_message")
+        builder.add_edge("prepare_context", "route_execution")
+
+        builder.add_conditional_edges(
+            "route_execution",
+            self._route_decision,
+            {
+                "normal_chat": "normal_chat",
+                "agentic_chat": "agentic_chat",
+            },
+        )
+
+        builder.add_edge("normal_chat", "finalize_message")
+        builder.add_edge("agentic_chat", "finalize_message")
         builder.add_edge("finalize_message", END)
 
         return builder.compile(checkpointer=self._checkpointer)
 
-    def _prepare_context(self, state: ChatState) -> dict:
-        """准备上下文节点。
+    # ── 节点：prepare_context ─────────────────────────────────────
 
-        Phase 1 中输入上下文已由外层服务构造完毕，这里保留节点边界，后续可在此接入
-        memory compression、summary 注入或 execution routing。
-        """
+    def _prepare_context(self, state: ChatState) -> dict:
+        """准备上下文节点。Phase 2 中保持轻量，后续可接入 memory compression。"""
         return {}
 
-    async def _call_model(self, state: ChatState) -> dict:
-        """调用模型节点。
+    # ── 节点：route_execution ─────────────────────────────────────
 
-        这里不再重新解析 provider chunk，而是直接消费 `LLMClient.stream()` 已经标准化后的
-        `LLMStreamChunk`。这样可以保证：
+    def _route_execution(self, state: ChatState) -> dict:
+        """根据 chat_mode 决定执行分支。
 
-        - content / reasoning 拆分规则一致
-        - token_usage / finish_reason 归一化规则一致
-        - LangGraph chat 路径与 legacy chat 路径行为尽量一致
+        chat_mode="agent" → agentic_chat，否则 → normal_chat。
+        """
+        chat_mode = state.get("chat_mode", "chat")
+        execution_mode = "agentic_chat" if chat_mode == "agent" else "normal_chat"
+        return {"execution_mode": execution_mode}
+
+    @staticmethod
+    def _route_decision(state: ChatState) -> str:
+        """条件边决策函数。"""
+        return state.get("execution_mode", "normal_chat")
+
+    # ── 节点：normal_chat ─────────────────────────────────────────
+
+    async def _normal_chat(self, state: ChatState) -> dict:
+        """普通聊天节点（原 call_model）。
+
+        复用 LLMClient.stream() 的标准化输出，与 Phase 1 行为一致。
         """
         writer = get_stream_writer()
         stream_id = state.get("stream_id", "")
@@ -91,7 +131,6 @@ class LangGraphChatRuntime:
 
         try:
             async for chunk in self._stream_factory():
-                # cancel 仍然沿用现有 stream_store 信号，不改变上层取消契约。
                 if stream_id and await conversation_stream_store.is_cancelled(stream_id):
                     return {
                         "response_text": "".join(accumulated_content),
@@ -155,13 +194,93 @@ class LangGraphChatRuntime:
             "error": None,
         }
 
-    async def _finalize_message(self, state: ChatState) -> dict:
-        """收口消息节点。
+    # ── 节点：agentic_chat ────────────────────────────────────────
 
-        Phase 1 中数据库写入和 completed/failed 事件仍由外层 ConversationService 收口。
-        这里保留 finalize 节点边界，后续可在此接入 thought 聚合、artifact 汇总等逻辑。
+    async def _agentic_chat(self, state: ChatState) -> dict:
+        """Agent 执行节点。
+
+        创建 DeepAgent 并执行 LLM 驱动的 agent loop，
+        将 AgentResult 映射回 ChatState。
         """
+        if self._llm_invoke is None:
+            return {
+                "error": "agentic_chat 不可用：缺少 llm_invoke",
+            }
+
+        writer = get_stream_writer()
+        stream_id = state.get("stream_id", "")
+
+        def on_event(event: dict[str, Any]) -> None:
+            writer(dict(event))
+
+        # 获取 agent 专用工具（websearch + webfetch）
+        external_tools = self._build_agent_tools()
+
+        # 创建隔离 workspace
+        workspace = AgentWorkspace(run_id=state.get("assistant_message_id", "default"))
+
+        # 创建 DeepAgent
+        agent = DeepAgent(
+            external_tools=external_tools,
+            tool_runtime=self._tool_runtime,
+            llm_invoke=self._llm_invoke,
+            budget=AgentBudget(
+                max_rounds=3,
+                max_tool_calls=6,
+                max_search_calls_per_round=2,
+                timeout_seconds=120,
+            ),
+            on_event=on_event,
+            workspace=workspace,
+        )
+
+        # 提取用户查询（最后一条 HumanMessage）
+        user_query = ""
+        for msg in reversed(state.get("input_messages", [])):
+            if isinstance(msg, HumanMessage):
+                user_query = str(msg.content)
+                break
+
+        if not user_query:
+            return {"error": "无法从上下文中提取用户问题"}
+
+        # 执行 agent
+        result = await agent.run(
+            user_query=user_query,
+            history_messages=state.get("input_messages", []),
+        )
+
+        # 将 AgentResult 映射回 ChatState
+        return_updates: dict[str, Any] = {
+            "response_text": result.final_content,
+            "reasoning_text": result.reasoning_text,
+            "thought_events": result.thought_events,
+            "workspace_files": result.workspace_files,
+        }
+
+        if result.token_usage:
+            return_updates["token_usage"] = result.token_usage
+        if result.error:
+            return_updates["error"] = result.error
+
+        return return_updates
+
+    def _build_agent_tools(self) -> list[StructuredTool]:
+        """组装 agentic_chat 的工具集。
+
+        后续扩展工具时只需扩展此方法返回的列表。
+        """
+        all_tools = self._tool_runtime.get_langchain_tools()
+        # 只保留 websearch 和 webfetch（排除 getweather 等不相关工具）
+        return [t for t in all_tools if t.name in {"websearch", "webfetch"}]
+
+    # ── 节点：finalize_message ────────────────────────────────────
+
+    async def _finalize_message(self, state: ChatState) -> dict:
+        """收口消息节点。Phase 2 中 thought_events 和 workspace_files 已由 agentic_chat 写入 state。"""
         return {}
+
+    # ── 执行入口 ──────────────────────────────────────────────────
 
     async def run_stream(
         self,
@@ -170,6 +289,8 @@ class LangGraphChatRuntime:
         stream_adapter: StreamAdapter,
     ) -> ChatState:
         """执行 graph 并通过 stream_adapter 处理自定义流事件。"""
+        from langchain_core.runnables.config import RunnableConfig
+
         config: RunnableConfig = {"configurable": {"thread_id": state["thread_id"]}}
 
         async for event in self._graph.astream(

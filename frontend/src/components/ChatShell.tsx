@@ -63,7 +63,7 @@ export function ChatShell() {
   const slashItems = useMemo(() => {
     const items: SlashItem[] = [
       { id: "chat", label: "Chat", detail: "Chat mode", group: "mode" },
-      { id: "tool", label: "Agent", detail: "Agent mode", group: "mode" },
+      { id: "agent", label: "Agent", detail: "Agent mode (DeepAgent)", group: "mode" },
     ]
     for (const config of configs) {
       for (const model of config.models) {
@@ -166,7 +166,7 @@ export function ChatShell() {
   const handleSlashSelect = useCallback(
     (item: SlashItem) => {
       if (item.group === "mode") {
-        if (item.id === "chat" || item.id === "tool") setChatMode(item.id)
+        if (item.id === "chat" || item.id === "agent") setChatMode(item.id)
       } else {
         const [configId, model] = item.id.split(":")
         selectModel(configId, model)

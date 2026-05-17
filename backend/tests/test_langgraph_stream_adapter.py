@@ -136,3 +136,4 @@ def test_get_accumulated_state_defaults():
     assert state["reasoning_text"] == ""
     assert state["token_usage"] == {}
     assert state["response_metadata"] == {}
+    assert state["thought_events"] == []

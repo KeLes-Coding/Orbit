@@ -70,6 +70,15 @@ class OrbitToolRuntime:
         # 给 LangChain/模型绑定工具 schema 时直接复用这一份定义。
         return list(self._tool_specs)
 
+    def register_tools(self, tools: list[StructuredTool]) -> None:
+        """注册额外的工具（如 workspace 工具），扩展 tool_map。
+
+        DeepAgent 使用此方法注入 workspace 工具到运行时。
+        """
+        for t in tools:
+            self._tool_map[t.name] = t
+            self._tool_specs.append(t)
+
     async def execute_tool_calls(self, tool_calls: list[dict[str, Any]]) -> list[ToolExecutionResult]:
         # tool_calls 来自模型输出，先做参数解析，再按名字分发到具体工具。
         results: list[ToolExecutionResult] = []

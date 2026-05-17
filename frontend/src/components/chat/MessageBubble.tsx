@@ -3,7 +3,7 @@ import type { ReactNode } from "react"
 import { Copy, GitFork, Pencil, RotateCcw, User, Brain, Wrench, FileCheck } from "lucide-react"
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
-import type { Message, ToolCallDelta, ToolResultDelta } from "@/api/types"
+import type { Message, ThoughtEventData, ToolCallDelta, ToolResultDelta } from "@/api/types"
 import { useMessageEdit } from "@/hooks/useMessageEdit"
 import { TypingIndicator } from "./TypingIndicator"
 import { TimelinePhase } from "./TimelinePhase"
@@ -137,7 +137,12 @@ export const MessageBubble = memo(function MessageBubble({
     onRegenerate,
   })
 
-  const hasAgentPhases = hasReasoning || toolCalls.length > 0 || toolResults.length > 0
+  const thoughtEvents = useMemo<ThoughtEventData[]>(
+    () => message.thought_events || [],
+    [message.thought_events],
+  )
+  const hasThoughtEvents = thoughtEvents.length > 0
+  const hasAgentPhases = hasThoughtEvents || hasReasoning || toolCalls.length > 0 || toolResults.length > 0
   const [thoughtOpen, setThoughtOpen] = useState(false)
   const [expandedTools, setExpandedTools] = useState<Set<string>>(new Set())
 
@@ -152,12 +157,12 @@ export const MessageBubble = memo(function MessageBubble({
 
   // Auto-open thought block during streaming before content arrives; auto-close once content is ready.
   useEffect(() => {
-    if (isStreaming && hasReasoning && !hasContent) {
+    if (isStreaming && hasAgentPhases && !hasContent) {
       setThoughtOpen(true)
     } else if (hasContent) {
       setThoughtOpen(false)
     }
-  }, [hasContent, hasReasoning, isStreaming])
+  }, [hasContent, hasAgentPhases, isStreaming])
 
   /* Copy message content to clipboard */
   const handleCopy = () => {
@@ -296,17 +301,77 @@ export const MessageBubble = memo(function MessageBubble({
               </button>
               {thoughtOpen && (
                 <div className="thought-body">
-                  {hasReasoning && (
-                    <TimelinePhase
-                      icon={<Brain className="h-3 w-3" />}
-                      label="Thinking"
-                      isLast={toolCalls.length === 0 && toolResults.length === 0}
-                    >
-                      {message.reasoning_content}
-                    </TimelinePhase>
-                  )}
+                  {/* Phase 2 structured thought events */}
+                  {hasThoughtEvents ? (
+                    thoughtEvents.map((event, index) => {
+                      const isLast = index === thoughtEvents.length - 1
+                      if (event.type === "thought.planning") {
+                        return (
+                          <TimelinePhase
+                            key={index}
+                            icon={<Brain className="h-3 w-3" />}
+                            label="计划"
+                            isLast={isLast}
+                          >
+                            <p className="text-sm text-muted-foreground">{event.text}</p>
+                          </TimelinePhase>
+                        )
+                      }
+                      if (event.type === "thought.tool") {
+                        return (
+                          <TimelinePhase
+                            key={index}
+                            icon={<Wrench className="h-3 w-3" />}
+                            label="工具调用"
+                            detail={event.meta?.tool as string | undefined}
+                            isLast={isLast}
+                          >
+                            <p className="text-sm text-muted-foreground">{event.text}</p>
+                          </TimelinePhase>
+                        )
+                      }
+                      if (event.type === "thought.summary") {
+                        return (
+                          <TimelinePhase
+                            key={index}
+                            icon={<FileCheck className="h-3 w-3" />}
+                            label="阶段总结"
+                            isLast={isLast}
+                          >
+                            <p className="text-sm text-muted-foreground">{event.text}</p>
+                          </TimelinePhase>
+                        )
+                      }
+                      if (event.type === "thought.reason") {
+                        return (
+                          <TimelinePhase
+                            key={index}
+                            icon={<Brain className="h-3 w-3" />}
+                            label="思考"
+                            isLast={isLast}
+                          >
+                            <p className="text-sm text-muted-foreground whitespace-pre-wrap">
+                              {event.text}
+                            </p>
+                          </TimelinePhase>
+                        )
+                      }
+                      return null
+                    })
+                  ) : (
+                    <>
+                      {/* Legacy: reasoning + tool calls + tool results */}
+                      {hasReasoning && (
+                        <TimelinePhase
+                          icon={<Brain className="h-3 w-3" />}
+                          label="Thinking"
+                          isLast={toolCalls.length === 0 && toolResults.length === 0}
+                        >
+                          {message.reasoning_content}
+                        </TimelinePhase>
+                      )}
 
-                  {toolCalls.map((tc, i) => {
+                      {toolCalls.map((tc, i) => {
                     const isLast = i === toolCalls.length - 1 && toolResults.length === 0
                     const key = tc.id || tc.name || `tc-${i}`
                     const open = expandedTools.has(key)
@@ -419,12 +484,14 @@ export const MessageBubble = memo(function MessageBubble({
                       </TimelinePhase>
                     )
                   })}
+                    </>
+                  )}
                 </div>
               )}
             </div>
           )}
 
-          {isStreaming && !hasContent && !hasReasoning && (
+          {isStreaming && !hasContent && !hasAgentPhases && (
             <TypingIndicator />
           )}
 

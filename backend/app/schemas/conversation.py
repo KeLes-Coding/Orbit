@@ -122,6 +122,7 @@ class MessageRead(BaseModel):
     chat_mode: str | None = None
     token_usage: dict
     response_metadata: dict
+    thought_events: list[dict] = Field(default_factory=list)
     created_at: datetime
     sibling_index: int = 1
     sibling_count: int = 1

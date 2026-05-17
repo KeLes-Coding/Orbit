@@ -593,7 +593,7 @@ def test_produce_stream_chat_mode_routes_to_langgraph_runtime(monkeypatch):
         )
 
     class FakeRuntime:
-        def __init__(self, *, stream_factory):
+        def __init__(self, *, stream_factory, llm_invoke=None, tool_runtime=None):
             self._stream_factory = stream_factory
 
         async def run_stream(self, *, state, stream_adapter):
@@ -632,9 +632,18 @@ def test_produce_stream_chat_mode_routes_to_langgraph_runtime(monkeypatch):
                 "error": None,
             }
 
-    service.llm_client = SimpleNamespace(stream=fake_stream)
+    service.llm_client = SimpleNamespace(
+        stream=fake_stream,
+        tool_runtime=SimpleNamespace(
+            get_langchain_tools=lambda: [],
+            register_tools=lambda tools: None,
+        ),
+    )
     monkeypatch.setattr(stream_run, "conversation_stream_store", store)
     monkeypatch.setattr(stream_run, "LangGraphChatRuntime", FakeRuntime)
+    # 同时 patch stream_adapter 的 stream_store，避免 emit_custom_event 调用真实 store
+    from app.services.langgraph_runtime import stream_adapter as sa_mod
+    monkeypatch.setattr(sa_mod, "conversation_stream_store", store)
 
     run(service._produce_stream(stream_id="stream-chat", conversation_id=conversation.id))
 

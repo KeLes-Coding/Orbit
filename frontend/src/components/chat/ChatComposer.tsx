@@ -19,8 +19,8 @@ interface ChatComposerProps {
   onRemoveFile?: (index: number) => void
   isUploading?: boolean
   showVisionHint?: boolean
-  chatMode?: 'chat' | 'tool'
-  onChatModeChange?: (mode: 'chat' | 'tool') => void
+  chatMode?: 'chat' | 'agent'
+  onChatModeChange?: (mode: 'chat' | 'agent') => void
   slashItems?: SlashItem[]
   onSlashSelect?: (item: SlashItem) => void
 }
@@ -332,8 +332,8 @@ export function ChatComposer({
             </button>
             <button
               type="button"
-              className={`composer-mode-pill${chatMode === 'tool' ? ' active' : ''}`}
-              onClick={() => onChatModeChange('tool')}
+              className={`composer-mode-pill${chatMode === 'agent' ? ' active' : ''}`}
+              onClick={() => onChatModeChange('agent')}
             >
               <Bot className="h-4 w-4" />
               Agent
