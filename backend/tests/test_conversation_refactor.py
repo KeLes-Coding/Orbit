@@ -105,6 +105,8 @@ class FakeMessages:
             return self.target
         if self.parent and message_id == self.parent.id:
             return self.parent
+        if self.created_user and message_id == self.created_user.id:
+            return self.created_user
         if self.created_assistant and message_id == self.created_assistant.id:
             return self.created_assistant
         return None
@@ -351,6 +353,67 @@ def test_stream_send_creates_placeholder_and_initial_event(monkeypatch):
     assert store.events[0][1] == "message.created"
     assert store.events[0][2]["user_message"]["id"] == str(messages.created_user.id)
     assert store.events[0][2]["assistant_message"]["id"] == str(messages.created_assistant.id)
+
+
+def test_to_stream_event_refreshes_message_created_snapshot_state():
+    user_id = uuid4()
+    conversation = make_conversation(user_id=user_id)
+    messages = FakeMessages()
+    service, _ = make_service(conversation, messages)
+
+    messages.created_user = make_message(role="user")
+    messages.created_user.conversation_id = conversation.id
+    messages.created_assistant = make_message(
+        role="assistant",
+        status="streaming",
+        parent_message_id=messages.created_user.id,
+    )
+    messages.created_assistant.conversation_id = conversation.id
+
+    async def fake_get_message_read_state(message):
+        if message.id == messages.created_assistant.id:
+            return {
+                "thought_events": [{"type": "thought.reason", "phase": "analysis", "text": "live"}],
+                "sibling_index": 1,
+                "sibling_count": 2,
+                "previous_sibling_id": None,
+                "next_sibling_id": uuid4(),
+            }
+        return {
+            "thought_events": [],
+            "sibling_index": 1,
+            "sibling_count": 1,
+            "previous_sibling_id": None,
+            "next_sibling_id": None,
+        }
+
+    messages.get_message_read_state = fake_get_message_read_state
+
+    record = stream_run.StreamEventRecord(
+        stream_id="stream-test",
+        seq=1,
+        event="message.created",
+        data={
+            "user_message": {
+                "id": str(messages.created_user.id),
+                "conversation_id": str(conversation.id),
+                "sibling_count": 1,
+            },
+            "assistant_message": {
+                "id": str(messages.created_assistant.id),
+                "conversation_id": str(conversation.id),
+                "sibling_count": 1,
+                "thought_events": [],
+            },
+        },
+    )
+
+    event = run(service._to_stream_event(record))
+
+    assert event.data["assistant_message"]["sibling_count"] == 2
+    assert event.data["assistant_message"]["thought_events"] == [
+        {"type": "thought.reason", "phase": "analysis", "text": "live"}
+    ]
 
 
 def test_stream_edit_with_files_binds_files_and_writes_content_parts(monkeypatch):

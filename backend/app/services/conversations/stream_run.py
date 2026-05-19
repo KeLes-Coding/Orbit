@@ -38,7 +38,7 @@ class ConversationStreamRunService(ConversationBaseService):
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="流不存在或已过期")
 
         async for record in conversation_stream_store.subscribe(stream_id):
-            yield self._to_stream_event(record)
+            yield await self._to_stream_event(record)
 
     async def get_message_active_stream(
         self,
@@ -954,7 +954,7 @@ class ConversationStreamRunService(ConversationBaseService):
             has_active_run=has_active_run,
         )
 
-    def _to_stream_event(self, record: StreamEventRecord) -> ConversationStreamEvent:
+    async def _to_stream_event(self, record: StreamEventRecord) -> ConversationStreamEvent:
         # 对外统一补齐 stream_id / seq / event_id；seq 仅用于调试和未来事件日志后端。
         payload = {
             "stream_id": record.stream_id,
@@ -962,11 +962,40 @@ class ConversationStreamRunService(ConversationBaseService):
             "event_id": record.event_id,
             **record.data,
         }
+        if record.event == "message.created":
+            payload = await self._refresh_created_event_payload(payload)
         return ConversationStreamEvent(
             event=record.event,
             data=payload,
             event_id=record.event_id,
         )
+
+    async def _refresh_created_event_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
+        # message.created 会被 replay 给后来恢复的客户端；其中 sibling 导航等字段是派生态，
+        # 不能长期信任创建当时序列化出来的快照，需要在发送前按数据库当前状态刷新。
+        refreshed = dict(payload)
+        for field in ("user_message", "assistant_message"):
+            raw_message = refreshed.get(field)
+            if not isinstance(raw_message, dict):
+                continue
+
+            raw_id = raw_message.get("id")
+            if not isinstance(raw_id, str):
+                continue
+
+            try:
+                message_id = UUID(raw_id)
+            except ValueError:
+                continue
+
+            message = await self.messages.get_by_id(
+                conversation_id=UUID(str(raw_message["conversation_id"])),
+                message_id=message_id,
+            )
+            if message is None:
+                continue
+            refreshed[field] = (await self._message_read(message)).model_dump(mode="json")
+        return refreshed
 
     async def _cancel_streaming_message(
         self,

@@ -35,6 +35,10 @@ interface StreamMessageSnapshot {
   reasoningContent: string
 }
 
+function areJsonValuesEqual(left: unknown, right: unknown): boolean {
+  return JSON.stringify(left ?? null) === JSON.stringify(right ?? null)
+}
+
 function shouldMergeThoughtEvent(
   previous: ThoughtEventData | undefined,
   incoming: ThoughtEventData,
@@ -310,14 +314,20 @@ function hydrateStreamSnapshots(
     if (!snapshot) return message
     const nextMessage = {
       ...message,
-      ...snapshot.message,
       content: snapshot.content,
       reasoning_content: snapshot.reasoningContent,
+      status: snapshot.message.status,
+      token_usage: snapshot.message.token_usage,
+      response_metadata: snapshot.message.response_metadata,
+      thought_events: snapshot.message.thought_events,
     }
     if (
       nextMessage.content === message.content &&
       nextMessage.reasoning_content === message.reasoning_content &&
-      nextMessage.status === message.status
+      nextMessage.status === message.status &&
+      areJsonValuesEqual(nextMessage.token_usage, message.token_usage) &&
+      areJsonValuesEqual(nextMessage.response_metadata, message.response_metadata) &&
+      areJsonValuesEqual(nextMessage.thought_events, message.thought_events)
     ) {
       return message
     }
