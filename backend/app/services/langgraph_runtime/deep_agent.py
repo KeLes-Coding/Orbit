@@ -1,23 +1,21 @@
-"""DeepAgent —— LLM 驱动的 agent harness。
+"""DeepAgent 执行桥。
 
-DeepAgent 是 Phase 2 的核心执行引擎，负责：
-1. Planning: 调 LLM 生成执行计划
-2. Tool-calling loop: LLM 自主决定调用哪些工具，执行并总结结果
-3. Final generation: LLM 生成 reasoning + 最终回答
-
-预算控制（max rounds / max tool calls / timeout）是硬护栏，
-执行流程由 LLM 自行决策，不预设搜索→抓取→总结的固定流水线。
+本模块不再被视为 Orbit 的长期 agent 主系统，而是：
+1. 兼容当前本地执行器
+2. 为后续官方 DeepAgents 接入保留桥接入口
+3. 统一 Orbit thought / delta / result 的收口
 """
 
 from __future__ import annotations
 
 import asyncio
+import importlib.util
 from typing import Any, AsyncIterator, Callable, cast
 
 from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 from langchain_core.tools import StructuredTool, tool
 
-from app.services.langgraph_runtime.agent_types import AgentBudget, AgentEvent, AgentResult
+from app.services.langgraph_runtime.agent_types import AgentBudget, AgentEvent, AgentExecutionResult, AgentResult
 from app.services.langgraph_runtime.agent_workspace import AgentWorkspace
 from app.services.llm_client import LLMStreamChunk
 from app.services.tools import OrbitToolRuntime
@@ -41,7 +39,7 @@ _LOOP_SUMMARY_PROMPT = (
 
 
 class DeepAgent:
-    """LLM 驱动的 agent harness。
+    """当前本地执行器。
 
     通过 tool calling 让 LLM 自主决策执行步骤，预算控制防止失控。
     on_event 回调解耦事件消费（SSE / log / test），workspace 提供隔离文件存储。
@@ -59,6 +57,7 @@ class DeepAgent:
         budget: AgentBudget | None = None,
         on_event: AgentEventHandler | None = None,
         workspace: AgentWorkspace | None = None,
+        system_prompt_prefix: str = "",
     ) -> None:
         self._external_tools = external_tools
         self._tool_runtime = tool_runtime
@@ -66,6 +65,7 @@ class DeepAgent:
         self._budget = budget or AgentBudget()
         self._on_event_raw = on_event or (lambda _: None)
         self._workspace = workspace or AgentWorkspace(run_id="default")
+        self._system_prompt_prefix = system_prompt_prefix.strip()
 
         # 每轮 run() 重置
         self._thought_events: list[dict[str, Any]] = []
@@ -112,6 +112,8 @@ class DeepAgent:
     ) -> AgentResult:
         # 准备工具集：外部工具 + workspace 工具，注册到 runtime
         ws_tools = self._build_workspace_tools()
+        # workspace 工具属于“本次 agent 执行的局部能力”，
+        # 这里只把它们注入到当前 runtime 使用的工具运行时中。
         self._tool_runtime.register_tools(ws_tools)
         all_tools = list(self._external_tools) + ws_tools
 
@@ -413,12 +415,6 @@ class DeepAgent:
                     self._merge_token_usage(chunk.token_usage)
                 if chunk.content_delta:
                     parts.append(chunk.content_delta)
-                    self._emit(
-                        "thought.summary",
-                        "loop",
-                        chunk.content_delta,
-                        {"round": tool_round},
-                    )
             return "".join(parts).strip()
         except Exception:
             return ""
@@ -452,12 +448,13 @@ class DeepAgent:
             f"\n\n执行预算："
             f"\n- 最多 {self._budget.max_rounds} 轮工具循环"
             f"\n- 最多 {self._budget.max_tool_calls} 次工具调用"
-            f"\n- 单轮最多 {self._budget.max_search_calls_per_round} 次工具调用"
+            f"\n- 单轮最多 {self._budget.max_search_calls_per_round} 次 websearch"
+            f"\n- 总超时 {int(self._budget.timeout_seconds)} 秒"
             f"\n\n用户问题：{user_query}"
         )
 
     def _build_agent_system_prompt(self) -> str:
-        return (
+        prompt = (
             "你是一个具备搜索和研究能力的 AI 助手。"
             "你可以使用 websearch 搜索信息，使用 webfetch 抓取网页内容。"
             "\n\n重要规则："
@@ -468,6 +465,9 @@ class DeepAgent:
             "\n5. 如果搜索结果已经足够回答问题，就不要继续做多余搜索"
             "\n6. 工具调用要节制，优先选择最相关的来源"
         )
+        if self._system_prompt_prefix:
+            return f"{self._system_prompt_prefix}\n\n{prompt}"
+        return prompt
 
     def _merge_token_usage(self, usage: dict[str, Any]) -> None:
         for key, value in usage.items():
@@ -523,5 +523,60 @@ class DeepAgent:
             thought_events=self._compact_thought_events(),
             workspace_files=self._workspace.get_file_index(),
             token_usage=dict(self._token_usage),
+            response_metadata={"execution_backend": "orbit_legacy_deep_agent"},
             error=self._error,
         )
+
+
+class DeepAgentExecutionBridge:
+    """统一的 DeepAgent 执行桥。
+
+    当前优先接当前本地执行器；未来若官方 `deepagents` 可用且当前 provider/runtime
+    能无损映射，再在此处切换到官方执行后端。
+    """
+
+    def __init__(
+        self,
+        *,
+        external_tools: list[StructuredTool],
+        tool_runtime: OrbitToolRuntime,
+        llm_invoke: LlmInvoker,
+        budget: AgentBudget | None = None,
+        on_event: AgentEventHandler | None = None,
+        workspace: AgentWorkspace | None = None,
+        system_prompt_prefix: str = "",
+    ) -> None:
+        self._external_tools = external_tools
+        self._tool_runtime = tool_runtime
+        self._llm_invoke = llm_invoke
+        self._budget = budget
+        self._on_event = on_event
+        self._workspace = workspace
+        self._system_prompt_prefix = system_prompt_prefix
+
+    @staticmethod
+    def official_runtime_available() -> bool:
+        return importlib.util.find_spec("deepagents") is not None
+
+    async def run(
+        self,
+        user_query: str,
+        history_messages: list[BaseMessage],
+    ) -> AgentExecutionResult:
+        # 当前 bridge 先复用 Orbit 本地执行器，统一对外暴露“执行桥”语义。
+        # 未来若官方 deepagents 在我们当前 provider / SSE / thought 边界下可无损接入，
+        # 切换点也应优先收口在这里，而不是再次改 chat runtime 主干。
+        executor = DeepAgent(
+            external_tools=self._external_tools,
+            tool_runtime=self._tool_runtime,
+            llm_invoke=self._llm_invoke,
+            budget=self._budget,
+            on_event=self._on_event,
+            workspace=self._workspace,
+            system_prompt_prefix=self._system_prompt_prefix,
+        )
+        result = await executor.run(user_query=user_query, history_messages=history_messages)
+        metadata = dict(result.response_metadata)
+        metadata["official_deepagents_available"] = self.official_runtime_available()
+        result.response_metadata = metadata
+        return result

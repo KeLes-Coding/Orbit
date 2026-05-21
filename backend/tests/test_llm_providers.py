@@ -1,7 +1,7 @@
 import asyncio
 from types import SimpleNamespace
 
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 from app.services.llm_client import LLMClient
 from app.services.llm.providers.anthropic_provider import AnthropicProvider
@@ -183,6 +183,23 @@ def test_openai_message_content_value_flattens_text_only_blocks():
     value = provider._message_content_value(content)
 
     assert value == "hello world"
+
+
+def test_openai_to_openai_message_preserves_reasoning_content():
+    provider = OpenAICompatibleProvider()
+    message = AIMessage(
+        content=[
+            {"type": "text", "text": "answer"},
+            {"type": "reasoning", "text": "secret-thought"},
+        ],
+        additional_kwargs={"reasoning_content": "secret-thought"},
+    )
+
+    payload = provider._to_openai_message(message)
+
+    assert payload["role"] == "assistant"
+    assert payload["content"] == "answer"
+    assert payload["reasoning_content"] == "secret-thought"
 
 
 def test_openai_stream_chunk_normalizes_finish_reason_and_usage():

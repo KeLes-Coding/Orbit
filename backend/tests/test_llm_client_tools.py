@@ -2,11 +2,11 @@ import asyncio
 from types import SimpleNamespace
 from uuid import uuid4
 
-from langchain_core.messages import ToolMessage
+from langchain_core.messages import AIMessage, ToolMessage
 
 from app.services.llm_client import LLMClient
 from app.services.llm.providers.base import LLMRuntimeConfig
-from app.services.tools import ToolExecutionResult
+from app.services.tools import OrbitToolRuntime, ToolExecutionResult
 
 
 def run(coro):
@@ -160,6 +160,43 @@ def test_ainvoke_with_tool_loop_executes_tools_and_returns_final_answer():
     assert isinstance(model.calls[1][-1], ToolMessage)
 
 
+def test_tool_roundtrip_messages_preserve_assistant_reasoning_content():
+    client = LLMClient(tool_runtime=FakeToolRuntime())
+
+    messages = client._build_tool_roundtrip_messages(
+        completion=client._completion_from_response(
+            response=SimpleNamespace(
+                content="",
+                response_metadata={},
+                usage_metadata={},
+                additional_kwargs={"reasoning_content": "先想一下"},
+                tool_calls=[
+                    {
+                        "id": "call_weather_1",
+                        "name": "getweather",
+                        "args": {"location": "Beijing"},
+                        "type": "tool_call",
+                    }
+                ],
+            ),
+            provider=FakeProvider(),
+            fallback_provider="openai",
+            fallback_model="gpt-test",
+        ),
+        tool_results=[
+            ToolExecutionResult(
+                tool_call_id="call_weather_1",
+                name="getweather",
+                args={"location": "Beijing"},
+                output="北京当前天气：晴朗，气温 25°C。",
+            )
+        ],
+    )
+
+    assert isinstance(messages[0], AIMessage)
+    assert messages[0].additional_kwargs["reasoning_content"] == "先想一下"
+
+
 def test_astream_with_tool_loop_emits_tool_events_then_final_answer():
     client = LLMClient(tool_runtime=FakeToolRuntime())
     provider = FakeProvider()
@@ -238,3 +275,34 @@ def test_prepare_runtime_config_for_tools_disables_deepseek_thinking():
     )
 
     assert next_config.provider_options["extra_body"]["thinking"] == {"type": "disabled"}
+
+
+def test_build_langchain_messages_preserves_assistant_reasoning_content():
+    client = LLMClient(tool_runtime=FakeToolRuntime())
+    history = [
+        make_history_message(role="user", content="你好"),
+        SimpleNamespace(
+            **{
+                **make_history_message(role="assistant", content="结论").__dict__,
+                "reasoning_content": "推理过程",
+            }
+        ),
+    ]
+
+    chat_messages = client._build_langchain_messages(messages=history, summary=None)
+
+    assert isinstance(chat_messages[-1], AIMessage)
+    assert chat_messages[-1].additional_kwargs["reasoning_content"] == "推理过程"
+
+
+def test_tool_runtime_register_tools_replaces_same_name_instead_of_appending_duplicates():
+    runtime = OrbitToolRuntime()
+    original_count = len(runtime.get_langchain_tools())
+    replacement = runtime.get_langchain_tools()[0]
+
+    runtime.register_tools([replacement])
+    runtime.register_tools([replacement])
+
+    tools = runtime.get_langchain_tools()
+    assert len(tools) == original_count
+    assert sum(1 for tool in tools if tool.name == replacement.name) == 1

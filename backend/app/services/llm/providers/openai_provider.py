@@ -85,13 +85,20 @@ class OpenAICompatibleProvider(BaseLLMProvider):
             raise LLMProviderError(f"{self.name} 流式请求失败：{exc}") from exc
 
     def _to_openai_message(self, message: BaseMessage) -> dict[str, Any]:
-        # 这里仅发送正文，不把本地保存的 reasoning_content 带回上下文。
         if isinstance(message, SystemMessage):
             return {"role": "system", "content": self._message_content_value(message.content)}
         if isinstance(message, HumanMessage):
             return {"role": "user", "content": self._message_content_value(message.content)}
         if isinstance(message, AIMessage):
-            return {"role": "assistant", "content": self._message_content_value(message.content)}
+            payload = {
+                "role": "assistant",
+                "content": self._message_content_value(message.content),
+            }
+            reasoning_content = self._assistant_reasoning_content(message)
+            if reasoning_content:
+                # DeepSeek/Qwen 等 thinking 模式需要在后续轮次回传 reasoning 内容。
+                payload["reasoning_content"] = reasoning_content
+            return payload
         if isinstance(message, ToolMessage):
             return {
                 "role": "tool",
@@ -114,6 +121,35 @@ class OpenAICompatibleProvider(BaseLLMProvider):
                         return content
             return self.extract_text_from_content(content)
         return str(content) if content is not None else ""
+
+    def _assistant_reasoning_content(self, message: AIMessage) -> str:
+        # 优先从 integration 已经挂好的额外字段中拿 reasoning；
+        # 若没有，再从 content blocks 里把 reasoning/thinking 块拼回去。
+        for container in (
+            getattr(message, "additional_kwargs", None),
+            getattr(message, "response_metadata", None),
+        ):
+            if not isinstance(container, dict):
+                continue
+            for key in ("reasoning_content", "reasoning", "thinking"):
+                value = container.get(key)
+                if isinstance(value, str) and value:
+                    return value
+
+        content = getattr(message, "content", None)
+        if isinstance(content, list):
+            parts: list[str] = []
+            for block in content:
+                if not isinstance(block, dict):
+                    continue
+                block_type = str(block.get("type") or "").lower()
+                if block_type not in {"reasoning", "thinking"}:
+                    continue
+                text = block.get("text") or block.get("reasoning") or block.get("content")
+                if isinstance(text, str) and text:
+                    parts.append(text)
+            return "".join(parts)
+        return ""
 
     def _to_provider_stream_chunk(
         self,

@@ -1,39 +1,40 @@
 """ChatState —— LangGraph Chat 执行状态定义。
 
-Phase 2 在 Phase 1 基础上扩展了 agent 路由和 thought 事件字段。
+优先只保留 graph 内真正需要 checkpoint/收口的字段。
+运行时标识（thread_id / stream_id / conversation_id 等）应尽量经由 runtime context 传递。
 """
 
 from typing import Any, TypedDict
 
 
-class ChatState(TypedDict):
+class ChatState(TypedDict, total=False):
     """LangGraph Chat 执行状态。
 
     各节点通过返回 dict 来更新 state，未返回的字段保持不变。
     """
 
-    # --- 会话标识 ---
+    # --- 兼容字段：旧路径仍可能放在 state 中，优先使用 runtime context ---
     conversation_id: str
-    """会话 ID，用于数据库查询和事件关联"""
+    """兼容保留：会话 ID"""
 
     assistant_message_id: str
-    """当前 assistant 占位消息的 ID，用于流事件关联和后续写入"""
+    """兼容保留：assistant 占位消息 ID"""
 
     stream_id: str
-    """运行时 stream ID，用于 cancel 检测和流事件关联"""
+    """兼容保留：stream ID"""
 
     thread_id: str
-    """LangGraph checkpoint 的 thread namespace，对应 Conversation.thread_id"""
+    """兼容保留：checkpoint thread ID"""
 
-    # --- 模型配置 ---
+    # --- 兼容字段：模型配置快照应逐步迁移到 runtime context ---
     llm_config_id: str
-    """LLM 配置 ID，用于关联配置快照"""
+    """兼容保留：LLM 配置 ID"""
 
     provider: str
-    """Provider 标识，如 anthropic/openai/google/ollama"""
+    """兼容保留：provider 标识"""
 
     model: str
-    """实际使用的模型名称"""
+    """兼容保留：模型名称"""
 
     # --- 输入 ---
     input_messages: list

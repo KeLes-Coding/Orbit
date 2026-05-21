@@ -77,7 +77,14 @@ class OrbitToolRuntime:
         """
         for t in tools:
             self._tool_map[t.name] = t
-            self._tool_specs.append(t)
+            # 同名工具按“替换”而不是“追加”处理，避免长生命周期 runtime
+            # 在多次 agent 执行后堆积出重复 schema。
+            for idx, existing in enumerate(self._tool_specs):
+                if existing.name == t.name:
+                    self._tool_specs[idx] = t
+                    break
+            else:
+                self._tool_specs.append(t)
 
     async def execute_tool_calls(self, tool_calls: list[dict[str, Any]]) -> list[ToolExecutionResult]:
         # tool_calls 来自模型输出，先做参数解析，再按名字分发到具体工具。

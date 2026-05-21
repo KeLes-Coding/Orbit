@@ -13,6 +13,7 @@ from app.services.conversations.base import (
     ConversationStreamEvent,
 )
 from app.services.langgraph_runtime.chat_runtime import LangGraphChatRuntime
+from app.services.langgraph_runtime.runtime_context import OrbitRuntimeContext, OrbitRuntimeRequest
 from app.services.langgraph_runtime.state import ChatState
 from app.services.langgraph_runtime.stream_adapter import StreamAdapter
 from app.services.llm_client import LLMClientError
@@ -371,19 +372,45 @@ class ConversationStreamRunService(ConversationBaseService):
             ):
                 yield chunk
 
-        runtime = LangGraphChatRuntime(
-            # normal_chat 使用：复用现有 LLMClient.stream() 归一化逻辑
-            stream_factory=lambda: self.llm_client.stream(
+        runtime_request = OrbitRuntimeRequest(
+            conversation_id=str(conversation_id),
+            assistant_message_id=str(assistant_message.id),
+            stream_id=stream_id,
+            thread_id=conversation.thread_id,
+            chat_mode=effective_chat_mode,
+            agent_type="web_agent" if effective_chat_mode == "agent" else None,
+            # 这里显式复制一份输入消息列表，避免后续 state / runtime 在不同层被意外共享修改。
+            input_messages=list(initial_state.get("input_messages", [])),
+            llm_config=llm_config,
+            model=_model,
+        )
+        runtime_context = OrbitRuntimeContext(
+            request=runtime_request,
+            tool_runtime=self.llm_client.tool_runtime,
+            stream_writer=None,
+        )
+
+        runtime_kwargs = {
+            # normal_chat 路径仍复用现有 LLMClient.stream()，保证普通 chat 的行为尽量不变。
+            "stream_factory": lambda: self.llm_client.stream(
                 config=llm_config,
                 messages=history_messages,
                 summary=conversation.summary,
                 model=_model,
                 enable_tools=False,
             ),
-            # agentic_chat 使用：直接操作 LangChain 消息层
-            llm_invoke=_agent_llm_invoke,
-            tool_runtime=self.llm_client.tool_runtime,
-        )
+            # agentic_chat 路径则改走 BaseMessage + runtime_context 模式，
+            # 便于后续继续把 agent 执行器与宿主链路解耦。
+            "llm_invoke": _agent_llm_invoke,
+            "tool_runtime": self.llm_client.tool_runtime,
+            "runtime_context": runtime_context,
+        }
+        try:
+            runtime = LangGraphChatRuntime(**runtime_kwargs)
+        except TypeError:
+            # 兼容测试替身或旧构造签名。
+            runtime_kwargs.pop("runtime_context", None)
+            runtime = LangGraphChatRuntime(**runtime_kwargs)
         final_state = initial_state.copy()
 
         try:
@@ -605,13 +632,6 @@ class ConversationStreamRunService(ConversationBaseService):
         )
 
         return ChatState(
-            conversation_id=str(conversation_id),
-            assistant_message_id=str(assistant_message.id),
-            stream_id=stream_id,
-            thread_id=conversation.thread_id,
-            llm_config_id=str(llm_config.id),
-            provider=llm_config.provider,
-            model=resolved_model,
             input_messages=input_messages,
             # Phase 2 新增
             chat_mode=chat_mode,

@@ -4,10 +4,11 @@ from dataclasses import dataclass, field, replace
 import json
 from typing import Any, AsyncIterator
 
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage, ToolMessage
 
 from app.models.llm_config import LLMConfig
 from app.models.message import Message
+from app.services.langgraph_runtime.provider_bridge import build_assistant_message
 from app.services.llm_debug import log_llm_object
 from app.services.llm.providers.base import BaseLLMProvider, LLMProviderError
 from app.services.llm.providers.registry import get_provider
@@ -389,7 +390,12 @@ class LLMClient:
         if message.role == "user":
             return HumanMessage(content=content)
         if message.role == "assistant":
-            return AIMessage(content=content)
+            # assistant 消息不能只保留正文；一旦进入多轮 tool roundtrip，
+            # 某些 thinking provider 还要求把上一轮 reasoning 一并带回。
+            return build_assistant_message(
+                content=content,
+                reasoning_content=message.reasoning_content or "",
+            )
         return ToolMessage(
             content=content,
             tool_call_id=message.langgraph_message_id or str(message.id),
@@ -989,8 +995,10 @@ class LLMClient:
     ) -> list[BaseMessage]:
         # 工具循环需要把“assistant 发起 tool call”与“tool 返回结果”都回填进下一轮上下文。
         messages: list[BaseMessage] = [
-            AIMessage(
+            build_assistant_message(
                 content=completion.content,
+                # 这里补 reasoning roundtrip 是修复 DeepSeek/Qwen thinking 模式 400 的关键之一。
+                reasoning_content=completion.reasoning_content,
                 tool_calls=[self._tool_call_to_langchain(item) for item in completion.tool_calls],
             )
         ]

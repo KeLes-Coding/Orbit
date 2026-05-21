@@ -8,6 +8,7 @@ dependencies = [
     "anthropic",
     "asyncpg",
     "email-validator",
+    "deepagents; python_version >= '3.11'",
     "fastapi",
     "google-genai",
     "httpx",

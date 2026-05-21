@@ -7,7 +7,7 @@ import asyncio
 from langchain_core.messages import HumanMessage
 
 from app.services.langgraph_runtime.agent_types import AgentBudget
-from app.services.langgraph_runtime.deep_agent import DeepAgent
+from app.services.langgraph_runtime.deep_agent import DeepAgent, DeepAgentExecutionBridge
 from app.services.llm_client import LLMStreamChunk
 from app.services.tools.runtime import OrbitToolRuntime
 
@@ -212,3 +212,81 @@ def test_single_round_websearch_limit_is_enforced():
 
     assert result.error is not None
     assert "单轮 websearch 次数超过上限" in result.error
+
+
+def test_execution_bridge_reports_backend_metadata():
+    async def fake_llm_invoke(messages, system_prompt, enable_tools, tools, tool_runtime, max_tool_rounds):
+        if not enable_tools:
+            user_text = str(messages[-1].content)
+            if "制定一个简短的搜索和执行计划" in user_text:
+                yield LLMStreamChunk(content_delta="先搜索。")
+                return
+            yield LLMStreamChunk(content_delta="最终答案")
+            return
+        yield LLMStreamChunk(tool_results=[])
+
+    bridge = DeepAgentExecutionBridge(
+        external_tools=[],
+        tool_runtime=OrbitToolRuntime(),
+        llm_invoke=fake_llm_invoke,
+        budget=AgentBudget(max_rounds=1, max_tool_calls=1, timeout_seconds=10),
+    )
+
+    result = run(
+        bridge.run(
+            user_query="测试桥接元信息",
+            history_messages=[HumanMessage(content="测试桥接元信息")],
+        )
+    )
+
+    assert result.response_metadata["execution_backend"] == "orbit_legacy_deep_agent"
+    assert "official_deepagents_available" in result.response_metadata
+
+
+def test_tool_round_summary_is_not_emitted_twice():
+    async def fake_llm_invoke(messages, system_prompt, enable_tools, tools, tool_runtime, max_tool_rounds):
+        if not enable_tools:
+            user_text = str(messages[-1].content)
+            if "制定一个简短的搜索和执行计划" in user_text:
+                yield LLMStreamChunk(content_delta="先搜索。")
+                return
+            if system_prompt:
+                yield LLMStreamChunk(
+                    content_delta=(
+                        "搜到了 DeepSeek V4 Flash 的公开信息，"
+                        "包括发布时间、参数规模和上下文长度，"
+                        "这些信息已经足够回答问题。"
+                    )
+                )
+                return
+            yield LLMStreamChunk(content_delta="最终答案")
+            return
+
+        yield LLMStreamChunk(
+            tool_results=[
+                {
+                    "name": "websearch",
+                    "args": {"query": "DeepSeek V4 Flash"},
+                    "output": "公开信息",
+                    "is_error": False,
+                }
+            ]
+        )
+
+    agent = DeepAgent(
+        external_tools=[],
+        tool_runtime=OrbitToolRuntime(),
+        llm_invoke=fake_llm_invoke,
+        budget=AgentBudget(max_rounds=2, max_tool_calls=4, timeout_seconds=30),
+    )
+
+    result = run(
+        agent.run(
+            user_query="介绍 DeepSeek V4 Flash",
+            history_messages=[HumanMessage(content="介绍 DeepSeek V4 Flash")],
+        )
+    )
+
+    summary_events = [e for e in result.thought_events if e["type"] == "thought.summary"]
+    assert len(summary_events) == 1
+    assert summary_events[0]["text"].count("搜到了 DeepSeek V4 Flash 的公开信息") == 1

@@ -1,8 +1,4 @@
-"""DeepAgent 类型定义。
-
-AgentBudget, AgentEvent, AgentResult 是 Phase 2 agent harness 的共享类型，
-被 deep_agent、chat_runtime、stream_adapter 共同使用。
-"""
+"""Agent Runtime 共享类型定义。"""
 
 from dataclasses import dataclass, field
 from typing import Any
@@ -51,11 +47,8 @@ class AgentEvent(TypedDict, total=False):
 
 
 @dataclass
-class AgentResult:
-    """DeepAgent.run() 的返回值。
-
-    agentic_chat 节点将其拆解后写入 ChatState 对应字段。
-    """
+class AgentExecutionResult:
+    """统一的 Agent 执行结果。"""
 
     planning_text: str = ""
     """planning 阶段生成的文本"""
@@ -78,9 +71,16 @@ class AgentResult:
     token_usage: dict[str, Any] = field(default_factory=dict)
     """归一化后的 token 用量（合并所有 LLM 调用）"""
 
+    response_metadata: dict[str, Any] = field(default_factory=dict)
+    """执行元信息，如执行后端、agent 类型等"""
+
     error: str | None = None
     """执行错误信息，非空时外层走失败收口"""
 
     @property
     def is_success(self) -> bool:
         return self.error is None and bool(self.final_content)
+
+
+# 过渡兼容：旧代码仍可能引用 AgentResult。
+AgentResult = AgentExecutionResult

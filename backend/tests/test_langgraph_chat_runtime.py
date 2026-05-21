@@ -5,8 +5,13 @@ from __future__ import annotations
 import asyncio
 from uuid import uuid4
 
+from langchain_core.messages import HumanMessage
+
 from app.services.conversations.stream_run import ConversationStreamRunService
+from app.services.langgraph_runtime.agent_registry import AgentRegistry
+from app.services.langgraph_runtime.agent_types import AgentExecutionResult
 from app.services.langgraph_runtime.chat_runtime import LangGraphChatRuntime
+from app.services.langgraph_runtime.runtime_context import OrbitRuntimeContext, OrbitRuntimeRequest
 from app.services.langgraph_runtime.state import ChatState
 from app.services.langgraph_runtime.stream_adapter import StreamAdapter
 from app.services.llm_client import LLMClientError, LLMStreamChunk
@@ -58,6 +63,56 @@ def test_graph_compiles():
     assert "normal_chat" in nodes
     assert "agentic_chat" in nodes
     assert "finalize_message" in nodes
+
+
+def test_agentic_chat_uses_registry_adapter():
+    class FakeAgent:
+        agent_type = "web_agent"
+
+        async def run(self, *, user_query, history_messages, runtime_context, on_event):
+            on_event({"type": "thought.planning", "phase": "planning", "text": "先搜一下", "meta": {}})
+            return AgentExecutionResult(
+                final_content=f"agent:{user_query}",
+                reasoning_text="reasoning",
+                thought_events=[{"type": "thought.planning", "phase": "planning", "text": "先搜一下", "meta": {}}],
+            )
+
+    async def fake_stream():
+        if False:
+            yield None
+
+    registry = AgentRegistry()
+    registry.register(FakeAgent())
+    runtime_context = OrbitRuntimeContext(
+        request=OrbitRuntimeRequest(
+            conversation_id=str(uuid4()),
+            assistant_message_id=str(uuid4()),
+            stream_id=f"stream_{uuid4()}",
+            thread_id=f"thread_{uuid4()}",
+            chat_mode="agent",
+            agent_type="web_agent",
+            input_messages=[],
+            llm_config=None,
+            model="gpt-test",
+        ),
+        tool_runtime=None,
+    )
+    runtime = LangGraphChatRuntime(
+        stream_factory=fake_stream,
+        llm_invoke=lambda *_args, **_kwargs: None,  # pragma: no cover - won't be used
+        runtime_context=runtime_context,
+        agent_registry=registry,
+    )
+
+    state = make_minimal_state(
+        chat_mode="agent",
+        input_messages=[HumanMessage(content="帮我查 Orbit")],
+    )
+    result = run(runtime._agentic_chat(state))
+
+    assert result["response_text"] == "agent:帮我查 Orbit"
+    assert result["reasoning_text"] == "reasoning"
+    assert result["thought_events"][0]["type"] == "thought.planning"
 
 
 def test_prepare_context_is_noop():
@@ -127,6 +182,60 @@ def test_run_stream_accumulates_normalized_chunks():
             ]
             assert "".join(e.data["delta"] for e in delta_events) == "你好"
             assert "".join(e.data["delta"] for e in reasoning_events) == "想法"
+        finally:
+            await conversation_stream_store.complete_stream(stream_id, retention_seconds=0)
+
+    run(_test())
+
+
+def test_run_stream_uses_runtime_context_thread_id_when_state_is_slim():
+    stream_id = f"stream_{uuid4()}"
+    message_id = uuid4()
+
+    async def fake_stream():
+        yield LLMStreamChunk(content_delta="ok")
+
+    async def _test():
+        await conversation_stream_store.create_stream(
+            stream_id=stream_id,
+            conversation_id=uuid4(),
+            message_id=message_id,
+            user_id=uuid4(),
+        )
+        runtime_context = OrbitRuntimeContext(
+            request=OrbitRuntimeRequest(
+                conversation_id=str(uuid4()),
+                assistant_message_id=str(message_id),
+                stream_id=stream_id,
+                thread_id="thread-from-context",
+                chat_mode="chat",
+                agent_type=None,
+                input_messages=[],
+                llm_config=None,
+                model="gpt-test",
+            ),
+            tool_runtime=None,
+        )
+        runtime = LangGraphChatRuntime(stream_factory=fake_stream, runtime_context=runtime_context)
+        adapter = StreamAdapter(stream_id=stream_id, message_id=message_id)
+
+        try:
+            final_state = await runtime.run_stream(
+                state=ChatState(
+                    input_messages=[],
+                    chat_mode="chat",
+                    execution_mode="",
+                    response_text="",
+                    reasoning_text="",
+                    token_usage={},
+                    response_metadata={},
+                    thought_events=[],
+                    workspace_files=[],
+                    error=None,
+                ),
+                stream_adapter=adapter,
+            )
+            assert final_state["response_text"] == "ok"
         finally:
             await conversation_stream_store.complete_stream(stream_id, retention_seconds=0)
 
