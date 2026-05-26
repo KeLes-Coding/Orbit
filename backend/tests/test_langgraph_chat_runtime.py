@@ -25,13 +25,6 @@ def run(coro):
 def make_minimal_state(**overrides) -> ChatState:
     """构建测试用最小 ChatState。"""
     defaults = {
-        "conversation_id": str(uuid4()),
-        "assistant_message_id": str(uuid4()),
-        "stream_id": f"stream_{uuid4()}",
-        "thread_id": f"thread_{uuid4()}",
-        "llm_config_id": str(uuid4()),
-        "provider": "openai",
-        "model": "gpt-test",
         "input_messages": [],
         # Phase 2 新增
         "chat_mode": "chat",
@@ -49,6 +42,31 @@ def make_minimal_state(**overrides) -> ChatState:
     return ChatState(**defaults)
 
 
+def make_runtime_context(
+    *,
+    stream_id: str | None = None,
+    message_id: str | None = None,
+    thread_id: str | None = None,
+    chat_mode: str = "chat",
+    input_messages: list | None = None,
+) -> OrbitRuntimeContext:
+    """构建测试用 runtime_context。"""
+    return OrbitRuntimeContext(
+        request=OrbitRuntimeRequest(
+            conversation_id=str(uuid4()),
+            assistant_message_id=message_id or str(uuid4()),
+            stream_id=stream_id or f"stream_{uuid4()}",
+            thread_id=thread_id or f"thread_{uuid4()}",
+            chat_mode=chat_mode,
+            agent_type="web_agent" if chat_mode == "agent" else None,
+            input_messages=input_messages or [],
+            llm_config=None,
+            model="gpt-test",
+        ),
+        tool_runtime=None,
+    )
+
+
 def test_graph_compiles():
     """runtime 应能编译出 5 节点 graph（Phase 2 结构）。"""
 
@@ -56,7 +74,10 @@ def test_graph_compiles():
         if False:
             yield None
 
-    runtime = LangGraphChatRuntime(stream_factory=fake_stream)
+    runtime = LangGraphChatRuntime(
+        stream_factory=fake_stream,
+        runtime_context=make_runtime_context(),
+    )
     nodes = list(runtime._graph.nodes.keys())
     assert "prepare_context" in nodes
     assert "route_execution" in nodes
@@ -122,7 +143,10 @@ def test_prepare_context_is_noop():
         if False:
             yield None
 
-    runtime = LangGraphChatRuntime(stream_factory=fake_stream)
+    runtime = LangGraphChatRuntime(
+        stream_factory=fake_stream,
+        runtime_context=make_runtime_context(),
+    )
     state = make_minimal_state()
     assert runtime._prepare_context(state) == {}
 
@@ -134,7 +158,10 @@ def test_finalize_message_is_noop():
         if False:
             yield None
 
-    runtime = LangGraphChatRuntime(stream_factory=fake_stream)
+    runtime = LangGraphChatRuntime(
+        stream_factory=fake_stream,
+        runtime_context=make_runtime_context(),
+    )
     state = make_minimal_state()
     assert run(runtime._finalize_message(state)) == {}
 
@@ -156,15 +183,18 @@ def test_run_stream_accumulates_normalized_chunks():
             message_id=message_id,
             user_id=uuid4(),
         )
-        runtime = LangGraphChatRuntime(stream_factory=fake_stream)
+        runtime = LangGraphChatRuntime(
+            stream_factory=fake_stream,
+            runtime_context=make_runtime_context(
+                stream_id=stream_id,
+                message_id=str(message_id),
+            ),
+        )
         adapter = StreamAdapter(stream_id=stream_id, message_id=message_id)
 
         try:
             final_state = await runtime.run_stream(
-                state=make_minimal_state(
-                    stream_id=stream_id,
-                    assistant_message_id=str(message_id),
-                ),
+                state=make_minimal_state(),
                 stream_adapter=adapter,
             )
 
@@ -202,19 +232,11 @@ def test_run_stream_uses_runtime_context_thread_id_when_state_is_slim():
             message_id=message_id,
             user_id=uuid4(),
         )
-        runtime_context = OrbitRuntimeContext(
-            request=OrbitRuntimeRequest(
-                conversation_id=str(uuid4()),
-                assistant_message_id=str(message_id),
-                stream_id=stream_id,
-                thread_id="thread-from-context",
-                chat_mode="chat",
-                agent_type=None,
-                input_messages=[],
-                llm_config=None,
-                model="gpt-test",
-            ),
-            tool_runtime=None,
+        runtime_context = make_runtime_context(
+            stream_id=stream_id,
+            message_id=str(message_id),
+            thread_id="thread-from-context",
+            chat_mode="chat",
         )
         runtime = LangGraphChatRuntime(stream_factory=fake_stream, runtime_context=runtime_context)
         adapter = StreamAdapter(stream_id=stream_id, message_id=message_id)
@@ -258,15 +280,18 @@ def test_run_stream_returns_llm_error():
             message_id=message_id,
             user_id=uuid4(),
         )
-        runtime = LangGraphChatRuntime(stream_factory=failing_stream)
+        runtime = LangGraphChatRuntime(
+            stream_factory=failing_stream,
+            runtime_context=make_runtime_context(
+                stream_id=stream_id,
+                message_id=str(message_id),
+            ),
+        )
         adapter = StreamAdapter(stream_id=stream_id, message_id=message_id)
 
         try:
             final_state = await runtime.run_stream(
-                state=make_minimal_state(
-                    stream_id=stream_id,
-                    assistant_message_id=str(message_id),
-                ),
+                state=make_minimal_state(),
                 stream_adapter=adapter,
             )
             assert final_state["error"] == "模型服务请求失败"
@@ -293,15 +318,18 @@ def test_run_stream_returns_cancelled_when_stream_store_is_cancelled():
             user_id=uuid4(),
         )
         await conversation_stream_store.cancel(message_id=message_id)
-        runtime = LangGraphChatRuntime(stream_factory=cancellable_stream)
+        runtime = LangGraphChatRuntime(
+            stream_factory=cancellable_stream,
+            runtime_context=make_runtime_context(
+                stream_id=stream_id,
+                message_id=str(message_id),
+            ),
+        )
         adapter = StreamAdapter(stream_id=stream_id, message_id=message_id)
 
         try:
             final_state = await runtime.run_stream(
-                state=make_minimal_state(
-                    stream_id=stream_id,
-                    assistant_message_id=str(message_id),
-                ),
+                state=make_minimal_state(),
                 stream_adapter=adapter,
             )
             assert final_state["error"] == "cancelled"
@@ -358,3 +386,33 @@ def test_merge_langgraph_persisted_output_persists_thought_events():
     thought_events = merged["response_metadata"].get("thought_events")
     assert isinstance(thought_events, list)
     assert thought_events[0]["type"] == "thought.planning"
+
+
+def test_merge_langgraph_persisted_output_prefers_compacted_final_thought_events():
+    """落库时应优先使用 final_state 中压缩后的 thought_events，而不是流式碎片。"""
+    merged = ConversationStreamRunService._merge_langgraph_persisted_output(
+        accumulated={
+            "response_text": "最终正文",
+            "reasoning_text": "推理",
+            "token_usage": {},
+            "response_metadata": {},
+            "thought_events": [
+                {"type": "thought.planning", "phase": "planning", "text": "先", "meta": {}},
+                {"type": "thought.planning", "phase": "planning", "text": "搜索", "meta": {}},
+            ],
+        },
+        final_state=make_minimal_state(
+            response_metadata={"provider": "deepseek"},
+            thought_events=[
+                {"type": "thought.planning", "phase": "planning", "text": "先搜索", "meta": {}},
+                {"type": "thought.tool", "phase": "loop", "text": "调用工具：websearch", "meta": {"tool": "websearch"}},
+            ],
+        ),
+    )
+
+    thought_events = merged["response_metadata"].get("thought_events")
+    assert isinstance(thought_events, list)
+    assert thought_events == [
+        {"type": "thought.planning", "phase": "planning", "text": "先搜索", "meta": {}},
+        {"type": "thought.tool", "phase": "loop", "text": "调用工具：websearch", "meta": {"tool": "websearch"}},
+    ]

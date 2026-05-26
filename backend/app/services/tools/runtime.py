@@ -73,7 +73,7 @@ class OrbitToolRuntime:
     def register_tools(self, tools: list[StructuredTool]) -> None:
         """注册额外的工具（如 workspace 工具），扩展 tool_map。
 
-        DeepAgent 使用此方法注入 workspace 工具到运行时。
+        Agent graph 会使用此方法把 run 级别的 workspace 工具注入到运行时。
         """
         for t in tools:
             self._tool_map[t.name] = t

@@ -6,16 +6,16 @@ from collections.abc import AsyncIterator, Callable
 from typing import Any, cast
 
 from langchain_core.messages import HumanMessage
-from langgraph.checkpoint.memory import MemorySaver
 from langgraph.config import get_stream_writer
 from langgraph.graph import END, START, StateGraph
 
 from app.services.langgraph_runtime.agent_contract import LlmInvoker
 from app.services.langgraph_runtime.agent_registry import AgentRegistry
 from app.services.langgraph_runtime.agent_runner import AgentRunner
-from app.services.langgraph_runtime.runtime_context import OrbitRuntimeContext, OrbitRuntimeRequest
+from app.services.langgraph_runtime.runtime_context import OrbitRuntimeContext
 from app.services.langgraph_runtime.state import ChatState
 from app.services.langgraph_runtime.stream_adapter import StreamAdapter
+from app.services.langgraph_runtime.thread_runtime_store import thread_runtime_store
 from app.services.langgraph_runtime.web_agent.adapter import WebAgentAdapter
 from app.services.llm_client import LLMClientError, LLMStreamChunk
 from app.services.streaming import conversation_stream_store
@@ -40,7 +40,7 @@ class LangGraphChatRuntime:
         stream_factory: Callable[[], AsyncIterator[LLMStreamChunk]],
         llm_invoke: LlmInvoker | None = None,
         tool_runtime: OrbitToolRuntime | None = None,
-        runtime_context: OrbitRuntimeContext | None = None,
+        runtime_context: OrbitRuntimeContext,
         agent_registry: AgentRegistry | None = None,
     ) -> None:
         self._stream_factory = stream_factory
@@ -56,46 +56,16 @@ class LangGraphChatRuntime:
                 )
             )
         self._agent_runner = AgentRunner(registry=self._agent_registry)
-        self._checkpointer = MemorySaver()
+        self._checkpointer = thread_runtime_store.get_checkpointer()
         self._graph = self._build_graph()
-
-    def _state_runtime_request(self, state: ChatState) -> OrbitRuntimeRequest:
-        # 这是旧 state -> 新 runtime request 的兜底桥。
-        # 长期目标是尽量由 stream_run 直接提供完整 runtime_context，
-        # 这里仅为了兼容当前测试和渐进式迁移保留。
-        return OrbitRuntimeRequest(
-            conversation_id=state.get("conversation_id", ""),
-            assistant_message_id=state.get("assistant_message_id", ""),
-            stream_id=state.get("stream_id", ""),
-            thread_id=state.get("thread_id", "orbit-thread"),
-            chat_mode=state.get("chat_mode", "chat"),
-            agent_type="web_agent" if state.get("chat_mode") == "agent" else None,
-            input_messages=state.get("input_messages", []),
-            llm_config=None,
-            model=state.get("model"),
-        )
 
     def _resolve_runtime_context(
         self,
         *,
-        state: ChatState,
         stream_writer: Callable[[dict], None] | None = None,
     ) -> OrbitRuntimeContext:
-        if self._runtime_context is not None:
-            # 若上层已显式传入 runtime_context，则以其为准；
-            # 但 stream_writer 是 graph 执行期才知道的，所以需要在这里补进去。
-            if stream_writer is None:
-                return self._runtime_context
-            return OrbitRuntimeContext(
-                request=self._runtime_context.request,
-                tool_runtime=self._runtime_context.tool_runtime,
-                stream_writer=stream_writer,
-            )
-        return OrbitRuntimeContext(
-            request=self._state_runtime_request(state),
-            tool_runtime=self._tool_runtime,
-            stream_writer=stream_writer,
-        )
+        """返回绑定执行期 writer 的 runtime_context。"""
+        return self._runtime_context.with_stream_writer(stream_writer)
 
     # ── Graph 构建 ─────────────────────────────────────────────────
 
@@ -167,7 +137,7 @@ class LangGraphChatRuntime:
         except RuntimeError:
             # 单测或非 LangGraph runnable 上下文下，退回到 no-op writer。
             writer = lambda _event: None
-        runtime_context = self._resolve_runtime_context(state=state, stream_writer=writer)
+        runtime_context = self._resolve_runtime_context(stream_writer=writer)
         stream_id = runtime_context.request.stream_id
 
         accumulated_content: list[str] = []
@@ -247,8 +217,8 @@ class LangGraphChatRuntime:
     async def _agentic_chat(self, state: ChatState) -> dict:
         """Agent 执行节点。
 
-        创建 DeepAgent 并执行 LLM 驱动的 agent loop，
-        将 AgentResult 映射回 ChatState。
+        调用注册的 agent adapter 执行 Orbit-defined agent graph，
+        再将 AgentExecutionResult 映射回 ChatState。
         """
         if self._llm_invoke is None:
             return {
@@ -259,7 +229,7 @@ class LangGraphChatRuntime:
             writer = get_stream_writer()
         except RuntimeError:
             writer = lambda _event: None
-        runtime_context = self._resolve_runtime_context(state=state, stream_writer=writer)
+        runtime_context = self._resolve_runtime_context(stream_writer=writer)
 
         def on_event(event: dict[str, Any]) -> None:
             writer(dict(event))
@@ -319,10 +289,11 @@ class LangGraphChatRuntime:
         """执行 graph 并通过 stream_adapter 处理自定义流事件。"""
         from langchain_core.runnables.config import RunnableConfig
 
-        runtime_context = self._resolve_runtime_context(state=state)
+        runtime_context = self._resolve_runtime_context()
         config: RunnableConfig = {
             "configurable": {
-                "thread_id": runtime_context.request.thread_id or state.get("thread_id", "orbit-thread")
+                # thread_id 由宿主提供，是本次 graph/checkpoint 的稳定主键。
+                "thread_id": runtime_context.request.thread_id or "orbit-thread"
             }
         }
 

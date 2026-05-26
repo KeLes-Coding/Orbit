@@ -32,3 +32,14 @@ class OrbitRuntimeContext:
     request: OrbitRuntimeRequest
     tool_runtime: Any
     stream_writer: Callable[[dict], None] | None = None
+
+    def with_stream_writer(
+        self,
+        stream_writer: Callable[[dict], None] | None,
+    ) -> "OrbitRuntimeContext":
+        """返回绑定执行期 stream_writer 的新上下文。"""
+        return OrbitRuntimeContext(
+            request=self.request,
+            tool_runtime=self.tool_runtime,
+            stream_writer=stream_writer,
+        )

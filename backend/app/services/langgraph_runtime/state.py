@@ -1,7 +1,7 @@
 """ChatState —— LangGraph Chat 执行状态定义。
 
-优先只保留 graph 内真正需要 checkpoint/收口的字段。
-运行时标识（thread_id / stream_id / conversation_id 等）应尽量经由 runtime context 传递。
+只保留 graph 内部真正需要流转、checkpoint 与收口的字段。
+宿主请求信息统一经由 runtime context 传递，不再回填到 state。
 """
 
 from typing import Any, TypedDict
@@ -12,29 +12,6 @@ class ChatState(TypedDict, total=False):
 
     各节点通过返回 dict 来更新 state，未返回的字段保持不变。
     """
-
-    # --- 兼容字段：旧路径仍可能放在 state 中，优先使用 runtime context ---
-    conversation_id: str
-    """兼容保留：会话 ID"""
-
-    assistant_message_id: str
-    """兼容保留：assistant 占位消息 ID"""
-
-    stream_id: str
-    """兼容保留：stream ID"""
-
-    thread_id: str
-    """兼容保留：checkpoint thread ID"""
-
-    # --- 兼容字段：模型配置快照应逐步迁移到 runtime context ---
-    llm_config_id: str
-    """兼容保留：LLM 配置 ID"""
-
-    provider: str
-    """兼容保留：provider 标识"""
-
-    model: str
-    """兼容保留：模型名称"""
 
     # --- 输入 ---
     input_messages: list

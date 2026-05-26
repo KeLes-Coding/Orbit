@@ -16,6 +16,7 @@ from langchain_core.messages import HumanMessage
 
 from app.core.crypto import encrypt_secret
 from app.services.langgraph_runtime.chat_runtime import LangGraphChatRuntime
+from app.services.langgraph_runtime.runtime_context import OrbitRuntimeContext, OrbitRuntimeRequest
 from app.services.langgraph_runtime.state import ChatState
 from app.services.langgraph_runtime.stream_adapter import StreamAdapter
 from app.services.llm_client import LLMClient
@@ -83,14 +84,11 @@ def run(coro):
 def build_chat_state(**overrides) -> ChatState:
     """构建测试用 ChatState。"""
     defaults = {
-        "conversation_id": str(uuid4()),
-        "assistant_message_id": str(uuid4()),
-        "stream_id": f"stream_{uuid4()}",
-        "thread_id": f"thread_{uuid4()}",
-        "llm_config_id": str(uuid4()),
-        "provider": "openai",
-        "model": DEEPSEEK_TEST_CONFIG["model"] if DEEPSEEK_TEST_CONFIG else "deepseek-v4-flash",
         "input_messages": [],
+        "chat_mode": "chat",
+        "execution_mode": "",
+        "thought_events": [],
+        "workspace_files": [],
         "response_text": "",
         "reasoning_text": "",
         "token_usage": {},
@@ -99,6 +97,30 @@ def build_chat_state(**overrides) -> ChatState:
     }
     defaults.update(overrides)
     return ChatState(**defaults)
+
+
+def build_runtime_context(
+    *,
+    stream_id: str,
+    message_id: str,
+    chat_mode: str = "chat",
+    input_messages: list | None = None,
+) -> OrbitRuntimeContext:
+    """构建真实 API 集成测试所需的 runtime_context。"""
+    return OrbitRuntimeContext(
+        request=OrbitRuntimeRequest(
+            conversation_id=str(uuid4()),
+            assistant_message_id=message_id,
+            stream_id=stream_id,
+            thread_id=f"thread_{uuid4()}",
+            chat_mode=chat_mode,
+            agent_type="web_agent" if chat_mode == "agent" else None,
+            input_messages=input_messages or [],
+            llm_config=None,
+            model=DEEPSEEK_TEST_CONFIG["model"] if DEEPSEEK_TEST_CONFIG else "deepseek-v4-flash",
+        ),
+        tool_runtime=None,
+    )
 
 
 class DummyConfig:
@@ -170,12 +192,14 @@ def test_langgraph_simple_chat_with_deepseek():
         )
         adapter = StreamAdapter(stream_id=stream_id, message_id=message_id)
         runtime = LangGraphChatRuntime(
-            stream_factory=make_stream_factory("你好，请用一句话介绍你自己。")
+            stream_factory=make_stream_factory("你好，请用一句话介绍你自己。"),
+            runtime_context=build_runtime_context(
+                stream_id=stream_id,
+                message_id=str(message_id),
+            ),
         )
 
         state = build_chat_state(
-            stream_id=stream_id,
-            assistant_message_id=str(message_id),
             input_messages=[HumanMessage(content="你好，请用一句话介绍你自己。")],
         )
 
@@ -210,14 +234,16 @@ def test_langgraph_streaming_with_deepseek():
         )
         adapter = StreamAdapter(stream_id=stream_id, message_id=message_id)
         runtime = LangGraphChatRuntime(
-            stream_factory=make_stream_factory("从1数到5，用逗号分隔，不要其他文字。")
+            stream_factory=make_stream_factory("从1数到5，用逗号分隔，不要其他文字。"),
+            runtime_context=build_runtime_context(
+                stream_id=stream_id,
+                message_id=str(message_id),
+            ),
         )
 
         try:
             final_state = await runtime.run_stream(
                 state=build_chat_state(
-                    stream_id=stream_id,
-                    assistant_message_id=str(message_id),
                     input_messages=[HumanMessage(content="从1数到5，用逗号分隔，不要其他文字。")],
                 ),
                 stream_adapter=adapter,
@@ -246,13 +272,17 @@ def test_langgraph_reasoning_with_deepseek_thinking():
             user_id=uuid4(),
         )
         adapter = StreamAdapter(stream_id=stream_id, message_id=message_id)
-        runtime = LangGraphChatRuntime(stream_factory=make_stream_factory("1+1等于几？只回答数字。"))
+        runtime = LangGraphChatRuntime(
+            stream_factory=make_stream_factory("1+1等于几？只回答数字。"),
+            runtime_context=build_runtime_context(
+                stream_id=stream_id,
+                message_id=str(message_id),
+            ),
+        )
 
         try:
             final_state = await runtime.run_stream(
                 state=build_chat_state(
-                    stream_id=stream_id,
-                    assistant_message_id=str(message_id),
                     input_messages=[HumanMessage(content="1+1等于几？只回答数字。")],
                 ),
                 stream_adapter=adapter,

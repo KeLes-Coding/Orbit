@@ -329,10 +329,8 @@ class ConversationStreamRunService(ConversationBaseService):
 
         # 构建 LangGraph ChatState。敏感配置不进入 state，其余上下文字段保留给 graph 使用。
         initial_state = self._build_langgraph_state(
-            stream_id=stream_id,
-            conversation_id=conversation_id,
-            assistant_message=assistant_message,
             conversation=conversation,
+            assistant_message=assistant_message,
             llm_config=llm_config,
             history_messages=history_messages,
             chat_mode=effective_chat_mode,
@@ -351,7 +349,7 @@ class ConversationStreamRunService(ConversationBaseService):
         _llm_client = self.llm_client
 
         # agentic_chat 的 LLM 调用闭包：封装 stream_with_messages，
-        # 使 DeepAgent 可多次调用 LLM（planning / agent loop / final）
+        # 让 Orbit-defined agent graph 可在多个节点中复用同一套 LLM/tool 调用能力。
         async def _agent_llm_invoke(
             messages,
             system_prompt,
@@ -405,12 +403,7 @@ class ConversationStreamRunService(ConversationBaseService):
             "tool_runtime": self.llm_client.tool_runtime,
             "runtime_context": runtime_context,
         }
-        try:
-            runtime = LangGraphChatRuntime(**runtime_kwargs)
-        except TypeError:
-            # 兼容测试替身或旧构造签名。
-            runtime_kwargs.pop("runtime_context", None)
-            runtime = LangGraphChatRuntime(**runtime_kwargs)
+        runtime = LangGraphChatRuntime(**runtime_kwargs)
         final_state = initial_state.copy()
 
         try:
@@ -608,10 +601,8 @@ class ConversationStreamRunService(ConversationBaseService):
     def _build_langgraph_state(
         self,
         *,
-        stream_id: str,
-        conversation_id: UUID,
-        assistant_message,
         conversation,
+        assistant_message,
         llm_config,
         history_messages: list,
         chat_mode: str = "chat",
@@ -658,7 +649,10 @@ class ConversationStreamRunService(ConversationBaseService):
         """合并流式累积态和 graph 最终态，避免只依赖 SSE delta 导致落库为空。"""
         response_metadata = dict(final_state.get("response_metadata") or {})
         response_metadata.update(accumulated.get("response_metadata", {}) or {})
-        thought_events = accumulated.get("thought_events") or final_state.get("thought_events", [])
+        # 落库时优先使用 graph 最终态中的 thought_events：
+        # 这里通常已经过 projector 压缩，适合持久化与刷新恢复。
+        # accumulated 中保留的是流式阶段逐条事件，主要用于实时 SSE，不应反向覆盖最终结果。
+        thought_events = final_state.get("thought_events") or accumulated.get("thought_events", [])
         if thought_events:
             response_metadata["thought_events"] = thought_events
         return {

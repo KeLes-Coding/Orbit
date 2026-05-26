@@ -8,7 +8,7 @@ from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage, To
 
 from app.models.llm_config import LLMConfig
 from app.models.message import Message
-from app.services.langgraph_runtime.provider_bridge import build_assistant_message
+from app.services.llm_message_bridge import build_assistant_message
 from app.services.llm_debug import log_llm_object
 from app.services.llm.providers.base import BaseLLMProvider, LLMProviderError
 from app.services.llm.providers.registry import get_provider
@@ -230,7 +230,7 @@ class LLMClient:
     ) -> AsyncIterator[LLMStreamChunk]:
         """与 stream() 复用同一套 provider/chunk 归一化，但接受 LangChain BaseMessage。
 
-        DeepAgent 需要多次 LLM 调用且消息列表在 agent loop 中动态增长，
+        Agent graph 需要在多个节点中多次调用 LLM，且消息列表会动态增长；
         此方法跳过 ORM→LangChain 转换，直接使用调用方提供的 BaseMessage 列表。
         tools 和 tool_runtime 可选覆盖默认工具集和执行器。
         """
