@@ -74,14 +74,41 @@ export interface Message {
   updated_at?: string
   /** Phase 2: structured thought events for agentic_chat mode */
   thought_events?: ThoughtEventData[]
+  agent_artifacts?: AgentArtifact[]
 }
 
 export interface ThoughtEventData {
   message_id: string
-  type: 'thought.planning' | 'thought.tool' | 'thought.summary' | 'thought.reason'
-  phase: 'planning' | 'loop' | 'reason'
+  type:
+    | 'thought.planning'
+    | 'thought.tool'
+    | 'thought.summary'
+    | 'thought.reason'
+    | 'agent.run.status'
+    | 'agent.run.log'
+    | 'agent.run.artifact'
+  phase: 'planning' | 'loop' | 'reason' | 'workspace' | 'execute' | 'artifact'
   text: string
   meta?: Record<string, unknown>
+}
+
+export interface AgentArtifactPreview {
+  kind?: 'json' | 'text'
+  data?: unknown
+  text?: string
+  truncated?: boolean
+}
+
+export interface AgentArtifact {
+  id?: string
+  run_id?: string
+  type: 'table' | 'chart' | 'code' | 'text' | 'report' | 'json' | string
+  name: string
+  path: string
+  preview_path?: string | null
+  metadata?: Record<string, unknown>
+  preview?: AgentArtifactPreview
+  created_at?: string
 }
 
 export interface ToolCallDelta {

@@ -656,7 +656,7 @@ def test_produce_stream_chat_mode_routes_to_langgraph_runtime(monkeypatch):
         )
 
     class FakeRuntime:
-        def __init__(self, *, stream_factory, llm_invoke=None, tool_runtime=None):
+        def __init__(self, *, stream_factory, llm_invoke=None, tool_runtime=None, runtime_context=None):
             self._stream_factory = stream_factory
 
         async def run_stream(self, *, state, stream_adapter):

@@ -22,6 +22,17 @@ import { EmptyChatState } from "@/components/chat/EmptyChatState"
 import { ModelSelector } from "@/components/chat/ModelSelector"
 import "./ChatShell.css"
 
+function isDataWorkspaceFile(file: File): boolean {
+  const name = file.name.toLowerCase()
+  const type = file.type.toLowerCase()
+  return (
+    [".csv", ".tsv", ".json", ".xlsx"].some((ext) => name.endsWith(ext)) ||
+    ["csv", "json", "spreadsheet", "excel", "tab-separated-values"].some((fragment) =>
+      type.includes(fragment),
+    )
+  )
+}
+
 export function ChatShell() {
   const { conversationId: routeConversationId } = useParams<{ conversationId?: string }>()
   const { user, hasUser, openAuth, logout } = useAuth()
@@ -201,8 +212,11 @@ export function ChatShell() {
       return
     }
     const doSend = async () => {
+      const outgoingChatMode = pendingFiles.some((pending) => isDataWorkspaceFile(pending.file))
+        ? "agent"
+        : chatMode
       const fileIds = await uploadPendingFiles(activeConversationId)
-      sendMessage(currentLlmConfigId, currentModel, chatMode, fileIds)
+      sendMessage(currentLlmConfigId, currentModel, outgoingChatMode, fileIds)
     }
     void doSend().then(() => clearPendingFiles())
   }, [

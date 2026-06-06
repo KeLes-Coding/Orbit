@@ -12,11 +12,12 @@ from langgraph.graph import END, START, StateGraph
 from app.services.langgraph_runtime.agent_contract import LlmInvoker
 from app.services.langgraph_runtime.agent_registry import AgentRegistry
 from app.services.langgraph_runtime.agent_runner import AgentRunner
+from app.services.langgraph_runtime.agents.data_workspace_agent.adapter import DataWorkspaceAgentAdapter
 from app.services.langgraph_runtime.runtime_context import OrbitRuntimeContext
 from app.services.langgraph_runtime.state import ChatState
 from app.services.langgraph_runtime.stream_adapter import StreamAdapter
 from app.services.langgraph_runtime.thread_runtime_store import thread_runtime_store
-from app.services.langgraph_runtime.web_agent.adapter import WebAgentAdapter
+from app.services.langgraph_runtime.agents.web_agent.adapter import WebAgentAdapter
 from app.services.llm_client import LLMClientError, LLMStreamChunk
 from app.services.streaming import conversation_stream_store
 from app.services.tools import OrbitToolRuntime
@@ -55,6 +56,8 @@ class LangGraphChatRuntime:
                     tool_runtime=self._tool_runtime,
                 )
             )
+        if not self._agent_registry.has("data_workspace_agent"):
+            self._agent_registry.register(DataWorkspaceAgentAdapter())
         self._agent_runner = AgentRunner(registry=self._agent_registry)
         self._checkpointer = thread_runtime_store.get_checkpointer()
         self._graph = self._build_graph()
@@ -268,6 +271,10 @@ class LangGraphChatRuntime:
 
         if result.token_usage:
             return_updates["token_usage"] = result.token_usage
+        if result.response_metadata:
+            response_metadata = dict(state.get("response_metadata") or {})
+            response_metadata.update(result.response_metadata)
+            return_updates["response_metadata"] = response_metadata
         if result.error:
             return_updates["error"] = result.error
 

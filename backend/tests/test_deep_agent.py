@@ -15,8 +15,8 @@ from app.services.langgraph_runtime.agent_workspace import (
 from app.services.langgraph_runtime.chat_runtime import LangGraphChatRuntime
 from app.services.langgraph_runtime.runtime_context import OrbitRuntimeContext, OrbitRuntimeRequest
 from app.services.langgraph_runtime.thread_runtime_store import thread_runtime_store
-from app.services.langgraph_runtime.web_agent.definition import WebAgentDefinition
-from app.services.langgraph_runtime.web_agent.runtime import WebAgentRuntime
+from app.services.langgraph_runtime.agents.web_agent.definition import WebAgentDefinition
+from app.services.langgraph_runtime.agents.web_agent.runtime import WebAgentRuntime
 from app.services.llm_client import LLMStreamChunk
 from app.services.tools.runtime import OrbitToolRuntime
 

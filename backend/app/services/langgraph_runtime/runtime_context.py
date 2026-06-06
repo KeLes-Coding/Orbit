@@ -21,6 +21,10 @@ class OrbitRuntimeRequest:
     input_messages: list
     llm_config: Any
     model: str | None
+    file_refs: list[dict[str, Any]] | None = None
+    sandbox_scope: str = "run"
+    sandbox_id: str | None = None
+    artifact_policy: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)

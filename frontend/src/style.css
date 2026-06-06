@@ -1694,6 +1694,94 @@ textarea:disabled {
   color: color-mix(in srgb, #dc2626 70%, var(--ink));
 }
 
+.artifact-list {
+  display: grid;
+  gap: 8px;
+  margin: 14px 0 4px;
+}
+
+.artifact-card {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-low);
+  overflow: hidden;
+}
+
+.artifact-summary {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  min-height: 46px;
+  padding: 8px 10px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.artifact-summary::-webkit-details-marker {
+  display: none;
+}
+
+.artifact-icon {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  color: var(--accent-orange);
+  background: color-mix(in srgb, var(--accent-orange) 10%, transparent);
+}
+
+.artifact-main {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.artifact-name {
+  color: var(--ink);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  font-weight: 650;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.artifact-path {
+  color: var(--ink-muted);
+  font-family: "JetBrains Mono", "Fira Code", monospace;
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.artifact-type {
+  padding: 2px 6px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  color: var(--ink-muted);
+  font-size: 10px;
+  font-weight: 650;
+  text-transform: uppercase;
+}
+
+.artifact-preview {
+  max-height: 340px;
+  margin: 0;
+  padding: 10px 12px;
+  border-top: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--ink-muted);
+  font-family: "JetBrains Mono", "Fira Code", monospace;
+  font-size: 12px;
+  line-height: 1.55;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 /* ── Search result link cards ── */
 .tl-search-results {
   display: flex;
@@ -2699,4 +2787,3 @@ textarea:disabled {
   border-color: var(--primary);
   box-shadow: 0 0 0 4px color-mix(in srgb, var(--primary) 12%, transparent), 0 8px 30px rgba(0,0,0,0.06);
 }
-

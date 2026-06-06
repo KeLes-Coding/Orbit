@@ -7,6 +7,7 @@ from collections.abc import Callable
 from typing import Any
 
 from langchain_core.messages import BaseMessage, HumanMessage
+from langchain_core.runnables.config import RunnableConfig
 from langgraph.graph import END, START, StateGraph
 
 from app.services.langgraph_runtime.agent_contract import LlmInvoker
@@ -17,13 +18,13 @@ from app.services.langgraph_runtime.agent_workspace import (
 )
 from app.services.langgraph_runtime.runtime_context import OrbitRuntimeContext
 from app.services.langgraph_runtime.thread_runtime_store import thread_runtime_store
-from app.services.langgraph_runtime.web_agent.definition import (
+from app.services.langgraph_runtime.agents.web_agent.definition import (
     _CONTINUE_DECISION_PROMPT,
     _LOOP_SUMMARY_PROMPT,
     WebAgentDefinition,
     WebAgentGraphState,
 )
-from app.services.langgraph_runtime.web_agent.projector import WebAgentProjector
+from app.services.langgraph_runtime.agents.web_agent.projector import WebAgentProjector
 from app.services.tools import OrbitToolRuntime
 
 
@@ -66,7 +67,7 @@ class WebAgentRuntime:
             projector=projector,
             workspace=workspace,
         )
-        config = {
+        config: RunnableConfig = {
             "configurable": {
                 "thread_id": f"{runtime_context.request.thread_id or 'orbit-thread'}:web_agent"
             }
@@ -129,8 +130,9 @@ class WebAgentRuntime:
         return builder.compile(checkpointer=thread_runtime_store.get_checkpointer())
 
     @staticmethod
-    def _prepare_context(_state: WebAgentGraphState) -> dict[str, Any]:
+    def _prepare_context(state: WebAgentGraphState) -> dict[str, Any]:
         """当前阶段只保留轻量 prepare 节点，为后续扩展留位。"""
+        _ = state
         return {}
 
     def _planning_node(
@@ -331,7 +333,8 @@ class WebAgentRuntime:
         projector: WebAgentProjector,
         workspace: AgentWorkspace,
     ):
-        async def run(_state: WebAgentGraphState) -> dict[str, Any]:
+        async def run(state: WebAgentGraphState) -> dict[str, Any]:
+            _ = state
             notes_content = workspace.get_content("notes.md") or ""
             content_parts: list[str] = []
             reasoning_parts: list[str] = []

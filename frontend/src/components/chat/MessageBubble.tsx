@@ -1,9 +1,9 @@
 import { memo, useEffect, useMemo, useState } from "react"
 import type { ReactNode } from "react"
-import { Copy, GitFork, Pencil, RotateCcw, User, Brain, Wrench, FileCheck } from "lucide-react"
+import { Copy, GitFork, Pencil, RotateCcw, User, Brain, Wrench, FileCheck, FileCode, BarChart3, Table2, FileText } from "lucide-react"
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
-import type { Message, ThoughtEventData, ToolCallDelta, ToolResultDelta } from "@/api/types"
+import type { AgentArtifact, Message, ThoughtEventData, ToolCallDelta, ToolResultDelta } from "@/api/types"
 import { useMessageEdit } from "@/hooks/useMessageEdit"
 import { TypingIndicator } from "./TypingIndicator"
 import { TimelinePhase } from "./TimelinePhase"
@@ -17,6 +17,55 @@ interface SearchResult {
   title?: string
   snippet?: string
   description?: string
+}
+
+function getArtifactIcon(type: string): ReactNode {
+  if (type === "code") return <FileCode className="h-3.5 w-3.5" />
+  if (type === "chart") return <BarChart3 className="h-3.5 w-3.5" />
+  if (type === "table") return <Table2 className="h-3.5 w-3.5" />
+  return <FileText className="h-3.5 w-3.5" />
+}
+
+function formatArtifactPreview(artifact: AgentArtifact): string {
+  const preview = artifact.preview
+  if (!preview) return ""
+  if (preview.kind === "text" && typeof preview.text === "string") {
+    return preview.text
+  }
+  if (preview.kind === "json" && preview.data !== undefined) {
+    return JSON.stringify(preview.data, null, 2)
+  }
+  return ""
+}
+
+function ArtifactList({ artifacts }: { artifacts: AgentArtifact[] }) {
+  if (artifacts.length === 0) return null
+  return (
+    <div className="artifact-list">
+      {artifacts.map((artifact, index) => {
+        const preview = formatArtifactPreview(artifact)
+        const key = artifact.id || `${artifact.name}-${index}`
+        return (
+          <details className="artifact-card" key={key}>
+            <summary className="artifact-summary">
+              <span className="artifact-icon">{getArtifactIcon(artifact.type)}</span>
+              <span className="artifact-main">
+                <span className="artifact-name">{artifact.name}</span>
+                <span className="artifact-path">{artifact.path}</span>
+              </span>
+              <span className="artifact-type">{artifact.type}</span>
+            </summary>
+            {preview && (
+              <pre className="artifact-preview">
+                {preview}
+                {artifact.preview?.truncated ? "\n..." : ""}
+              </pre>
+            )}
+          </details>
+        )
+      })}
+    </div>
+  )
 }
 
 function parseSearchResults(output: string): SearchResult[] | null {
@@ -140,6 +189,10 @@ export const MessageBubble = memo(function MessageBubble({
   const thoughtEvents = useMemo<ThoughtEventData[]>(
     () => message.thought_events || [],
     [message.thought_events],
+  )
+  const agentArtifacts = useMemo<AgentArtifact[]>(
+    () => message.agent_artifacts || [],
+    [message.agent_artifacts],
   )
   const hasThoughtEvents = thoughtEvents.length > 0
   const hasAgentPhases = hasThoughtEvents || hasReasoning || toolCalls.length > 0 || toolResults.length > 0
@@ -356,6 +409,43 @@ export const MessageBubble = memo(function MessageBubble({
                           </TimelinePhase>
                         )
                       }
+                      if (event.type === "agent.run.status") {
+                        return (
+                          <TimelinePhase
+                            key={index}
+                            icon={<FileCheck className="h-3 w-3" />}
+                            label="状态"
+                            isLast={isLast}
+                          >
+                            <p className="text-sm text-muted-foreground">{event.text}</p>
+                          </TimelinePhase>
+                        )
+                      }
+                      if (event.type === "agent.run.log") {
+                        return (
+                          <TimelinePhase
+                            key={index}
+                            icon={<FileCode className="h-3 w-3" />}
+                            label={event.meta?.stream === "stderr" ? "错误日志" : "执行日志"}
+                            isLast={isLast}
+                          >
+                            <pre className="tl-tool-output">{event.text}</pre>
+                          </TimelinePhase>
+                        )
+                      }
+                      if (event.type === "agent.run.artifact") {
+                        return (
+                          <TimelinePhase
+                            key={index}
+                            icon={<FileText className="h-3 w-3" />}
+                            label="产物"
+                            detail={event.meta?.type as string | undefined}
+                            isLast={isLast}
+                          >
+                            <p className="text-sm text-muted-foreground">{event.text}</p>
+                          </TimelinePhase>
+                        )
+                      }
                       return null
                     })
                   ) : (
@@ -502,6 +592,7 @@ export const MessageBubble = memo(function MessageBubble({
                   {message.content}
                 </ReactMarkdown>
               </div>
+              <ArtifactList artifacts={agentArtifacts} />
               <FileAttachmentList contentParts={message.content_parts || []} />
             </>
           )}

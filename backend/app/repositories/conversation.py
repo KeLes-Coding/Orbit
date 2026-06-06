@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.conversation import Conversation
 from app.models.message import Message
+from app.repositories.agent_artifact import AgentArtifactRepository
 
 
 class ConversationRepository:
@@ -366,6 +367,23 @@ class MessageRepository:
         thought_events = response_metadata.get("thought_events")
         if not isinstance(thought_events, list):
             thought_events = []
+        agent_artifacts = await AgentArtifactRepository(self.session).list_artifacts_for_message(
+            message_id=message.id
+        )
+        serialized_artifacts = [
+            {
+                "id": artifact.id,
+                "run_id": artifact.run_id,
+                "type": artifact.type,
+                "name": artifact.name,
+                "path": artifact.path,
+                "preview_path": artifact.preview_path,
+                "metadata": artifact.metadata_,
+                "preview": artifact.preview,
+                "created_at": artifact.created_at,
+            }
+            for artifact in agent_artifacts
+        ]
         siblings = await self.list_siblings(message)
         sibling_ids = [sibling.id for sibling in siblings]
         try:
@@ -373,6 +391,7 @@ class MessageRepository:
         except ValueError:
             return {
                 "thought_events": thought_events,
+                "agent_artifacts": serialized_artifacts,
                 "sibling_index": 1,
                 "sibling_count": 1,
                 "previous_sibling_id": None,
@@ -380,6 +399,7 @@ class MessageRepository:
             }
         return {
             "thought_events": thought_events,
+            "agent_artifacts": serialized_artifacts,
             "sibling_index": index + 1,
             "sibling_count": len(siblings),
             "previous_sibling_id": sibling_ids[index - 1] if index > 0 else None,

@@ -327,13 +327,23 @@ class ConversationStreamRunService(ConversationBaseService):
             )
             return
 
+        file_refs = self._extract_runtime_file_refs(history_messages)
+        execution_chat_mode = self._resolve_execution_chat_mode(
+            chat_mode=effective_chat_mode,
+            file_refs=file_refs,
+        )
+        agent_type = self._resolve_agent_type(
+            chat_mode=execution_chat_mode,
+            file_refs=file_refs,
+        )
+
         # 构建 LangGraph ChatState。敏感配置不进入 state，其余上下文字段保留给 graph 使用。
         initial_state = self._build_langgraph_state(
             conversation=conversation,
             assistant_message=assistant_message,
             llm_config=llm_config,
             history_messages=history_messages,
-            chat_mode=effective_chat_mode,
+            chat_mode=execution_chat_mode,
         )
 
         # 创建流事件适配器，负责将 LangGraph 自定义事件写入 stream_store
@@ -375,12 +385,13 @@ class ConversationStreamRunService(ConversationBaseService):
             assistant_message_id=str(assistant_message.id),
             stream_id=stream_id,
             thread_id=conversation.thread_id,
-            chat_mode=effective_chat_mode,
-            agent_type="web_agent" if effective_chat_mode == "agent" else None,
+            chat_mode=execution_chat_mode,
+            agent_type=agent_type,
             # 这里显式复制一份输入消息列表，避免后续 state / runtime 在不同层被意外共享修改。
             input_messages=list(initial_state.get("input_messages", [])),
             llm_config=llm_config,
             model=_model,
+            file_refs=file_refs,
         )
         runtime_context = OrbitRuntimeContext(
             request=runtime_request,
@@ -537,6 +548,12 @@ class ConversationStreamRunService(ConversationBaseService):
                     token_usage=persisted_output["token_usage"],
                     response_metadata=persisted_output["response_metadata"],
                 )
+                await self.agent_artifacts.persist_message_artifacts(
+                    message=failed_message,
+                    response_metadata=persisted_output["response_metadata"],
+                    status="failed",
+                    error=error,
+                )
                 await self._finalize_stream_conversation_state(
                     conversation=conversation,
                     stream_id=stream_id,
@@ -557,6 +574,11 @@ class ConversationStreamRunService(ConversationBaseService):
                 reasoning_content=persisted_output["reasoning_text"],
                 token_usage=persisted_output["token_usage"],
                 response_metadata=persisted_output["response_metadata"],
+            )
+            await self.agent_artifacts.persist_message_artifacts(
+                message=assistant_message,
+                response_metadata=persisted_output["response_metadata"],
+                status="completed",
             )
             await self._finalize_stream_conversation_state(
                 conversation=conversation,
@@ -639,6 +661,71 @@ class ConversationStreamRunService(ConversationBaseService):
             },
             error=None,
         )
+
+    @staticmethod
+    def _extract_runtime_file_refs(history_messages: list) -> list[dict[str, Any]]:
+        """从本轮上下文中提取可供 runtime 使用的文件引用。"""
+        for message in reversed(history_messages):
+            if getattr(message, "role", None) != "user":
+                continue
+            refs: list[dict[str, Any]] = []
+            for part in getattr(message, "content_parts", []) or []:
+                if not isinstance(part, dict) or part.get("type") != "file":
+                    continue
+                refs.append(
+                    {
+                        "file_id": part.get("file_id"),
+                        "name": part.get("name"),
+                        "mime_type": part.get("mime_type"),
+                        "file_size": part.get("file_size"),
+                        "storage_path": part.get("storage_path"),
+                    }
+                )
+            return refs
+        return []
+
+    @staticmethod
+    def _resolve_agent_type(
+        *,
+        chat_mode: str,
+        file_refs: list[dict[str, Any]],
+    ) -> str | None:
+        """解析本轮 agent 请求要使用的具体插件。"""
+        if chat_mode != "agent":
+            return None
+        if ConversationStreamRunService._has_data_workspace_files(file_refs):
+            return "data_workspace_agent"
+        return "web_agent"
+
+    @staticmethod
+    def _resolve_execution_chat_mode(
+        *,
+        chat_mode: str,
+        file_refs: list[dict[str, Any]],
+    ) -> str:
+        """带数据文件的普通 Chat 自动提升为 agent 执行，避免前端模式选择成为隐性入口。"""
+        if chat_mode == "chat" and ConversationStreamRunService._has_data_workspace_files(file_refs):
+            return "agent"
+        return chat_mode
+
+    @staticmethod
+    def _has_data_workspace_files(file_refs: list[dict[str, Any]]) -> bool:
+        data_extensions = {".csv", ".tsv", ".json", ".xlsx"}
+        data_mime_fragments = {
+            "csv",
+            "json",
+            "spreadsheet",
+            "excel",
+            "tab-separated-values",
+        }
+        for ref in file_refs:
+            name = str(ref.get("name") or "").lower()
+            mime_type = str(ref.get("mime_type") or "").lower()
+            if any(name.endswith(ext) for ext in data_extensions):
+                return True
+            if any(fragment in mime_type for fragment in data_mime_fragments):
+                return True
+        return False
 
     @staticmethod
     def _merge_langgraph_persisted_output(

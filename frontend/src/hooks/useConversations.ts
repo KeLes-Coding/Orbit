@@ -3,7 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { conversationApi } from '@/api/conversations'
 import { streamManager } from '@/lib/streamManager'
 import { useOrbitStore } from '@/stores/useOrbitStore'
-import type { Conversation, Message, StreamMessageEvent, ThoughtEventData, ToolCallDelta, ToolResultDelta } from '@/api/types'
+import type { AgentArtifact, Conversation, Message, StreamMessageEvent, ThoughtEventData, ToolCallDelta, ToolResultDelta } from '@/api/types'
 
 interface UseConversationsOptions {
   enableStreamResume?: boolean
@@ -78,6 +78,27 @@ function normalizeThoughtEvents(events: ThoughtEventData[] | undefined): Thought
   return merged
 }
 
+function normalizeAgentArtifacts(message: Message): AgentArtifact[] {
+  if (Array.isArray(message.agent_artifacts) && message.agent_artifacts.length > 0) {
+    return message.agent_artifacts
+  }
+  const metadataArtifacts = message.response_metadata?.artifacts
+  if (!Array.isArray(metadataArtifacts)) return []
+  return metadataArtifacts
+    .filter((item): item is AgentArtifact =>
+      Boolean(
+        item &&
+          typeof item === 'object' &&
+          typeof (item as AgentArtifact).name === 'string' &&
+          typeof (item as AgentArtifact).path === 'string',
+      ),
+    )
+    .map((item, index) => ({
+      ...item,
+      id: item.id || `${message.id}-artifact-${index}`,
+    }))
+}
+
 function mergeToolCallDeltas(
   existing: ToolCallDelta[] | undefined,
   incoming: ToolCallDelta[],
@@ -141,6 +162,7 @@ function normalizeMessage(message: Message | null | undefined): NormalizedMessag
     content: message.content || '',
     reasoning_content: message.reasoning_content || '',
     thought_events: normalizeThoughtEvents(message.thought_events),
+    agent_artifacts: normalizeAgentArtifacts(message),
   }
 }
 
@@ -320,6 +342,7 @@ function hydrateStreamSnapshots(
       token_usage: snapshot.message.token_usage,
       response_metadata: snapshot.message.response_metadata,
       thought_events: snapshot.message.thought_events,
+      agent_artifacts: snapshot.message.agent_artifacts,
     }
     if (
       nextMessage.content === message.content &&
@@ -327,7 +350,8 @@ function hydrateStreamSnapshots(
       nextMessage.status === message.status &&
       areJsonValuesEqual(nextMessage.token_usage, message.token_usage) &&
       areJsonValuesEqual(nextMessage.response_metadata, message.response_metadata) &&
-      areJsonValuesEqual(nextMessage.thought_events, message.thought_events)
+      areJsonValuesEqual(nextMessage.thought_events, message.thought_events) &&
+      areJsonValuesEqual(nextMessage.agent_artifacts, message.agent_artifacts)
     ) {
       return message
     }

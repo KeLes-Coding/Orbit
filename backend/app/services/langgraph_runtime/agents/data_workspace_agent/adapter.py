@@ -1,4 +1,4 @@
-"""WebAgent 的 Orbit adapter。"""
+"""Data Workspace Agent 的 Orbit adapter。"""
 
 from __future__ import annotations
 
@@ -7,33 +7,25 @@ from typing import Any
 
 from langchain_core.messages import BaseMessage
 
-from app.services.langgraph_runtime.agent_contract import LlmInvoker
 from app.services.langgraph_runtime.agent_types import AgentBudget, AgentExecutionResult
+from app.services.langgraph_runtime.agents.data_workspace_agent.runtime import DataWorkspaceAgentRuntime
 from app.services.langgraph_runtime.runtime_context import OrbitRuntimeContext
-from app.services.langgraph_runtime.web_agent.runtime import WebAgentRuntime
-from app.services.tools import OrbitToolRuntime
+from app.services.langgraph_runtime.sandbox import SandboxManager
 
 
-class WebAgentAdapter:
-    """对外暴露统一 Agent 协议，内部调用 WebAgentRuntime。"""
+class DataWorkspaceAgentAdapter:
+    """通过统一 Agent 协议暴露数据工作区分析能力。"""
 
-    agent_type = "web_agent"
+    agent_type = "data_workspace_agent"
 
     def __init__(
         self,
         *,
-        llm_invoke: LlmInvoker,
-        tool_runtime: OrbitToolRuntime,
+        sandbox_manager: SandboxManager | None = None,
         budget: AgentBudget | None = None,
     ) -> None:
-        self._llm_invoke = llm_invoke
-        self._tool_runtime = tool_runtime
-        self._budget = budget or AgentBudget(
-            max_rounds=3,
-            max_tool_calls=6,
-            max_search_calls_per_round=2,
-            timeout_seconds=120,
-        )
+        self._sandbox_manager = sandbox_manager
+        self._budget = budget
 
     async def run(
         self,
@@ -43,9 +35,8 @@ class WebAgentAdapter:
         runtime_context: OrbitRuntimeContext,
         on_event: Callable[[dict[str, Any]], None],
     ) -> AgentExecutionResult:
-        runtime = WebAgentRuntime(
-            llm_invoke=self._llm_invoke,
-            tool_runtime=self._tool_runtime,
+        runtime = DataWorkspaceAgentRuntime(
+            sandbox_manager=self._sandbox_manager,
             budget=self._budget,
         )
         result = await runtime.run(
