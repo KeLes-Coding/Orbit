@@ -87,9 +87,19 @@ export interface ThoughtEventData {
     | 'agent.run.status'
     | 'agent.run.log'
     | 'agent.run.artifact'
-  phase: 'planning' | 'loop' | 'reason' | 'workspace' | 'execute' | 'artifact'
+    | 'agent.step.started'
+    | 'agent.step.delta'
+    | 'agent.step.completed'
+    | 'agent.step.failed'
+  phase: 'planning' | 'loop' | 'reason' | 'workspace' | 'codegen' | 'execute' | 'artifact'
   text: string
   meta?: Record<string, unknown>
+  step_id?: string
+  step_kind?: string
+  status?: 'running' | 'completed' | 'failed' | string
+  input?: unknown
+  output?: unknown
+  error?: string
 }
 
 export interface AgentArtifactPreview {
@@ -109,6 +119,21 @@ export interface AgentArtifact {
   metadata?: Record<string, unknown>
   preview?: AgentArtifactPreview
   created_at?: string
+}
+
+export interface AgentBudgetDescriptor {
+  max_rounds: number
+  max_tool_calls: number
+  max_search_calls_per_round: number
+  timeout_seconds: number
+}
+
+export interface AgentDescriptor {
+  agent_type: string
+  display_name: string
+  description: string
+  capabilities: string[]
+  default_budget: AgentBudgetDescriptor
 }
 
 export interface ToolCallDelta {
@@ -181,6 +206,7 @@ export interface CreateConversationMessagePayload {
   llm_config_id?: string | null
   model?: string | null
   chat_mode?: string
+  agent_type?: string | null
   metadata?: Record<string, unknown>
   idempotency_key?: string | null
   file_ids?: string[]
@@ -200,6 +226,7 @@ export interface SendMessagePayload {
   idempotency_key?: string | null
   model?: string | null
   chat_mode?: string | null
+  agent_type?: string | null
   file_ids?: string[]
 }
 

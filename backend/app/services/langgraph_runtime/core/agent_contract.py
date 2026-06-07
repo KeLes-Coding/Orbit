@@ -7,8 +7,8 @@ from typing import Any, Protocol
 
 from langchain_core.messages import BaseMessage
 
-from app.services.langgraph_runtime.agent_types import AgentExecutionResult
-from app.services.langgraph_runtime.runtime_context import OrbitRuntimeContext
+from app.services.langgraph_runtime.core.agent_types import AgentDescriptor, AgentExecutionResult
+from app.services.langgraph_runtime.core.runtime_context import OrbitRuntimeContext
 
 LlmInvoker = Callable[
     [list[BaseMessage], str | None, bool, list | None, Any | None, int | None],
@@ -19,7 +19,11 @@ LlmInvoker = Callable[
 class BaseOrbitAgentAdapter(Protocol):
     """所有 Agent adapter 的统一协议。"""
 
-    agent_type: str
+    descriptor: AgentDescriptor
+
+    @property
+    def agent_type(self) -> str:
+        return self.descriptor.agent_type
 
     async def run(
         self,

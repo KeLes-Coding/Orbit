@@ -9,10 +9,16 @@ from typing import Any
 
 from langchain_core.messages import BaseMessage
 
-from app.services.langgraph_runtime.agent_types import AgentBudget, AgentExecutionResult
+from app.services.langgraph_runtime.core.agent_types import AgentBudget, AgentExecutionResult
+from app.services.langgraph_runtime.core.agent_contract import LlmInvoker
 from app.services.langgraph_runtime.artifacts import ArtifactCollector, ArtifactManifest
+from app.services.langgraph_runtime.agents.data_workspace_agent.code_cleaner import DataCodeCleaner
+from app.services.langgraph_runtime.agents.data_workspace_agent.code_generator import DataCodeGenerator
+from app.services.langgraph_runtime.agents.data_workspace_agent.code_validator import DataCodeValidator
 from app.services.langgraph_runtime.agents.data_workspace_agent.projector import DataWorkspaceProjector
-from app.services.langgraph_runtime.runtime_context import OrbitRuntimeContext
+from app.services.langgraph_runtime.agents.data_workspace_agent.runtime_contract import DataRuntimeContract
+from app.services.langgraph_runtime.agents.data_workspace_agent.sandbox_executor import DataSandboxExecutor
+from app.services.langgraph_runtime.core.runtime_context import OrbitRuntimeContext
 from app.services.langgraph_runtime.sandbox import SandboxInputFile, SandboxManager
 
 
@@ -22,12 +28,29 @@ class DataWorkspaceAgentRuntime:
     def __init__(
         self,
         *,
+        llm_invoke: LlmInvoker | None = None,
         sandbox_manager: SandboxManager | None = None,
+        artifact_collector_factory: Callable[[SandboxManager], ArtifactCollector] | None = None,
         budget: AgentBudget | None = None,
     ) -> None:
+        self._llm_invoke = llm_invoke
         self._sandbox_manager = sandbox_manager or SandboxManager()
         self._budget = budget or AgentBudget(timeout_seconds=45)
-        self._artifact_collector = ArtifactCollector(self._sandbox_manager)
+        collector_factory = artifact_collector_factory or ArtifactCollector
+        self._artifact_collector = collector_factory(self._sandbox_manager)
+        self._runtime_contract = DataRuntimeContract()
+        self._code_cleaner = DataCodeCleaner()
+        self._code_validator = DataCodeValidator()
+        self._code_generator = DataCodeGenerator(
+            llm_invoke=self._llm_invoke,
+            cleaner=self._code_cleaner,
+            contract=self._runtime_contract,
+        )
+        self._sandbox_executor = DataSandboxExecutor(
+            sandbox_manager=self._sandbox_manager,
+            artifact_collector=self._artifact_collector,
+            timeout_seconds=self._budget.timeout_seconds,
+        )
 
     async def run(
         self,
@@ -53,53 +76,160 @@ class DataWorkspaceAgentRuntime:
         workspace_files: list[dict[str, str]] = []
         try:
             # MVP 采用 run-level ephemeral sandbox：每次分析创建、同步、执行、回收、销毁。
-            projector.emit_status("准备 sandbox workspace", meta={"file_count": len(input_files)})
+            projector.emit_step(
+                event_type="agent.step.started",
+                step_id="sandbox.create",
+                step_kind="sandbox.create",
+                title="准备 sandbox workspace",
+                phase="workspace",
+                status="running",
+                input={"file_count": len(input_files), "files": [item.name for item in input_files]},
+            )
             session = await self._sandbox_manager.create_run_sandbox(
                 run_id=run_id,
                 input_files=input_files,
             )
-
-            projector.emit_status("写入分析脚本")
-            await self._sandbox_manager.upload_text(
-                session,
-                "/workspace/work/analysis.py",
-                self._build_analysis_script(user_query=user_query),
+            projector.emit_step(
+                event_type="agent.step.completed",
+                step_id="sandbox.create",
+                step_kind="sandbox.create",
+                title="sandbox workspace 已准备",
+                phase="workspace",
+                status="completed",
+                output={"sandbox_id": session.id, "file_count": len(input_files)},
             )
 
-            # 当前版本先写入确定性分析脚本，跑通执行面闭环；后续可替换为 LLM 生成脚本 + repair。
-            projector.emit_status("执行数据分析脚本")
-            exec_result = await self._sandbox_manager.exec_python(
-                session,
-                "work/analysis.py",
-                timeout_seconds=self._budget.timeout_seconds,
+            projector.emit_step(
+                event_type="agent.step.started",
+                step_id="llm.codegen",
+                step_kind="llm.codegen",
+                title="生成分析脚本",
+                phase="codegen",
+                status="running",
+                input={"query": user_query, "files": [item.name for item in input_files]},
             )
-            projector.emit_log(exec_result.stdout, stream="stdout")
-            projector.emit_log(exec_result.stderr, stream="stderr")
-            if not exec_result.ok:
-                return projector.build_result(
-                    manifest=None,
-                    workspace_files=await self._sandbox_manager.list_output_files(session),
-                    response_metadata=self._metadata(
-                        exit_code=exec_result.exit_code,
-                        timed_out=exec_result.timed_out,
-                    ),
-                    error=exec_result.stderr or "sandbox 执行失败",
+            analysis_code = await self._generate_analysis_code(
+                user_query=user_query,
+                input_files=input_files,
+                projector=projector,
+            )
+            projector.emit_step(
+                event_type="agent.step.completed",
+                step_id="llm.codegen",
+                step_kind="llm.codegen",
+                title="analysis.py 已生成",
+                phase="codegen",
+                status="completed",
+                output={"bytes": len(analysis_code.encode("utf-8"))},
+            )
+
+            exec_result = None
+            validation_error: str | None = None
+            repair_attempts = 0
+            max_repairs = 2 if self._llm_invoke is not None else 0
+            while True:
+                preflight_error = self._validate_generated_code(analysis_code)
+                if preflight_error:
+                    projector.emit_step(
+                        event_type="agent.step.failed",
+                        step_id="code.preflight",
+                        step_kind="code.preflight",
+                        title="analysis.py 预检失败",
+                        phase="codegen",
+                        status="failed",
+                        error=preflight_error,
+                    )
+                    projector.emit_log(
+                        preflight_error,
+                        stream="stderr",
+                        step_id="code.preflight",
+                        step_kind="code.preflight",
+                    )
+                    exec_result = self._sandbox_executor.preflight_exec_result(preflight_error)
+                    validation_error = preflight_error
+                else:
+                    await self._sandbox_executor.upload_analysis_code(
+                        session=session,
+                        analysis_code=analysis_code,
+                        projector=projector,
+                    )
+                    exec_result = await self._sandbox_executor.execute_analysis_code(
+                        session=session,
+                        attempt=repair_attempts + 1,
+                        projector=projector,
+                    )
+                    if exec_result.ok:
+                        manifest, validation_error = await self._sandbox_executor.collect_manifest(
+                            session=session,
+                            projector=projector,
+                        )
+                        if manifest is not None:
+                            break
+                    else:
+                        validation_error = exec_result.stderr or "sandbox 执行失败"
+
+                if repair_attempts >= max_repairs:
+                    workspace_files = await self._sandbox_manager.list_output_files(session)
+                    return projector.build_result(
+                        manifest=None,
+                        workspace_files=workspace_files,
+                        response_metadata=self._metadata(
+                            exit_code=exec_result.exit_code,
+                            timed_out=exec_result.timed_out,
+                            repair_attempts=repair_attempts,
+                            validation_error=validation_error,
+                        ),
+                        error=validation_error,
+                    )
+
+                repair_attempts += 1
+                repair_step_id = f"llm.repair.{repair_attempts}"
+                projector.emit_step(
+                    event_type="agent.step.started",
+                    step_id=repair_step_id,
+                    step_kind="llm.repair",
+                    title="修复分析脚本",
+                    phase="codegen",
+                    status="running",
+                    input={"attempt": repair_attempts, "error": validation_error},
                 )
-
-            projector.emit_status("校验 artifact manifest")
-            manifest = await self._artifact_collector.collect(session)
+                analysis_code = await self._repair_analysis_code(
+                    user_query=user_query,
+                    input_files=input_files,
+                    previous_code=analysis_code,
+                    stdout=exec_result.stdout,
+                    stderr=exec_result.stderr,
+                    validation_error=validation_error,
+                    projector=projector,
+                )
+                projector.emit_step(
+                    event_type="agent.step.completed",
+                    step_id=repair_step_id,
+                    step_kind="llm.repair",
+                    title="analysis.py 修复完成",
+                    phase="codegen",
+                    status="completed",
+                    output={
+                        "attempt": repair_attempts,
+                        "bytes": len(analysis_code.encode("utf-8")),
+                    },
+                )
             artifact_payloads = await self._build_artifact_payloads(
                 session=session,
                 manifest=manifest,
             )
             for artifact in manifest.artifacts:
-                projector.emit_artifact(artifact.model_dump(mode="json"))
+                projector.emit_artifact(artifact.model_dump(mode="json"), step_id="artifact.collect")
             workspace_files = await self._sandbox_manager.list_output_files(session)
 
             return projector.build_result(
                 manifest=manifest,
                 workspace_files=workspace_files,
-                response_metadata=self._metadata(artifacts=artifact_payloads),
+                response_metadata=self._metadata(
+                    artifacts=artifact_payloads,
+                    repair_attempts=repair_attempts,
+                    codegen_backend="llm" if self._llm_invoke is not None else "deterministic",
+                ),
             )
         except Exception as exc:
             return projector.build_result(
@@ -111,6 +241,50 @@ class DataWorkspaceAgentRuntime:
         finally:
             if session is not None:
                 await self._sandbox_manager.destroy(session)
+
+    async def _generate_analysis_code(
+        self,
+        *,
+        user_query: str,
+        input_files: list[SandboxInputFile],
+        projector: DataWorkspaceProjector,
+    ) -> str:
+        if self._llm_invoke is None:
+            return self._build_analysis_script(user_query=user_query)
+        return await self._code_generator.generate(
+            user_query=user_query,
+            input_files=input_files,
+            fallback_code=self._build_analysis_script(user_query=user_query),
+            token_usage_sink=projector.merge_token_usage,
+        )
+
+    async def _repair_analysis_code(
+        self,
+        *,
+        user_query: str,
+        input_files: list[SandboxInputFile],
+        previous_code: str,
+        stdout: str,
+        stderr: str,
+        validation_error: str | None,
+        projector: DataWorkspaceProjector,
+    ) -> str:
+        if self._llm_invoke is None:
+            return previous_code
+        return await self._code_generator.repair(
+            user_query=user_query,
+            input_files=input_files,
+            previous_code=previous_code,
+            stdout=stdout,
+            stderr=stderr,
+            validation_error=validation_error,
+            token_usage_sink=projector.merge_token_usage,
+        )
+
+    def _validate_generated_code(self, code: str) -> str | None:
+        """执行前预检，避免明显错误代码进入 sandbox。"""
+
+        return self._code_validator.validate(code)
 
     def _load_input_files(self, runtime_context: OrbitRuntimeContext) -> list[SandboxInputFile]:
         """从宿主上下文解析本轮要同步进 sandbox 的文件。"""

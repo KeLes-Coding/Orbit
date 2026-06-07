@@ -10,14 +10,14 @@ from langchain_core.messages import BaseMessage, HumanMessage
 from langchain_core.runnables.config import RunnableConfig
 from langgraph.graph import END, START, StateGraph
 
-from app.services.langgraph_runtime.agent_contract import LlmInvoker
-from app.services.langgraph_runtime.agent_types import AgentBudget, AgentExecutionResult
+from app.services.langgraph_runtime.core.agent_contract import LlmInvoker
+from app.services.langgraph_runtime.core.agent_types import AgentBudget, AgentExecutionResult
 from app.services.langgraph_runtime.agent_workspace import (
     AgentWorkspace,
     create_agent_workspace,
 )
-from app.services.langgraph_runtime.runtime_context import OrbitRuntimeContext
-from app.services.langgraph_runtime.thread_runtime_store import thread_runtime_store
+from app.services.langgraph_runtime.core.runtime_context import OrbitRuntimeContext
+from app.services.langgraph_runtime.core.thread_runtime_store import thread_runtime_store
 from app.services.langgraph_runtime.agents.web_agent.definition import (
     _CONTINUE_DECISION_PROMPT,
     _LOOP_SUMMARY_PROMPT,
@@ -239,15 +239,30 @@ class WebAgentRuntime:
                 }
 
             for result in tool_results:
+                tool_name = str(result.get("name", "unknown"))
+                tool_call_id = str(result.get("tool_call_id") or f"{round_index}:{tool_name}")
                 projector.emit_thought(
                     event_type="thought.tool",
                     phase="loop",
-                    text=f"调用工具：{result.get('name', 'unknown')}",
+                    text=f"调用工具：{tool_name}",
                     meta={
-                        "tool": result.get("name", "unknown"),
+                        "tool": tool_name,
                         "args": result.get("args", {}),
                         "tool_call_id": result.get("tool_call_id"),
                     },
+                    step_id=f"tool.call.{tool_call_id}",
+                    step_kind="tool.call",
+                    status="completed" if not result.get("is_error") else "failed",
+                    input={
+                        "tool": tool_name,
+                        "args": result.get("args", {}),
+                    },
+                    output={
+                        "tool": tool_name,
+                        "text": str(result.get("output", ""))[:4000],
+                        "is_error": bool(result.get("is_error")),
+                    },
+                    error=str(result.get("output", "")) if result.get("is_error") else None,
                 )
 
             summary_text = await self._summarize_tool_round(

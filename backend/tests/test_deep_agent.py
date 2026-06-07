@@ -7,14 +7,14 @@ from typing import Any
 
 from langchain_core.messages import HumanMessage
 
-from app.services.langgraph_runtime.agent_types import AgentBudget
+from app.services.langgraph_runtime.core.agent_types import AgentBudget
 from app.services.langgraph_runtime.agent_workspace import (
     InMemoryAgentWorkspace,
     create_agent_workspace,
 )
 from app.services.langgraph_runtime.chat_runtime import LangGraphChatRuntime
-from app.services.langgraph_runtime.runtime_context import OrbitRuntimeContext, OrbitRuntimeRequest
-from app.services.langgraph_runtime.thread_runtime_store import thread_runtime_store
+from app.services.langgraph_runtime.core.runtime_context import OrbitRuntimeContext, OrbitRuntimeRequest
+from app.services.langgraph_runtime.core.thread_runtime_store import thread_runtime_store
 from app.services.langgraph_runtime.agents.web_agent.definition import WebAgentDefinition
 from app.services.langgraph_runtime.agents.web_agent.runtime import WebAgentRuntime
 from app.services.llm_client import LLMStreamChunk

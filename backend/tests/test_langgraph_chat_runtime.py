@@ -8,12 +8,16 @@ from uuid import uuid4
 from langchain_core.messages import HumanMessage
 
 from app.services.conversations.stream_run import ConversationStreamRunService
-from app.services.langgraph_runtime.agent_registry import AgentRegistry
-from app.services.langgraph_runtime.agent_types import AgentExecutionResult
 from app.services.langgraph_runtime.chat_runtime import LangGraphChatRuntime
-from app.services.langgraph_runtime.runtime_context import OrbitRuntimeContext, OrbitRuntimeRequest
-from app.services.langgraph_runtime.state import ChatState
-from app.services.langgraph_runtime.stream_adapter import StreamAdapter
+from app.services.langgraph_runtime.core.agent_registry import AgentRegistry
+from app.services.langgraph_runtime.core.agent_types import (
+    AgentBudget,
+    AgentDescriptor,
+    AgentExecutionResult,
+)
+from app.services.langgraph_runtime.core.runtime_context import OrbitRuntimeContext, OrbitRuntimeRequest
+from app.services.langgraph_runtime.core.state import ChatState
+from app.services.langgraph_runtime.core.stream_adapter import StreamAdapter
 from app.services.llm_client import LLMClientError, LLMStreamChunk
 from app.services.streaming import conversation_stream_store
 
@@ -88,7 +92,17 @@ def test_graph_compiles():
 
 def test_agentic_chat_uses_registry_adapter():
     class FakeAgent:
-        agent_type = "web_agent"
+        descriptor = AgentDescriptor(
+            agent_type="web_agent",
+            display_name="Fake Web Agent",
+            description="Fake agent for registry tests.",
+            capabilities=frozenset({"test"}),
+            default_budget=AgentBudget(),
+        )
+
+        @property
+        def agent_type(self):
+            return self.descriptor.agent_type
 
         async def run(self, *, user_query, history_messages, runtime_context, on_event):
             on_event({"type": "thought.planning", "phase": "planning", "text": "先搜一下", "meta": {}})
@@ -99,6 +113,10 @@ def test_agentic_chat_uses_registry_adapter():
             )
 
     async def fake_stream():
+        if False:
+            yield None
+
+    async def unused_llm(*_args, **_kwargs):
         if False:
             yield None
 
@@ -120,7 +138,7 @@ def test_agentic_chat_uses_registry_adapter():
     )
     runtime = LangGraphChatRuntime(
         stream_factory=fake_stream,
-        llm_invoke=lambda *_args, **_kwargs: None,  # pragma: no cover - won't be used
+        llm_invoke=unused_llm,  # pragma: no cover - won't be used
         runtime_context=runtime_context,
         agent_registry=registry,
     )
@@ -198,11 +216,11 @@ def test_run_stream_accumulates_normalized_chunks():
                 stream_adapter=adapter,
             )
 
-            assert final_state["error"] is None
-            assert final_state["response_text"] == "你好"
-            assert final_state["reasoning_text"] == "想法"
-            assert final_state["token_usage"] == {"output_tokens": 2}
-            assert final_state["response_metadata"]["finish_reason"] == "stop"
+            assert final_state.get("error") is None
+            assert final_state.get("response_text") == "你好"
+            assert final_state.get("reasoning_text") == "想法"
+            assert final_state.get("token_usage") == {"output_tokens": 2}
+            assert final_state.get("response_metadata", {})["finish_reason"] == "stop"
 
             stream = await conversation_stream_store.get_stream(stream_id)
             assert stream is not None
@@ -257,7 +275,7 @@ def test_run_stream_uses_runtime_context_thread_id_when_state_is_slim():
                 ),
                 stream_adapter=adapter,
             )
-            assert final_state["response_text"] == "ok"
+            assert final_state.get("response_text") == "ok"
         finally:
             await conversation_stream_store.complete_stream(stream_id, retention_seconds=0)
 
@@ -294,7 +312,7 @@ def test_run_stream_returns_llm_error():
                 state=make_minimal_state(),
                 stream_adapter=adapter,
             )
-            assert final_state["error"] == "模型服务请求失败"
+            assert final_state.get("error") == "模型服务请求失败"
         finally:
             await conversation_stream_store.complete_stream(stream_id, retention_seconds=0)
 
@@ -332,7 +350,7 @@ def test_run_stream_returns_cancelled_when_stream_store_is_cancelled():
                 state=make_minimal_state(),
                 stream_adapter=adapter,
             )
-            assert final_state["error"] == "cancelled"
+            assert final_state.get("error") == "cancelled"
         finally:
             await conversation_stream_store.complete_stream(stream_id, retention_seconds=0)
 

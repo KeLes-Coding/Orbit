@@ -94,25 +94,28 @@ class StreamAdapter:
                 self._finish_reason = reason
                 self._response_metadata["finish_reason"] = reason
 
-        elif event_type.startswith("thought."):
-            # Phase 2: thought.planning / thought.tool / thought.summary / thought.reason
-            await conversation_stream_store.append_event(
-                self._stream_id,
-                event="message.thought",
-                data={
-                    "message_id": str(self._message_id),
-                    "type": event_type,
-                    "phase": event.get("phase", ""),
-                    "text": event.get("text", ""),
-                    "meta": event.get("meta", {}),
-                },
-            )
-            self._thought_events.append({
+        elif (
+            event_type.startswith("thought.")
+            or event_type.startswith("agent.run.")
+            or event_type.startswith("agent.step.")
+        ):
+            # Agent timeline events share the message.thought SSE channel for now.
+            payload = {
+                "message_id": str(self._message_id),
                 "type": event_type,
                 "phase": event.get("phase", ""),
                 "text": event.get("text", ""),
                 "meta": event.get("meta", {}),
-            })
+            }
+            for key in ("step_id", "step_kind", "status", "input", "output", "error"):
+                if key in event:
+                    payload[key] = event[key]
+            await conversation_stream_store.append_event(
+                self._stream_id,
+                event="message.thought",
+                data=payload,
+            )
+            self._thought_events.append(payload)
 
     def get_accumulated_state(self) -> dict[str, Any]:
         """返回累积的响应状态，供 graph 节点写入 ChatState。

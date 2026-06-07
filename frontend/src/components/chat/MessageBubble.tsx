@@ -19,6 +19,81 @@ interface SearchResult {
   description?: string
 }
 
+interface TimelineStepGroup {
+  kind: "step"
+  stepId: string
+  stepKind?: string
+  phase: ThoughtEventData["phase"]
+  title: string
+  status?: string
+  events: ThoughtEventData[]
+}
+
+interface TimelineLegacyItem {
+  kind: "legacy"
+  event: ThoughtEventData
+}
+
+type TimelineItem = TimelineStepGroup | TimelineLegacyItem
+
+function groupTimelineEvents(events: ThoughtEventData[]): TimelineItem[] {
+  const items: TimelineItem[] = []
+  const stepById = new Map<string, TimelineStepGroup>()
+  for (const event of events) {
+    if (!event.step_id) {
+      items.push({ kind: "legacy", event })
+      continue
+    }
+    let group = stepById.get(event.step_id)
+    if (!group) {
+      group = {
+        kind: "step",
+        stepId: event.step_id,
+        stepKind: event.step_kind,
+        phase: event.phase,
+        title: event.text,
+        status: event.status,
+        events: [],
+      }
+      stepById.set(event.step_id, group)
+      items.push(group)
+    }
+    group.events.push(event)
+    if (event.type === "agent.step.started" || !group.title) {
+      group.title = event.text
+    }
+    if (event.status) group.status = event.status
+    if (event.step_kind) group.stepKind = event.step_kind
+  }
+  return items
+}
+
+function labelForStepKind(stepKind?: string): string {
+  if (stepKind === "llm.codegen") return "生成代码"
+  if (stepKind === "llm.repair") return "修复代码"
+  if (stepKind === "sandbox.create") return "创建沙箱"
+  if (stepKind === "sandbox.upload") return "写入文件"
+  if (stepKind === "sandbox.exec") return "执行脚本"
+  if (stepKind === "code.preflight") return "代码预检"
+  if (stepKind === "artifact.collect") return "收集产物"
+  if (stepKind === "tool.call") return "工具调用"
+  return "执行步骤"
+}
+
+function iconForStepKind(stepKind?: string): ReactNode {
+  if (stepKind?.startsWith("llm.")) return <Brain className="h-3 w-3" />
+  if (stepKind === "tool.call") return <Wrench className="h-3 w-3" />
+  if (stepKind === "sandbox.exec" || stepKind === "code.preflight") return <FileCode className="h-3 w-3" />
+  if (stepKind === "artifact.collect") return <FileText className="h-3 w-3" />
+  return <FileCheck className="h-3 w-3" />
+}
+
+function stringifyTimelineValue(value: unknown): string {
+  if (value === undefined || value === null || value === "") return ""
+  if (typeof value === "string") return value
+  return JSON.stringify(value, null, 2)
+}
+
 function getArtifactIcon(type: string): ReactNode {
   if (type === "code") return <FileCode className="h-3.5 w-3.5" />
   if (type === "chart") return <BarChart3 className="h-3.5 w-3.5" />
@@ -190,6 +265,10 @@ export const MessageBubble = memo(function MessageBubble({
     () => message.thought_events || [],
     [message.thought_events],
   )
+  const timelineItems = useMemo<TimelineItem[]>(
+    () => groupTimelineEvents(thoughtEvents),
+    [thoughtEvents],
+  )
   const agentArtifacts = useMemo<AgentArtifact[]>(
     () => message.agent_artifacts || [],
     [message.agent_artifacts],
@@ -356,8 +435,57 @@ export const MessageBubble = memo(function MessageBubble({
                 <div className="thought-body">
                   {/* Phase 2 structured thought events */}
                   {hasThoughtEvents ? (
-                    thoughtEvents.map((event, index) => {
-                      const isLast = index === thoughtEvents.length - 1
+                    timelineItems.map((item, index) => {
+                      const isLast = index === timelineItems.length - 1
+                      if (item.kind === "step") {
+                        const failed = item.status === "failed"
+                        const detail = item.stepKind || item.status
+                        const inputs = item.events
+                          .map((event) => stringifyTimelineValue(event.input))
+                          .filter(Boolean)
+                        const outputs = item.events
+                          .map((event) => stringifyTimelineValue(event.output))
+                          .filter(Boolean)
+                        const errors = item.events
+                          .map((event) => event.error || (event.status === "failed" ? event.text : ""))
+                          .filter(Boolean)
+                        const logs = item.events
+                          .filter((event) => event.type === "agent.step.delta")
+                          .map((event) => {
+                            const output = event.output as { stream?: string; text?: string } | undefined
+                            return output?.text || event.text
+                          })
+                          .filter(Boolean)
+                        return (
+                          <TimelinePhase
+                            key={item.stepId}
+                            icon={iconForStepKind(item.stepKind)}
+                            label={labelForStepKind(item.stepKind)}
+                            detail={detail}
+                            isLast={isLast}
+                          >
+                            <div className="space-y-2">
+                              <p className="text-sm text-muted-foreground">
+                                {item.title}
+                                {failed && <span className="tl-tool-badge">Failed</span>}
+                              </p>
+                              {inputs.length > 0 && (
+                                <pre className="tl-tool-args">{inputs[inputs.length - 1]}</pre>
+                              )}
+                              {logs.length > 0 && (
+                                <pre className="tl-tool-output">{logs.join("\n")}</pre>
+                              )}
+                              {outputs.length > 0 && (
+                                <pre className="tl-tool-args">{outputs[outputs.length - 1]}</pre>
+                              )}
+                              {errors.length > 0 && (
+                                <pre className="tl-tool-output">{errors[errors.length - 1]}</pre>
+                              )}
+                            </div>
+                          </TimelinePhase>
+                        )
+                      }
+                      const event = item.event
                       if (event.type === "thought.planning") {
                         return (
                           <TimelinePhase

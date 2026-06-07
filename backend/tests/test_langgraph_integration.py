@@ -16,9 +16,9 @@ from langchain_core.messages import HumanMessage
 
 from app.core.crypto import encrypt_secret
 from app.services.langgraph_runtime.chat_runtime import LangGraphChatRuntime
-from app.services.langgraph_runtime.runtime_context import OrbitRuntimeContext, OrbitRuntimeRequest
-from app.services.langgraph_runtime.state import ChatState
-from app.services.langgraph_runtime.stream_adapter import StreamAdapter
+from app.services.langgraph_runtime.core.runtime_context import OrbitRuntimeContext, OrbitRuntimeRequest
+from app.services.langgraph_runtime.core.state import ChatState
+from app.services.langgraph_runtime.core.stream_adapter import StreamAdapter
 from app.services.llm_client import LLMClient
 from app.services.streaming import conversation_stream_store
 

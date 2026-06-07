@@ -38,6 +38,7 @@ interface OrbitStore {
   pendingConversationLlmConfigId: string | null
   pendingConversationLlmModel: string | null
   chatMode: 'chat' | 'agent'
+  agentType: string
   editingThreadId: string | null
   editingTitle: string
   sidebarCollapsed: boolean
@@ -63,6 +64,7 @@ interface OrbitStore {
   setPendingConversationLlmConfigId: (id: string | null) => void
   setPendingConversationLlmModel: (model: string | null) => void
   setChatMode: (mode: 'chat' | 'agent') => void
+  setAgentType: (agentType: string) => void
   setEditingThreadId: (id: string | null) => void
   setEditingTitle: (title: string) => void
   markConversationCompletedOffscreen: (id: string) => void
@@ -91,6 +93,7 @@ export const useOrbitStore = create<OrbitStore>((set) => ({
   pendingConversationLlmConfigId: null,
   pendingConversationLlmModel: null,
   chatMode: 'chat',
+  agentType: 'web_agent',
   editingThreadId: null,
   editingTitle: '',
   sidebarCollapsed: getInitialSidebarCollapsed(),
@@ -134,6 +137,7 @@ export const useOrbitStore = create<OrbitStore>((set) => ({
   setPendingConversationLlmConfigId: (id) => set({ pendingConversationLlmConfigId: id }),
   setPendingConversationLlmModel: (model) => set({ pendingConversationLlmModel: model }),
   setChatMode: (mode) => set({ chatMode: mode }),
+  setAgentType: (agentType) => set({ agentType }),
   setEditingThreadId: (id) => set({ editingThreadId: id }),
   setEditingTitle: (title) => set({ editingTitle: title }),
   markConversationCompletedOffscreen: (id) =>
@@ -170,6 +174,7 @@ export const useOrbitStore = create<OrbitStore>((set) => ({
       pendingConversationLlmConfigId: null,
       pendingConversationLlmModel: null,
       chatMode: 'chat',
+      agentType: 'web_agent',
       isCreatingConversationTitle: false,
       editingThreadId: null,
       editingTitle: '',

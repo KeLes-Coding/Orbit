@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo } from "react"
+import { useQuery } from "@tanstack/react-query"
 import { useLocation, useNavigate, useParams } from "react-router-dom"
 import { toast } from "sonner"
 import {
@@ -14,6 +15,8 @@ import { useLlmConfigs } from "@/hooks/useLlmConfigs"
 import { useFileUpload } from "@/hooks/useFileUpload"
 import { useTheme } from "@/hooks/useTheme"
 import { useOrbitStore } from "@/stores/useOrbitStore"
+import { agentApi } from "@/api/agents"
+import type { AgentDescriptor } from "@/api/types"
 import { Button } from "@/components/ui/button"
 import { MessageList } from "@/components/chat/MessageList"
 import { ChatComposer } from "@/components/chat/ChatComposer"
@@ -21,6 +24,33 @@ import type { SlashItem } from "@/components/chat/SlashMenu"
 import { EmptyChatState } from "@/components/chat/EmptyChatState"
 import { ModelSelector } from "@/components/chat/ModelSelector"
 import "./ChatShell.css"
+
+const FALLBACK_AGENT_DESCRIPTORS: AgentDescriptor[] = [
+  {
+    agent_type: "web_agent",
+    display_name: "Web Agent",
+    description: "Search/tool agent",
+    capabilities: ["web_search"],
+    default_budget: {
+      max_rounds: 3,
+      max_tool_calls: 6,
+      max_search_calls_per_round: 2,
+      timeout_seconds: 120,
+    },
+  },
+  {
+    agent_type: "data_workspace_agent",
+    display_name: "Data Workspace",
+    description: "CSV/JSON/XLSX artifact agent",
+    capabilities: ["file_analysis"],
+    default_budget: {
+      max_rounds: 4,
+      max_tool_calls: 12,
+      max_search_calls_per_round: 0,
+      timeout_seconds: 120,
+    },
+  },
+]
 
 function isDataWorkspaceFile(file: File): boolean {
   const name = file.name.toLowerCase()
@@ -43,6 +73,7 @@ export function ChatShell() {
     pendingConversationLlmConfigId,
     pendingConversationLlmModel,
     chatMode,
+    agentType,
     isLoadingMessages,
     isSending,
     selectConversation,
@@ -56,6 +87,7 @@ export function ChatShell() {
     switchConversationLlm,
     selectPendingConversationLlm,
     setChatMode,
+    setAgentType,
   } = useConversations(hasUser)
 
   const {
@@ -68,14 +100,26 @@ export function ChatShell() {
   } = useFileUpload()
 
   const { configs } = useLlmConfigs(hasUser)
+  const { data: agentDescriptors = FALLBACK_AGENT_DESCRIPTORS } = useQuery({
+    queryKey: ["agent-descriptors"],
+    queryFn: agentApi.descriptors,
+    staleTime: 5 * 60 * 1000,
+  })
   const navigate = useNavigate()
   const location = useLocation()
 
   const slashItems = useMemo(() => {
     const items: SlashItem[] = [
       { id: "chat", label: "Chat", detail: "Chat mode", group: "mode" },
-      { id: "agent", label: "Agent", detail: "Agent mode (DeepAgent)", group: "mode" },
     ]
+    for (const descriptor of agentDescriptors) {
+      items.push({
+        id: descriptor.agent_type,
+        label: descriptor.display_name,
+        detail: descriptor.description,
+        group: "mode",
+      })
+    }
     for (const config of configs) {
       for (const model of config.models) {
         items.push({
@@ -87,7 +131,7 @@ export function ChatShell() {
       }
     }
     return items
-  }, [configs])
+  }, [agentDescriptors, configs])
 
   const draft = useOrbitStore((s) => s.draft)
   const setDraft = useOrbitStore((s) => s.setDraft)
@@ -177,13 +221,14 @@ export function ChatShell() {
   const handleSlashSelect = useCallback(
     (item: SlashItem) => {
       if (item.group === "mode") {
-        if (item.id === "chat" || item.id === "agent") setChatMode(item.id)
+        if (item.id === "chat") setChatMode("chat")
+        if (item.id !== "chat") setAgentType(item.id)
       } else {
         const [configId, model] = item.id.split(":")
         selectModel(configId, model)
       }
     },
-    [setChatMode, selectModel],
+    [setChatMode, setAgentType, selectModel],
   )
 
   const goToConfigs = useCallback(() => {
@@ -212,11 +257,13 @@ export function ChatShell() {
       return
     }
     const doSend = async () => {
-      const outgoingChatMode = pendingFiles.some((pending) => isDataWorkspaceFile(pending.file))
+      const hasDataWorkspaceFile = pendingFiles.some((pending) => isDataWorkspaceFile(pending.file))
+      const outgoingChatMode = hasDataWorkspaceFile
         ? "agent"
         : chatMode
+      const outgoingAgentType = hasDataWorkspaceFile ? "data_workspace_agent" : agentType
       const fileIds = await uploadPendingFiles(activeConversationId)
-      sendMessage(currentLlmConfigId, currentModel, outgoingChatMode, fileIds)
+      sendMessage(currentLlmConfigId, currentModel, outgoingChatMode, outgoingAgentType, fileIds)
     }
     void doSend().then(() => clearPendingFiles())
   }, [
@@ -225,6 +272,7 @@ export function ChatShell() {
     currentLlmConfigId,
     currentModel,
     chatMode,
+    agentType,
     navigate,
     openAuth,
     sendMessage,
@@ -237,16 +285,16 @@ export function ChatShell() {
 
   const handleEditMessage = useCallback(
     (messageId: string, newContent: string) => {
-      void editUserMessage(messageId, newContent, currentLlmConfigId, currentModel, chatMode)
+      void editUserMessage(messageId, newContent, currentLlmConfigId, currentModel, chatMode, agentType)
     },
-    [currentLlmConfigId, currentModel, chatMode, editUserMessage],
+    [currentLlmConfigId, currentModel, chatMode, agentType, editUserMessage],
   )
 
   const handleRegenerateAssistant = useCallback(
     (messageId: string) => {
-      void regenerateAssistant(messageId, currentLlmConfigId, currentModel, chatMode)
+      void regenerateAssistant(messageId, currentLlmConfigId, currentModel, chatMode, agentType)
     },
-    [currentLlmConfigId, currentModel, chatMode, regenerateAssistant],
+    [currentLlmConfigId, currentModel, chatMode, agentType, regenerateAssistant],
   )
 
   const handleForkMessage = useCallback(
@@ -346,7 +394,10 @@ export function ChatShell() {
         isUploading={isUploadingFiles}
         showVisionHint={showVisionHint}
         chatMode={chatMode}
+        agentType={agentType}
+        agentDescriptors={agentDescriptors}
         onChatModeChange={setChatMode}
+        onAgentTypeChange={setAgentType}
         slashItems={slashItems}
         onSlashSelect={handleSlashSelect}
       />

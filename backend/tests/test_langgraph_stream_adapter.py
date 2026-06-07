@@ -3,7 +3,7 @@
 import asyncio
 from uuid import uuid4
 
-from app.services.langgraph_runtime.stream_adapter import StreamAdapter
+from app.services.langgraph_runtime.core.stream_adapter import StreamAdapter
 from app.services.streaming import conversation_stream_store
 
 
@@ -124,6 +124,41 @@ def test_empty_event_is_ignored():
         assert accumulated["response_text"] == ""
         assert accumulated["reasoning_text"] == ""
         assert accumulated["token_usage"] == {}
+
+    run(_test())
+
+
+def test_agent_step_event_is_streamed_and_accumulated():
+    stream_id = f"stream_{uuid4()}"
+    message_id = uuid4()
+
+    async def _test():
+        await conversation_stream_store.create_stream(
+            stream_id=stream_id,
+            conversation_id=uuid4(),
+            message_id=message_id,
+            user_id=uuid4(),
+        )
+        adapter = StreamAdapter(stream_id=stream_id, message_id=message_id)
+
+        await adapter.emit_custom_event({
+            "type": "agent.step.started",
+            "phase": "execute",
+            "text": "执行脚本",
+            "step_id": "sandbox.exec.1",
+            "step_kind": "sandbox.exec",
+            "status": "running",
+            "input": {"command": "python work/analysis.py"},
+        })
+
+        accumulated = adapter.get_accumulated_state()
+        assert accumulated["thought_events"][0]["step_id"] == "sandbox.exec.1"
+        assert accumulated["thought_events"][0]["input"]["command"] == "python work/analysis.py"
+
+        stream = await conversation_stream_store.get_stream(stream_id)
+        assert stream is not None
+        thought_events = [event for event in stream.event_log if event.event == "message.thought"]
+        assert thought_events[0].data["step_kind"] == "sandbox.exec"
 
     run(_test())
 

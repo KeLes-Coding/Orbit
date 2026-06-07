@@ -296,6 +296,7 @@ class MessageRepository:
         revision_type: str = "normal",
         idempotency_key: str | None = None,
         chat_mode: str | None = None,
+        response_metadata: dict[str, Any] | None = None,
     ) -> Message:
         # 先写入 streaming 占位；它也是树上的普通 child，可被取消、重发或切换。
         sequence_no = await ConversationRepository(self.session).allocate_message_sequence_no(conversation_id)
@@ -314,6 +315,7 @@ class MessageRepository:
             provider=provider,
             model=model,
             chat_mode=chat_mode,
+            response_metadata=response_metadata or {},
         )
         self.session.add(message)
         await self.session.flush()

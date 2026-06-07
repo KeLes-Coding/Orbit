@@ -165,6 +165,7 @@ export const conversationApi = {
     model?: string | null,
     llmConfigId?: string | null,
     chatMode?: string | null,
+    agentType?: string | null,
   ): AsyncGenerator<StreamMessageEvent> {
     yield* fetchSse(`/conversations/${conversationId}/messages/${messageId}/regenerate/stream`, {
       method: 'POST',
@@ -174,6 +175,7 @@ export const conversationApi = {
         llm_config_id: llmConfigId ?? null,
         model: model ?? null,
         chat_mode: chatMode ?? null,
+        agent_type: agentType ?? null,
       }),
       signal,
     })

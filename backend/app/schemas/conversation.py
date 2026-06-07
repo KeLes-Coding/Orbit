@@ -53,6 +53,7 @@ class MessageCreate(BaseModel):
     idempotency_key: str | None = Field(default=None, min_length=1, max_length=120)
     model: str | None = Field(default=None, min_length=1, max_length=120)
     chat_mode: Literal["chat", "rag", "agent", "tool"] | None = None
+    agent_type: Literal["web_agent", "data_workspace_agent"] | None = None
 
     @model_validator(mode="after")
     def check_content_or_files(self) -> "MessageCreate":
@@ -69,6 +70,7 @@ class MessageEdit(BaseModel):
     idempotency_key: str | None = Field(default=None, min_length=1, max_length=120)
     model: str | None = Field(default=None, min_length=1, max_length=120)
     chat_mode: Literal["chat", "rag", "agent", "tool"] | None = None
+    agent_type: Literal["web_agent", "data_workspace_agent"] | None = None
 
     @model_validator(mode="after")
     def check_content_or_files(self) -> "MessageEdit":
@@ -83,6 +85,7 @@ class MessageRegenerate(BaseModel):
     idempotency_key: str | None = Field(default=None, min_length=1, max_length=120)
     model: str | None = Field(default=None, min_length=1, max_length=120)
     chat_mode: Literal["chat", "rag", "agent", "tool"] | None = None
+    agent_type: Literal["web_agent", "data_workspace_agent"] | None = None
 
 
 class ConversationForkCreate(BaseModel):

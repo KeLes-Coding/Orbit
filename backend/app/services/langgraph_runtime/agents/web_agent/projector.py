@@ -6,7 +6,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from app.services.langgraph_runtime.agent_types import AgentEvent, AgentExecutionResult
+from app.services.langgraph_runtime.core.agent_types import AgentEvent, AgentExecutionResult
 from app.services.langgraph_runtime.agent_workspace import AgentWorkspace
 
 
@@ -27,6 +27,12 @@ class WebAgentProjector:
         phase: str,
         text: str,
         meta: dict[str, Any] | None = None,
+        step_id: str | None = None,
+        step_kind: str | None = None,
+        status: str | None = None,
+        input: Any | None = None,
+        output: Any | None = None,
+        error: str | None = None,
     ) -> None:
         """发射可供前端渲染的 thought 事件。"""
         event: AgentEvent = {
@@ -35,12 +41,27 @@ class WebAgentProjector:
             "text": text,
             "meta": meta or {},
         }
+        if step_id:
+            event["step_id"] = step_id
+        if step_kind:
+            event["step_kind"] = step_kind
+        if status:
+            event["status"] = status
+        if input is not None:
+            event["input"] = input
+        if output is not None:
+            event["output"] = output
+        if error is not None:
+            event["error"] = error
         payload = {
             "type": event["type"],
             "phase": event["phase"],
             "text": event["text"],
             "meta": event["meta"],
         }
+        for key in ("step_id", "step_kind", "status", "input", "output", "error"):
+            if key in event:
+                payload[key] = event.get(key)
         self._thought_events.append(payload)
         self.on_event(payload)
 
@@ -100,6 +121,9 @@ class WebAgentProjector:
                 "text": raw.get("text", ""),
                 "meta": raw.get("meta", {}),
             }
+            for key in ("step_id", "step_kind", "status", "input", "output", "error"):
+                if key in raw:
+                    event[key] = raw[key]
             if not compacted:
                 compacted.append(event)
                 continue
@@ -123,4 +147,3 @@ class WebAgentProjector:
             if event.get("meta"):
                 previous["meta"] = event["meta"]
         return compacted
-

@@ -1,8 +1,9 @@
 import { useEffect, useCallback, useState, useMemo, useRef, type KeyboardEvent, type DragEvent, type ClipboardEvent } from "react"
-import { ArrowUp, Square, Paperclip, MessageSquare, Bot } from "lucide-react"
+import { ArrowUp, Square, Paperclip, MessageSquare, Bot, Table2 } from "lucide-react"
 import { useAutosizeTextarea } from "@/hooks/useAutosizeTextarea"
 import { FilePreviewItem, type PendingFile } from "./FilePreviewItem"
 import { SlashMenu, type SlashItem } from "./SlashMenu"
+import type { AgentDescriptor } from "@/api/types"
 
 interface ChatComposerProps {
   draft: string
@@ -20,7 +21,10 @@ interface ChatComposerProps {
   isUploading?: boolean
   showVisionHint?: boolean
   chatMode?: 'chat' | 'agent'
+  agentType?: string
+  agentDescriptors?: AgentDescriptor[]
   onChatModeChange?: (mode: 'chat' | 'agent') => void
+  onAgentTypeChange?: (agentType: string) => void
   slashItems?: SlashItem[]
   onSlashSelect?: (item: SlashItem) => void
 }
@@ -41,7 +45,10 @@ export function ChatComposer({
   isUploading = false,
   showVisionHint = false,
   chatMode = 'chat',
+  agentType = 'web_agent',
+  agentDescriptors = [],
   onChatModeChange,
+  onAgentTypeChange,
   slashItems = [],
   onSlashSelect,
 }: ChatComposerProps) {
@@ -330,14 +337,23 @@ export function ChatComposer({
               <MessageSquare className="h-4 w-4" />
               Chat
             </button>
-            <button
-              type="button"
-              className={`composer-mode-pill${chatMode === 'agent' ? ' active' : ''}`}
-              onClick={() => onChatModeChange('agent')}
-            >
-              <Bot className="h-4 w-4" />
-              Agent
-            </button>
+            {agentDescriptors.map((descriptor) => {
+              const Icon = descriptor.capabilities.includes('file_analysis') ? Table2 : Bot
+              return (
+                <button
+                  key={descriptor.agent_type}
+                  type="button"
+                  className={`composer-mode-pill${chatMode === 'agent' && agentType === descriptor.agent_type ? ' active' : ''}`}
+                  onClick={() => {
+                    onAgentTypeChange?.(descriptor.agent_type)
+                    onChatModeChange('agent')
+                  }}
+                >
+                  <Icon className="h-4 w-4" />
+                  {descriptor.display_name}
+                </button>
+              )
+            })}
           </div>
         )}
       </div>

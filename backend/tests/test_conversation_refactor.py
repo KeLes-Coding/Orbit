@@ -705,7 +705,7 @@ def test_produce_stream_chat_mode_routes_to_langgraph_runtime(monkeypatch):
     monkeypatch.setattr(stream_run, "conversation_stream_store", store)
     monkeypatch.setattr(stream_run, "LangGraphChatRuntime", FakeRuntime)
     # 同时 patch stream_adapter 的 stream_store，避免 emit_custom_event 调用真实 store
-    from app.services.langgraph_runtime import stream_adapter as sa_mod
+    from app.services.langgraph_runtime.core import stream_adapter as sa_mod
     monkeypatch.setattr(sa_mod, "conversation_stream_store", store)
 
     run(service._produce_stream(stream_id="stream-chat", conversation_id=conversation.id))

@@ -12,10 +12,11 @@ from app.services.conversations.base import (
     ConversationBaseService,
     ConversationStreamEvent,
 )
+from app.services.langgraph_runtime.agent_catalog import AgentCatalog
 from app.services.langgraph_runtime.chat_runtime import LangGraphChatRuntime
-from app.services.langgraph_runtime.runtime_context import OrbitRuntimeContext, OrbitRuntimeRequest
-from app.services.langgraph_runtime.state import ChatState
-from app.services.langgraph_runtime.stream_adapter import StreamAdapter
+from app.services.langgraph_runtime.core.runtime_context import OrbitRuntimeContext, OrbitRuntimeRequest
+from app.services.langgraph_runtime.core.state import ChatState
+from app.services.langgraph_runtime.core.stream_adapter import StreamAdapter
 from app.services.llm_client import LLMClientError
 from app.services.streaming import StreamEventRecord, conversation_stream_store
 
@@ -328,13 +329,14 @@ class ConversationStreamRunService(ConversationBaseService):
             return
 
         file_refs = self._extract_runtime_file_refs(history_messages)
-        execution_chat_mode = self._resolve_execution_chat_mode(
+        execution_chat_mode = AgentCatalog.resolve_execution_chat_mode(
             chat_mode=effective_chat_mode,
             file_refs=file_refs,
         )
-        agent_type = self._resolve_agent_type(
+        agent_type = AgentCatalog.resolve_agent_type(
             chat_mode=execution_chat_mode,
             file_refs=file_refs,
+            requested_agent_type=self._extract_requested_agent_type(assistant_message),
         )
 
         # 构建 LangGraph ChatState。敏感配置不进入 state，其余上下文字段保留给 graph 使用。
@@ -685,47 +687,12 @@ class ConversationStreamRunService(ConversationBaseService):
         return []
 
     @staticmethod
-    def _resolve_agent_type(
-        *,
-        chat_mode: str,
-        file_refs: list[dict[str, Any]],
-    ) -> str | None:
-        """解析本轮 agent 请求要使用的具体插件。"""
-        if chat_mode != "agent":
+    def _extract_requested_agent_type(assistant_message) -> str | None:
+        metadata = getattr(assistant_message, "response_metadata", None) or {}
+        if not isinstance(metadata, dict):
             return None
-        if ConversationStreamRunService._has_data_workspace_files(file_refs):
-            return "data_workspace_agent"
-        return "web_agent"
-
-    @staticmethod
-    def _resolve_execution_chat_mode(
-        *,
-        chat_mode: str,
-        file_refs: list[dict[str, Any]],
-    ) -> str:
-        """带数据文件的普通 Chat 自动提升为 agent 执行，避免前端模式选择成为隐性入口。"""
-        if chat_mode == "chat" and ConversationStreamRunService._has_data_workspace_files(file_refs):
-            return "agent"
-        return chat_mode
-
-    @staticmethod
-    def _has_data_workspace_files(file_refs: list[dict[str, Any]]) -> bool:
-        data_extensions = {".csv", ".tsv", ".json", ".xlsx"}
-        data_mime_fragments = {
-            "csv",
-            "json",
-            "spreadsheet",
-            "excel",
-            "tab-separated-values",
-        }
-        for ref in file_refs:
-            name = str(ref.get("name") or "").lower()
-            mime_type = str(ref.get("mime_type") or "").lower()
-            if any(name.endswith(ext) for ext in data_extensions):
-                return True
-            if any(fragment in mime_type for fragment in data_mime_fragments):
-                return True
-        return False
+        value = metadata.get("requested_agent_type")
+        return value if isinstance(value, str) else None
 
     @staticmethod
     def _merge_langgraph_persisted_output(

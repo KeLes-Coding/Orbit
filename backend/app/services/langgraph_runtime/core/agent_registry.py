@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from app.services.langgraph_runtime.agent_contract import BaseOrbitAgentAdapter
+from app.services.langgraph_runtime.core.agent_contract import BaseOrbitAgentAdapter
+from app.services.langgraph_runtime.core.agent_types import AgentDescriptor
 
 
 class AgentRegistry:
@@ -14,7 +15,7 @@ class AgentRegistry:
     def register(self, agent: BaseOrbitAgentAdapter) -> None:
         # registry 的目标是让 chat runtime 只依赖稳定协议，
         # 而不是知道具体是 web agent、file agent 还是其他实现。
-        self._agents[agent.agent_type] = agent
+        self._agents[agent.descriptor.agent_type] = agent
 
     def resolve(self, agent_type: str) -> BaseOrbitAgentAdapter:
         try:
@@ -24,3 +25,6 @@ class AgentRegistry:
 
     def has(self, agent_type: str) -> bool:
         return agent_type in self._agents
+
+    def descriptors(self) -> list[AgentDescriptor]:
+        return [agent.descriptor for agent in self._agents.values()]

@@ -8,7 +8,7 @@ from typing import Any, TypedDict, cast
 from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 from langchain_core.tools import StructuredTool, tool
 
-from app.services.langgraph_runtime.agent_types import AgentBudget
+from app.services.langgraph_runtime.core.agent_types import AgentBudget
 from app.services.langgraph_runtime.agent_workspace import AgentWorkspace
 from app.services.langgraph_runtime.agents.web_agent.prompt import WEB_AGENT_PROMPT_GUIDANCE
 from app.services.langgraph_runtime.agents.web_agent.tools import build_web_agent_tools

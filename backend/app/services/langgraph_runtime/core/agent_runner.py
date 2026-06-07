@@ -7,9 +7,9 @@ from typing import Any
 
 from langchain_core.messages import BaseMessage
 
-from app.services.langgraph_runtime.agent_registry import AgentRegistry
-from app.services.langgraph_runtime.agent_types import AgentExecutionResult
-from app.services.langgraph_runtime.runtime_context import OrbitRuntimeContext
+from app.services.langgraph_runtime.core.agent_registry import AgentRegistry
+from app.services.langgraph_runtime.core.agent_types import AgentExecutionResult
+from app.services.langgraph_runtime.core.runtime_context import OrbitRuntimeContext
 
 
 class AgentRunner:

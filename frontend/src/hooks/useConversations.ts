@@ -45,6 +45,7 @@ function shouldMergeThoughtEvent(
 ): boolean {
   if (!previous) return false
   if (previous.type !== incoming.type || previous.phase !== incoming.phase) return false
+  if (previous.step_id || incoming.step_id) return false
   if (incoming.type === 'thought.tool') return false
   if (incoming.type === 'thought.summary') {
     return previous.meta?.round === incoming.meta?.round
@@ -378,6 +379,7 @@ export function useConversations(
   const pendingConversationLlmConfigId = useOrbitStore((s) => s.pendingConversationLlmConfigId)
   const pendingConversationLlmModel = useOrbitStore((s) => s.pendingConversationLlmModel)
   const chatMode = useOrbitStore((s) => s.chatMode)
+  const agentType = useOrbitStore((s) => s.agentType)
   const draft = useOrbitStore((s) => s.draft)
   const isCreatingConversationTitle = useOrbitStore((s) => s.isCreatingConversationTitle)
   const receivingConversationIds = useOrbitStore((s) => s.receivingConversationIds)
@@ -385,6 +387,7 @@ export function useConversations(
   const setPendingConversationLlmConfigId = useOrbitStore((s) => s.setPendingConversationLlmConfigId)
   const setPendingConversationLlmModel = useOrbitStore((s) => s.setPendingConversationLlmModel)
   const setChatMode = useOrbitStore((s) => s.setChatMode)
+  const setAgentType = useOrbitStore((s) => s.setAgentType)
   const setDraft = useOrbitStore((s) => s.setDraft)
   const setErrorMessage = useOrbitStore((s) => s.setErrorMessage)
   const setActiveView = useOrbitStore((s) => s.setActiveView)
@@ -807,6 +810,7 @@ export function useConversations(
       llmConfigId?: string | null,
       model?: string | null,
       chatMode?: string | null,
+      agentType?: string | null,
       fileIds?: string[],
     ) => {
       await queryClient.cancelQueries({ queryKey: ['messages', conversationId] })
@@ -865,6 +869,7 @@ export function useConversations(
             idempotency_key: idempotencyKey,
             model: model ?? null,
             chat_mode: chatMode ?? null,
+            agent_type: agentType ?? null,
             file_ids: fileIds?.length ? fileIds : undefined,
           },
           controller.signal,
@@ -884,7 +889,14 @@ export function useConversations(
   )
 
   const streamNewConversationMessage = useCallback(
-    async (content: string, llmConfigId: string | null, chatMode: 'chat' | 'agent', model?: string | null, fileIds?: string[]) => {
+    async (
+      content: string,
+      llmConfigId: string | null,
+      chatMode: 'chat' | 'agent',
+      agentType?: string | null,
+      model?: string | null,
+      fileIds?: string[],
+    ) => {
       const controller = new AbortController()
       let conversationId: string | null = null
       let streamKey: string | null = null
@@ -905,6 +917,7 @@ export function useConversations(
             content: content || '',
             llm_config_id: llmConfigId,
             chat_mode: chatMode,
+            agent_type: agentType ?? null,
             metadata: {},
             idempotency_key: createIdempotencyKey(
               chatMode === 'agent' ? 'new-agent-chat' : 'new-chat',
@@ -971,7 +984,7 @@ export function useConversations(
     ],
   )
 
-  const sendMessage = useCallback((selectedLlmConfigId?: string | null, selectedModel?: string | null, chatMode?: 'chat' | 'agent', fileIds?: string[]) => {
+  const sendMessage = useCallback((selectedLlmConfigId?: string | null, selectedModel?: string | null, chatMode?: 'chat' | 'agent', agentType?: string | null, fileIds?: string[]) => {
     const content = draft.trim()
     const isCurrentThreadStreaming = activeConversationId
       ? currentBranchIsStreaming || currentBranchHasPendingLocalStream
@@ -991,6 +1004,7 @@ export function useConversations(
         content,
         selectedLlmConfigId ?? pendingConversationLlmConfigId,
         chatMode ?? 'chat',
+        agentType ?? null,
         selectedModel ?? pendingConversationLlmModel,
         fileIds,
       )
@@ -1002,6 +1016,7 @@ export function useConversations(
       selectedLlmConfigId ?? pendingConversationLlmConfigId,
       selectedModel ?? pendingConversationLlmModel,
       chatMode ?? null,
+      agentType ?? null,
       fileIds,
     )
   }, [
@@ -1020,7 +1035,7 @@ export function useConversations(
   ])
 
   const regenerateAssistant = useCallback(
-    async (messageId: string, llmConfigId?: string | null, model?: string | null, chatMode?: string | null) => {
+    async (messageId: string, llmConfigId?: string | null, model?: string | null, chatMode?: string | null, agentType?: string | null) => {
       if (!activeConversationId || !isUuid(messageId)) return
       const controller = new AbortController()
       let streamKey = streamManager.makePendingKey(activeConversationId, 'regen')
@@ -1045,6 +1060,7 @@ export function useConversations(
           model ?? null,
           llmConfigId ?? null,
           chatMode ?? null,
+          agentType ?? null,
         )) {
           streamKey = applyStreamEvent(activeConversationId, streamKey, streamEvent, controller)
         }
@@ -1066,7 +1082,14 @@ export function useConversations(
   )
 
   const editUserMessage = useCallback(
-    async (messageId: string, content: string, llmConfigId?: string | null, model?: string | null, chatMode?: string | null) => {
+    async (
+      messageId: string,
+      content: string,
+      llmConfigId?: string | null,
+      model?: string | null,
+      chatMode?: string | null,
+      agentType?: string | null,
+    ) => {
       if (!activeConversationId || !isUuid(messageId)) return
       const controller = new AbortController()
       let streamKey = streamManager.makePendingKey(activeConversationId, 'edit')
@@ -1091,6 +1114,7 @@ export function useConversations(
             idempotency_key: createIdempotencyKey('edit'),
             model: model ?? null,
             chat_mode: chatMode ?? null,
+            agent_type: agentType ?? null,
           },
           controller.signal,
         )) {
@@ -1346,6 +1370,7 @@ export function useConversations(
     pendingConversationLlmConfigId,
     pendingConversationLlmModel,
     chatMode,
+    agentType,
     messages,
     isLoadingMessages,
     isSending: isActiveConversationStreaming,
@@ -1361,6 +1386,7 @@ export function useConversations(
       setPendingConversationLlmConfigId(null)
       setPendingConversationLlmModel(null)
       setChatMode('chat')
+      setAgentType('web_agent')
       setIsCreatingConversationTitle(false)
       setErrorMessage('')
     },
@@ -1380,6 +1406,10 @@ export function useConversations(
     },
     setChatMode: (mode: 'chat' | 'agent') => {
       setChatMode(mode)
+    },
+    setAgentType: (nextAgentType: string) => {
+      setAgentType(nextAgentType)
+      setChatMode('agent')
     },
   }
 }

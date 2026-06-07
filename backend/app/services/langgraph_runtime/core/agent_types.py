@@ -26,6 +26,32 @@ class AgentBudget:
     """单次 run() 超时"""
 
 
+@dataclass(frozen=True)
+class AgentDescriptor:
+    """Agent 插件对宿主和 UI 暴露的静态能力声明。"""
+
+    agent_type: str
+    display_name: str
+    description: str
+    capabilities: frozenset[str]
+    default_budget: AgentBudget
+
+    def to_public_dict(self) -> dict[str, Any]:
+        """转换为 API 可直接序列化的结构。"""
+        return {
+            "agent_type": self.agent_type,
+            "display_name": self.display_name,
+            "description": self.description,
+            "capabilities": sorted(self.capabilities),
+            "default_budget": {
+                "max_rounds": self.default_budget.max_rounds,
+                "max_tool_calls": self.default_budget.max_tool_calls,
+                "max_search_calls_per_round": self.default_budget.max_search_calls_per_round,
+                "timeout_seconds": self.default_budget.timeout_seconds,
+            },
+        }
+
+
 class AgentEvent(TypedDict, total=False):
     """单条 thought 事件，通过 on_event 回调发射。
 
@@ -44,6 +70,24 @@ class AgentEvent(TypedDict, total=False):
 
     meta: dict[str, Any]
     """附加元数据（工具名、计数、域名列表等）"""
+
+    step_id: str
+    """timeline step 稳定标识，用于前端分组渲染"""
+
+    step_kind: str
+    """timeline step 类型，如 llm.codegen / sandbox.exec / tool.call"""
+
+    status: str
+    """running / completed / failed 等 step 状态"""
+
+    input: Any
+    """step 输入摘要"""
+
+    output: Any
+    """step 输出摘要"""
+
+    error: str
+    """step 错误摘要"""
 
 
 @dataclass

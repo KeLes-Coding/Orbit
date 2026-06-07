@@ -9,15 +9,15 @@ from langchain_core.messages import HumanMessage
 from langgraph.config import get_stream_writer
 from langgraph.graph import END, START, StateGraph
 
-from app.services.langgraph_runtime.agent_contract import LlmInvoker
-from app.services.langgraph_runtime.agent_registry import AgentRegistry
-from app.services.langgraph_runtime.agent_runner import AgentRunner
-from app.services.langgraph_runtime.agents.data_workspace_agent.adapter import DataWorkspaceAgentAdapter
-from app.services.langgraph_runtime.runtime_context import OrbitRuntimeContext
-from app.services.langgraph_runtime.state import ChatState
-from app.services.langgraph_runtime.stream_adapter import StreamAdapter
-from app.services.langgraph_runtime.thread_runtime_store import thread_runtime_store
-from app.services.langgraph_runtime.agents.web_agent.adapter import WebAgentAdapter
+from app.services.langgraph_runtime.agent_catalog import AgentCatalog
+from app.services.langgraph_runtime.core.agent_contract import LlmInvoker
+from app.services.langgraph_runtime.core.agent_registry import AgentRegistry
+from app.services.langgraph_runtime.core.agent_runner import AgentRunner
+from app.services.langgraph_runtime.core.runtime_context import OrbitRuntimeContext
+from app.services.langgraph_runtime.core.state import ChatState
+from app.services.langgraph_runtime.core.stream_adapter import StreamAdapter
+from app.services.langgraph_runtime.core.thread_runtime_store import thread_runtime_store
+from app.services.langgraph_runtime.middleware import AgentMiddleware
 from app.services.llm_client import LLMClientError, LLMStreamChunk
 from app.services.streaming import conversation_stream_store
 from app.services.tools import OrbitToolRuntime
@@ -49,15 +49,11 @@ class LangGraphChatRuntime:
         self._tool_runtime = tool_runtime or OrbitToolRuntime()
         self._runtime_context = runtime_context
         self._agent_registry = agent_registry or AgentRegistry()
-        if llm_invoke is not None and not self._agent_registry.has("web_agent"):
-            self._agent_registry.register(
-                WebAgentAdapter(
-                    llm_invoke=llm_invoke,
-                    tool_runtime=self._tool_runtime,
-                )
-            )
-        if not self._agent_registry.has("data_workspace_agent"):
-            self._agent_registry.register(DataWorkspaceAgentAdapter())
+        self._middleware = AgentMiddleware(
+            llm_invoke=llm_invoke,
+            tool_runtime=self._tool_runtime,
+        )
+        AgentCatalog.builtins(middleware=self._middleware).register_into(self._agent_registry)
         self._agent_runner = AgentRunner(registry=self._agent_registry)
         self._checkpointer = thread_runtime_store.get_checkpointer()
         self._graph = self._build_graph()
