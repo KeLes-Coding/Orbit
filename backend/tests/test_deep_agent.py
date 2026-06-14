@@ -15,8 +15,9 @@ from app.services.langgraph_runtime.agent_workspace import (
 from app.services.langgraph_runtime.chat_runtime import LangGraphChatRuntime
 from app.services.langgraph_runtime.core.runtime_context import OrbitRuntimeContext, OrbitRuntimeRequest
 from app.services.langgraph_runtime.core.thread_runtime_store import thread_runtime_store
+from app.services.langgraph_runtime.agents.web_agent.adapter import WebAgentAdapter
 from app.services.langgraph_runtime.agents.web_agent.definition import WebAgentDefinition
-from app.services.langgraph_runtime.agents.web_agent.runtime import WebAgentRuntime
+from app.services.langgraph_runtime.agents.web_agent.runtime import WebAgentRuntime, WebAgentWorkflow
 from app.services.llm_client import LLMStreamChunk
 from app.services.tools.runtime import OrbitToolRuntime
 
@@ -40,6 +41,19 @@ def test_planning_prompt_uses_budget_values():
     assert "最多 9 次工具调用" in prompt
     assert "单轮最多 3 次 websearch" in prompt
     assert "总超时 45 秒" in prompt
+
+
+def test_web_agent_adapter_builds_standard_workflow():
+    async def fake_llm_invoke(*_args, **_kwargs):
+        if False:
+            yield None
+
+    adapter = WebAgentAdapter(
+        llm_invoke=fake_llm_invoke,
+        tool_runtime=OrbitToolRuntime(),
+    )
+
+    assert isinstance(adapter.build_workflow(), WebAgentWorkflow)
 
 
 def test_web_agent_runtime_emits_timeline_and_final_result():

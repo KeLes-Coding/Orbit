@@ -12,6 +12,7 @@ from langgraph.graph import END, START, StateGraph
 
 from app.services.langgraph_runtime.core.agent_contract import LlmInvoker
 from app.services.langgraph_runtime.core.agent_types import AgentBudget, AgentExecutionResult
+from app.services.langgraph_runtime.core.agent_workflow import AgentWorkflow
 from app.services.langgraph_runtime.agent_workspace import (
     AgentWorkspace,
     create_agent_workspace,
@@ -28,8 +29,8 @@ from app.services.langgraph_runtime.agents.web_agent.projector import WebAgentPr
 from app.services.tools import OrbitToolRuntime
 
 
-class WebAgentRuntime:
-    """单次 WebAgent 执行运行时。"""
+class WebAgentWorkflow(AgentWorkflow):
+    """WebAgent 的标准 workflow 实现。"""
 
     def __init__(
         self,
@@ -458,6 +459,39 @@ class WebAgentRuntime:
         }
 
 
+class WebAgentRuntime:
+    """兼容旧调用面的 WebAgent runtime wrapper。"""
+
+    def __init__(
+        self,
+        *,
+        llm_invoke: LlmInvoker,
+        tool_runtime: OrbitToolRuntime,
+        budget: AgentBudget,
+    ) -> None:
+        self._workflow = WebAgentWorkflow(
+            llm_invoke=llm_invoke,
+            tool_runtime=tool_runtime,
+            budget=budget,
+        )
+
+    async def run(
+        self,
+        *,
+        user_query: str,
+        history_messages: list[BaseMessage],
+        runtime_context: OrbitRuntimeContext,
+        on_event: Callable[[dict[str, Any]], None],
+    ) -> AgentExecutionResult:
+        return await self._workflow.run(
+            user_query=user_query,
+            history_messages=history_messages,
+            runtime_context=runtime_context,
+            on_event=on_event,
+        )
+
+
 __all__ = [
+    "WebAgentWorkflow",
     "WebAgentRuntime",
 ]

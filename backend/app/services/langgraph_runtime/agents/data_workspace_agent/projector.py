@@ -6,6 +6,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
+from app.services.langgraph_runtime.core.agent_events import AgentEventEmitter
 from app.services.langgraph_runtime.core.agent_types import AgentExecutionResult
 from app.services.langgraph_runtime.artifacts.manifest import ArtifactManifest
 
@@ -15,16 +16,13 @@ class DataWorkspaceProjector:
     """收集状态、日志和产物事件，并收口为统一 AgentExecutionResult。"""
 
     on_event: Callable[[dict[str, Any]], None]
-    _thought_events: list[dict[str, Any]] = field(default_factory=list)
-    _content_parts: list[str] = field(default_factory=list)
-    _token_usage: dict[str, Any] = field(default_factory=dict)
+    _events: AgentEventEmitter = field(init=False)
+
+    def __post_init__(self) -> None:
+        self._events = AgentEventEmitter(on_event=self.on_event)
 
     def merge_token_usage(self, usage: dict[str, Any]) -> None:
-        for key, value in usage.items():
-            if isinstance(value, int):
-                self._token_usage[key] = int(self._token_usage.get(key, 0)) + value
-            else:
-                self._token_usage[key] = value
+        self._events.merge_token_usage(usage)
 
     def emit_status(self, status: str, *, meta: dict[str, Any] | None = None) -> None:
         # 先复用 thought_events 通道承载 agent.run.*，前端协议稳定后可升级为独立事件流。
@@ -34,8 +32,7 @@ class DataWorkspaceProjector:
             "text": status,
             "meta": meta or {},
         }
-        self._thought_events.append(event)
-        self.on_event(event)
+        self._events.emit_event(event)
 
     def emit_step(
         self,
@@ -51,23 +48,18 @@ class DataWorkspaceProjector:
         output: Any | None = None,
         error: str | None = None,
     ) -> None:
-        event = {
-            "type": event_type,
-            "phase": phase,
-            "text": title,
-            "meta": meta or {},
-            "step_id": step_id,
-            "step_kind": step_kind,
-            "status": status,
-        }
-        if input is not None:
-            event["input"] = input
-        if output is not None:
-            event["output"] = output
-        if error is not None:
-            event["error"] = error
-        self._thought_events.append(event)
-        self.on_event(event)
+        self._events.emit_step(
+            event_type=event_type,
+            step_id=step_id,
+            step_kind=step_kind,
+            title=title,
+            phase=phase,
+            status=status,
+            meta=meta,
+            input=input,
+            output=output,
+            error=error,
+        )
 
     def emit_log(
         self,
@@ -77,46 +69,18 @@ class DataWorkspaceProjector:
         step_id: str | None = None,
         step_kind: str | None = None,
     ) -> None:
-        if not text:
-            return
-        event = {
-            "type": "agent.step.delta" if step_id else "agent.run.log",
-            "phase": "execute",
-            "text": text,
-            "meta": {"stream": stream},
-        }
-        if step_id:
-            event.update({
-                "step_id": step_id,
-                "step_kind": step_kind or "sandbox.exec",
-                "status": "running",
-                "output": {"stream": stream, "text": text},
-            })
-        self._thought_events.append(event)
-        self.on_event(event)
+        self._events.emit_log(
+            text,
+            stream=stream,
+            step_id=step_id,
+            step_kind=step_kind,
+        )
 
     def emit_artifact(self, artifact: dict[str, Any], *, step_id: str | None = None) -> None:
-        event = {
-            "type": "agent.run.artifact",
-            "phase": "artifact",
-            "text": artifact.get("name", artifact.get("path", "artifact")),
-            "meta": artifact,
-        }
-        if step_id:
-            event.update({
-                "step_id": step_id,
-                "step_kind": "artifact.collect",
-                "status": "completed",
-                "output": artifact,
-            })
-        self._thought_events.append(event)
-        self.on_event(event)
+        self._events.emit_artifact(artifact, step_id=step_id)
 
     def emit_content_delta(self, delta: str) -> None:
-        if not delta:
-            return
-        self._content_parts.append(delta)
-        self.on_event({"type": "content_delta", "delta": delta})
+        self._events.emit_content_delta(delta)
 
     def build_result(
         self,
@@ -136,16 +100,16 @@ class DataWorkspaceProjector:
             final_content = f"数据工作区分析完成，已生成 {len(artifacts)} 个产物：{names}。"
         else:
             final_content = "数据工作区分析完成，但没有生成可展示产物。"
-        if not error and not self._content_parts:
+        if not error and not self._events.content_text:
             self.emit_content_delta(final_content)
 
         metadata = dict(response_metadata)
         metadata["artifacts"] = artifacts
         return AgentExecutionResult(
-            final_content="".join(self._content_parts) or final_content,
-            thought_events=list(self._thought_events),
+            final_content=self._events.content_text or final_content,
+            thought_events=self._events.events,
             workspace_files=workspace_files,
-            token_usage=dict(self._token_usage),
+            token_usage=self._events.token_usage,
             response_metadata=metadata,
             error=error,
         )

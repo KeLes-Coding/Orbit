@@ -7,7 +7,7 @@ from typing import Any
 
 from langchain_core.messages import BaseMessage
 
-from app.services.langgraph_runtime.agents.web_agent.runtime import WebAgentRuntime
+from app.services.langgraph_runtime.agents.web_agent.runtime import WebAgentWorkflow
 from app.services.langgraph_runtime.core.agent_contract import LlmInvoker
 from app.services.langgraph_runtime.core.agent_types import (
     AgentBudget,
@@ -36,7 +36,7 @@ WEB_AGENT_DESCRIPTOR = AgentDescriptor(
 
 
 class WebAgentAdapter:
-    """对外暴露统一 Agent 协议，内部调用 WebAgentRuntime。"""
+    """对外暴露统一 Agent 协议，内部构造 WebAgentWorkflow。"""
 
     descriptor = WEB_AGENT_DESCRIPTOR
 
@@ -64,6 +64,14 @@ class WebAgentAdapter:
         self._llm_invoke = middleware.llm_invoke
         self._budget = budget or middleware.budget or self.descriptor.default_budget
 
+    def build_workflow(self) -> WebAgentWorkflow:
+        """构造 WebAgent 标准 workflow。"""
+        return WebAgentWorkflow(
+            llm_invoke=self._llm_invoke,
+            tool_runtime=self._middleware.tool_runtime,
+            budget=self._budget,
+        )
+
     async def run(
         self,
         *,
@@ -72,12 +80,8 @@ class WebAgentAdapter:
         runtime_context: OrbitRuntimeContext,
         on_event: Callable[[dict[str, Any]], None],
     ) -> AgentExecutionResult:
-        runtime = WebAgentRuntime(
-            llm_invoke=self._llm_invoke,
-            tool_runtime=self._middleware.tool_runtime,
-            budget=self._budget,
-        )
-        result = await runtime.run(
+        workflow = self.build_workflow()
+        result = await workflow.run(
             user_query=user_query,
             history_messages=history_messages,
             runtime_context=runtime_context,
