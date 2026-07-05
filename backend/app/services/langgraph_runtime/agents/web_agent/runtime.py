@@ -11,6 +11,8 @@ from langchain_core.runnables.config import RunnableConfig
 from langgraph.graph import END, START, StateGraph
 
 from app.services.langgraph_runtime.core.agent_contract import LlmInvoker
+from app.services.langgraph_runtime.core.agent_events import AgentEventEmitter
+from app.services.langgraph_runtime.core.agent_services import AgentRuntimeServices
 from app.services.langgraph_runtime.core.agent_types import AgentBudget, AgentExecutionResult
 from app.services.langgraph_runtime.core.agent_workflow import AgentWorkflow
 from app.services.langgraph_runtime.agent_workspace import (
@@ -32,6 +34,8 @@ from app.services.tools import OrbitToolRuntime
 class WebAgentWorkflow(AgentWorkflow):
     """WebAgent 的标准 workflow 实现。"""
 
+    execution_backend = "langgraph"
+
     def __init__(
         self,
         *,
@@ -49,9 +53,14 @@ class WebAgentWorkflow(AgentWorkflow):
         user_query: str,
         history_messages: list[BaseMessage],
         runtime_context: OrbitRuntimeContext,
-        on_event: Callable[[dict[str, Any]], None],
+        services: AgentRuntimeServices | None = None,
+        on_event: Callable[[dict[str, Any]], None] | None = None,
     ) -> AgentExecutionResult:
         """执行 WebAgent graph 并返回统一结果。"""
+        services = self._resolve_services(services, on_event)
+        self._llm_invoke = services.llm_invoke or self._llm_invoke
+        self._tool_runtime = services.tool_runtime or self._tool_runtime
+        self._budget = services.budget or self._budget
         workspace = create_agent_workspace(
             run_id=runtime_context.request.assistant_message_id or "default",
         )
@@ -62,7 +71,7 @@ class WebAgentWorkflow(AgentWorkflow):
             user_query=user_query,
             history_messages=history_messages,
         )
-        projector = WebAgentProjector(on_event=on_event)
+        projector = WebAgentProjector(events=services.events)
         graph = self._build_graph(
             definition=definition,
             projector=projector,
@@ -457,6 +466,23 @@ class WebAgentWorkflow(AgentWorkflow):
             "runtime": "orbit_langgraph_web_agent",
             "error_present": bool(error),
         }
+
+    def _resolve_services(
+        self,
+        services: AgentRuntimeServices | None,
+        on_event: Callable[[dict[str, Any]], None] | None,
+    ) -> AgentRuntimeServices:
+        # Harness 路径传 services；legacy wrapper / 直接调用传 on_event，用构造期依赖自组装。
+        if services is not None:
+            return services
+        if on_event is None:
+            raise ValueError("WebAgentWorkflow.run 需要 services 或 on_event")
+        return AgentRuntimeServices(
+            llm_invoke=self._llm_invoke,
+            tool_runtime=self._tool_runtime,
+            events=AgentEventEmitter(on_event=on_event),
+            budget=self._budget,
+        )
 
 
 class WebAgentRuntime:

@@ -27,8 +27,28 @@ class AgentBudget:
 
 
 @dataclass(frozen=True)
-class AgentDescriptor:
-    """Agent 插件对宿主和 UI 暴露的静态能力声明。"""
+class ArtifactPolicy:
+    """Skill 的产物策略：是否产出 artifact、类型白名单、是否生成预览。"""
+
+    produces_artifacts: bool = False
+    allowed_types: frozenset[str] = frozenset()
+    preview: bool = True
+
+    def to_public_dict(self) -> dict[str, Any]:
+        return {
+            "produces_artifacts": self.produces_artifacts,
+            "allowed_types": sorted(self.allowed_types),
+            "preview": self.preview,
+        }
+
+
+@dataclass(frozen=True)
+class SkillDescriptor:
+    """Skill 对宿主和 UI 暴露的静态能力声明。
+
+    SkillDescriptor 是旧 AgentDescriptor 的超集：旧字段全部保留，新增执行形态、
+    工具策略、产物策略、权限范围。第一版这些新字段大多是元数据，Harness 逐步接管其强制。
+    """
 
     agent_type: str
     display_name: str
@@ -36,20 +56,56 @@ class AgentDescriptor:
     capabilities: frozenset[str]
     default_budget: AgentBudget
 
+    skill_type: str = ""
+    """稳定的 skill 标识；留空时回落为 agent_type，旧 API 继续兼容。"""
+
+    execution_mode: str = "workflow"
+    """执行形态：inline | workflow | forked。"""
+
+    required_tools: frozenset[str] = frozenset()
+    """缺失即无法运行的工具。"""
+
+    allowed_tools: frozenset[str] = frozenset()
+    """激活时预批准的工具。"""
+
+    disallowed_tools: frozenset[str] = frozenset()
+    """激活时需要移除的工具。"""
+
+    artifact_policy: ArtifactPolicy = field(default_factory=ArtifactPolicy)
+    """产物策略。"""
+
+    permission_scope: frozenset[str] = frozenset()
+    """粗粒度权限范围：read | write | execute | network。"""
+
+    def __post_init__(self) -> None:
+        if not self.skill_type:
+            object.__setattr__(self, "skill_type", self.agent_type)
+
     def to_public_dict(self) -> dict[str, Any]:
-        """转换为 API 可直接序列化的结构。"""
+        """转换为 API 可直接序列化的结构。旧字段保留，新字段增量添加。"""
         return {
             "agent_type": self.agent_type,
+            "skill_type": self.skill_type,
             "display_name": self.display_name,
             "description": self.description,
             "capabilities": sorted(self.capabilities),
+            "execution_mode": self.execution_mode,
             "default_budget": {
                 "max_rounds": self.default_budget.max_rounds,
                 "max_tool_calls": self.default_budget.max_tool_calls,
                 "max_search_calls_per_round": self.default_budget.max_search_calls_per_round,
                 "timeout_seconds": self.default_budget.timeout_seconds,
             },
+            "required_tools": sorted(self.required_tools),
+            "allowed_tools": sorted(self.allowed_tools),
+            "disallowed_tools": sorted(self.disallowed_tools),
+            "artifact_policy": self.artifact_policy.to_public_dict(),
+            "permission_scope": sorted(self.permission_scope),
         }
+
+
+# 过渡兼容：旧代码仍以 AgentDescriptor 引用同一类型。
+AgentDescriptor = SkillDescriptor
 
 
 class AgentEvent(TypedDict, total=False):

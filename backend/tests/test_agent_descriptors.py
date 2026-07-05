@@ -30,6 +30,37 @@ def test_registry_registers_by_descriptor():
     assert registry.descriptors()[0].agent_type == "data_workspace_agent"
 
 
+def test_registry_resolves_skill_type_alias():
+    registry = AgentRegistry()
+    agent = DataWorkspaceAgentAdapter()
+
+    registry.register(agent)
+
+    assert registry.has("data_workspace")
+    assert registry.resolve("data_workspace") is agent
+
+
+def test_normalize_to_agent_type_accepts_skill_type_and_agent_type():
+    assert AgentCatalog.normalize_to_agent_type("web_agent") == "web_agent"
+    assert AgentCatalog.normalize_to_agent_type("web_research") == "web_agent"
+    assert AgentCatalog.normalize_to_agent_type("data_workspace") == "data_workspace_agent"
+    assert AgentCatalog.normalize_to_agent_type("unknown") is None
+    assert AgentCatalog.normalize_to_agent_type(None) is None
+
+
+def test_descriptor_public_dict_exposes_skill_fields():
+    descriptors = list_builtin_agent_descriptors()
+    by_type = {descriptor["agent_type"]: descriptor for descriptor in descriptors}
+
+    web = by_type["web_agent"]
+    data = by_type["data_workspace_agent"]
+
+    assert web["skill_type"] == "web_research"
+    assert web["execution_mode"] == "workflow"
+    assert data["skill_type"] == "data_workspace"
+    assert data["artifact_policy"]["produces_artifacts"] is True
+
+
 def test_agent_descriptors_api():
     app = FastAPI()
     app.include_router(agents_router)

@@ -7,7 +7,14 @@ from typing import Any
 
 from langchain_core.messages import HumanMessage
 
+from app.services.langgraph_runtime.agent_catalog import AgentCatalog
+from app.services.langgraph_runtime.core.agent_events import AgentEventEmitter
+from app.services.langgraph_runtime.core.agent_registry import AgentRegistry
+from app.services.langgraph_runtime.core.agent_runner import AgentRunner
+from app.services.langgraph_runtime.core.agent_services import AgentRuntimeServices
 from app.services.langgraph_runtime.core.agent_types import AgentBudget
+from app.services.langgraph_runtime.core.agent_workflow_harness import AgentWorkflowHarness
+from app.services.langgraph_runtime.middleware import AgentMiddleware
 from app.services.langgraph_runtime.agent_workspace import (
     InMemoryAgentWorkspace,
     create_agent_workspace,
@@ -146,18 +153,32 @@ def test_thought_events_are_compacted_after_completion():
         if system_prompt:
             yield LLMStreamChunk(content_delta="已经拿到结果。")
 
-    runtime = WebAgentRuntime(
+    runtime = WebAgentWorkflow(
         llm_invoke=fake_llm_invoke,
         tool_runtime=OrbitToolRuntime(),
         budget=AgentBudget(max_rounds=2, max_tool_calls=4, timeout_seconds=30),
     )
 
+    # 压缩策略已上收到 Harness，因此通过 Harness 驱动 workflow 校验压缩结果。
+    # events 由 Harness 建立并经 services_factory 注入，模拟 adapter.build_services 的职责。
+    def services_factory(events: AgentEventEmitter) -> AgentRuntimeServices:
+        return AgentRuntimeServices(
+            llm_invoke=fake_llm_invoke,
+            tool_runtime=OrbitToolRuntime(),
+            events=events,
+            budget=AgentBudget(max_rounds=2, max_tool_calls=4, timeout_seconds=30),
+        )
+
+    harness = AgentWorkflowHarness()
     result = run(
-        runtime.run(
+        harness.run_workflow(
+            runtime,
+            agent_type="web_agent",
             user_query="Orbit 最近实现到了哪里？",
             history_messages=[HumanMessage(content="Orbit 最近实现到了哪里？")],
             runtime_context=_runtime_context(),
             on_event=lambda _event: None,
+            services_factory=services_factory,
         )
     )
 
@@ -167,6 +188,47 @@ def test_thought_events_are_compacted_after_completion():
     assert planning_events[0]["text"] == "先搜索"
     assert len(reason_events) == 1
     assert reason_events[0]["text"] == "整理"
+
+
+def test_runner_injects_services_and_lifecycle_events():
+    events: list[dict[str, Any]] = []
+
+    async def fake_llm_invoke(messages, system_prompt, enable_tools, tools, tool_runtime, max_tool_rounds):
+        if not enable_tools and system_prompt is None:
+            user_text = str(messages[-1].content)
+            if "制定一个简短的搜索和执行计划" in user_text:
+                yield LLMStreamChunk(content_delta="先搜索。")
+                return
+            yield LLMStreamChunk(content_delta="最终答案")
+            return
+        if system_prompt:
+            yield LLMStreamChunk(content_delta="已经拿到信息。")
+
+    registry = AgentRegistry()
+    middleware = AgentMiddleware(llm_invoke=fake_llm_invoke, tool_runtime=OrbitToolRuntime())
+    AgentCatalog.builtins(middleware=middleware).register_into(registry)
+    runner = AgentRunner(registry=registry)
+
+    result = run(
+        runner.run(
+            agent_type="web_agent",
+            user_query="Orbit 最近实现到了哪里？",
+            history_messages=[HumanMessage(content="Orbit 最近实现到了哪里？")],
+            runtime_context=_runtime_context(),
+            on_event=events.append,
+        )
+    )
+
+    assert result.error is None
+    # Harness 收口的执行元信息。
+    assert result.response_metadata["skill_type"] == "web_research"
+    assert result.response_metadata["execution_backend"] == "langgraph"
+    assert result.response_metadata["execution_kind"] == "workflow"
+    # 生命周期事件进入 SSE（on_event）。
+    lifecycle_types = {event.get("type") for event in events if event.get("phase") == "lifecycle"}
+    assert {"agent.run.started", "agent.run.completed"} <= lifecycle_types
+    # 生命周期事件不进入持久化 thought_events。
+    assert all(event.get("phase") != "lifecycle" for event in result.thought_events)
 
 
 def test_single_round_websearch_limit_is_enforced():

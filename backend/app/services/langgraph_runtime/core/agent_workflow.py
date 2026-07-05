@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from typing import Any, Protocol
 
 from langchain_core.messages import BaseMessage
 from typing_extensions import TypedDict
 
+from app.services.langgraph_runtime.core.agent_services import AgentRuntimeServices
 from app.services.langgraph_runtime.core.agent_types import AgentExecutionResult
 
 from app.services.langgraph_runtime.core.runtime_context import OrbitRuntimeContext
@@ -31,7 +31,11 @@ class AgentWorkflowState(TypedDict, total=False):
 
 
 class AgentWorkflow(Protocol):
-    """Executable workflow produced by an Agent adapter."""
+    """Executable workflow produced by an Agent adapter.
+
+    run() 的唯一注入入口是 AgentRuntimeServices。workflow 只从 services 取执行依赖
+    （llm / tool / sandbox / artifact / budget / events），不再自定义构造参数。
+    """
 
     async def run(
         self,
@@ -39,6 +43,6 @@ class AgentWorkflow(Protocol):
         user_query: str,
         history_messages: list[BaseMessage],
         runtime_context: OrbitRuntimeContext,
-        on_event: Callable[[dict[str, Any]], None],
+        services: AgentRuntimeServices,
     ) -> AgentExecutionResult:
         ...

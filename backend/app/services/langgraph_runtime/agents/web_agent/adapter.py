@@ -9,6 +9,8 @@ from langchain_core.messages import BaseMessage
 
 from app.services.langgraph_runtime.agents.web_agent.runtime import WebAgentWorkflow
 from app.services.langgraph_runtime.core.agent_contract import LlmInvoker
+from app.services.langgraph_runtime.core.agent_events import AgentEventEmitter
+from app.services.langgraph_runtime.core.agent_services import AgentRuntimeServices
 from app.services.langgraph_runtime.core.agent_types import (
     AgentBudget,
     AgentDescriptor,
@@ -32,6 +34,8 @@ WEB_AGENT_DESCRIPTOR = AgentDescriptor(
     description="Searches and browses web sources, then answers with cited research context.",
     capabilities=frozenset({"tool_calling", "web_fetch", "web_search", "workspace_notes"}),
     default_budget=WEB_AGENT_BUDGET,
+    skill_type="web_research",
+    execution_mode="workflow",
 )
 
 
@@ -43,6 +47,10 @@ class WebAgentAdapter:
     @property
     def agent_type(self) -> str:
         return self.descriptor.agent_type
+
+    @property
+    def skill_type(self) -> str:
+        return self.descriptor.skill_type
 
     def __init__(
         self,
@@ -72,6 +80,16 @@ class WebAgentAdapter:
             budget=self._budget,
         )
 
+    def build_services(self, events: AgentEventEmitter) -> AgentRuntimeServices:
+        """把宿主依赖 + 本次 run 的 events 组装成唯一注入入口。"""
+        return AgentRuntimeServices(
+            llm_invoke=self._llm_invoke,
+            tool_runtime=self._middleware.tool_runtime,
+            events=events,
+            budget=self._budget,
+            permissions=self._middleware.permissions,
+        )
+
     async def run(
         self,
         *,
@@ -87,5 +105,4 @@ class WebAgentAdapter:
             runtime_context=runtime_context,
             on_event=on_event,
         )
-        result.response_metadata.setdefault("agent_type", self.agent_type)
         return result

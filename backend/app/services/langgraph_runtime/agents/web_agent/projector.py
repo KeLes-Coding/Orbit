@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 from app.services.langgraph_runtime.core.agent_events import AgentEventEmitter
@@ -13,13 +12,16 @@ from app.services.langgraph_runtime.agent_workspace import AgentWorkspace
 
 @dataclass
 class WebAgentProjector:
-    """收集执行期事件，并构建统一结果。"""
+    """收集执行期事件，并构建统一结果。
 
-    on_event: Callable[[dict[str, Any]], None]
-    _events: AgentEventEmitter = field(init=False)
+    events 由 Harness 组装进 AgentRuntimeServices 后注入，projector 不再自建 emitter。
+    """
 
-    def __post_init__(self) -> None:
-        self._events = AgentEventEmitter(on_event=self.on_event)
+    events: AgentEventEmitter
+
+    @property
+    def _events(self) -> AgentEventEmitter:
+        return self.events
 
     def emit_thought(
         self,
@@ -78,7 +80,7 @@ class WebAgentProjector:
             loop_summaries=list(loop_summaries),
             reasoning_text=reasoning_text,
             final_content=final_content,
-            thought_events=self._events.compact_events(),
+            thought_events=self._events.events,
             workspace_files=workspace.get_file_index(),
             token_usage=self._events.token_usage,
             response_metadata=dict(response_metadata),

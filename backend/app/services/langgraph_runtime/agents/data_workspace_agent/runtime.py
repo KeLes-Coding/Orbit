@@ -11,6 +11,8 @@ from langchain_core.messages import BaseMessage
 
 from app.services.langgraph_runtime.core.agent_types import AgentBudget, AgentExecutionResult
 from app.services.langgraph_runtime.core.agent_contract import LlmInvoker
+from app.services.langgraph_runtime.core.agent_events import AgentEventEmitter
+from app.services.langgraph_runtime.core.agent_services import AgentRuntimeServices
 from app.services.langgraph_runtime.artifacts import ArtifactCollector, ArtifactManifest
 from app.services.langgraph_runtime.agents.data_workspace_agent.code_cleaner import DataCodeCleaner
 from app.services.langgraph_runtime.agents.data_workspace_agent.code_generator import DataCodeGenerator
@@ -20,10 +22,13 @@ from app.services.langgraph_runtime.agents.data_workspace_agent.runtime_contract
 from app.services.langgraph_runtime.agents.data_workspace_agent.sandbox_executor import DataSandboxExecutor
 from app.services.langgraph_runtime.core.runtime_context import OrbitRuntimeContext
 from app.services.langgraph_runtime.sandbox import SandboxInputFile, SandboxManager
+from app.services.tools import OrbitToolRuntime
 
 
 class DataWorkspaceAgentRuntime:
     """基于 sandbox 后端的一次 run 级数据分析运行时。"""
+
+    execution_backend = "sandbox"
 
     def __init__(
         self,
@@ -52,15 +57,36 @@ class DataWorkspaceAgentRuntime:
             timeout_seconds=self._budget.timeout_seconds,
         )
 
+    def _resolve_services(
+        self,
+        services: AgentRuntimeServices | None,
+        on_event: Callable[[dict[str, Any]], None] | None,
+    ) -> AgentRuntimeServices:
+        # Harness 路径传 services；legacy / 直接调用传 on_event，用构造期依赖自组装。
+        if services is not None:
+            return services
+        if on_event is None:
+            raise ValueError("DataWorkspaceAgentRuntime.run 需要 services 或 on_event")
+        return AgentRuntimeServices(
+            llm_invoke=self._llm_invoke,
+            tool_runtime=OrbitToolRuntime(),
+            events=AgentEventEmitter(on_event=on_event),
+            sandbox_manager=self._sandbox_manager,
+            artifact_collector=self._artifact_collector,
+            budget=self._budget,
+        )
+
     async def run(
         self,
         *,
         user_query: str,
         history_messages: list[BaseMessage],
         runtime_context: OrbitRuntimeContext,
-        on_event: Callable[[dict[str, Any]], None],
+        services: AgentRuntimeServices | None = None,
+        on_event: Callable[[dict[str, Any]], None] | None = None,
     ) -> AgentExecutionResult:
-        projector = DataWorkspaceProjector(on_event=on_event)
+        services = self._resolve_services(services, on_event)
+        projector = DataWorkspaceProjector(events=services.events)
         run_id = runtime_context.request.assistant_message_id or "data-workspace-run"
         input_files = self._load_input_files(runtime_context)
         if not input_files:

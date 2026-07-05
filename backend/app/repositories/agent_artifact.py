@@ -37,6 +37,9 @@ class AgentArtifactRepository:
             message_id=message.id,
             agent_type=agent_type,
             status=status,
+            execution_kind=self._optional_str(response_metadata.get("execution_kind")),
+            skill_type=self._optional_str(response_metadata.get("skill_type")),
+            execution_backend=self._optional_str(response_metadata.get("execution_backend")),
             sandbox_id=response_metadata.get("sandbox_id") if isinstance(response_metadata.get("sandbox_id"), str) else None,
             error=error,
             completed_at=datetime.now(timezone.utc),
@@ -71,6 +74,10 @@ class AgentArtifactRepository:
         if run is None:
             return []
         return sorted(run.artifacts, key=lambda item: item.created_at)
+
+    @staticmethod
+    def _optional_str(value: Any) -> str | None:
+        return value if isinstance(value, str) and value else None
 
     @staticmethod
     def _build_artifact(*, run_id: UUID, item: dict[str, Any]) -> AgentArtifact | None:

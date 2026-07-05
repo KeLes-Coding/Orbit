@@ -22,12 +22,45 @@ def upgrade() -> None:
     op.execute("alter table agent_runs add column if not exists created_at timestamp with time zone not null default now()")
 
     op.execute("alter table agent_artifacts add column if not exists type varchar(40)")
-    op.execute("update agent_artifacts set type = artifact_type where type is null and artifact_type is not null")
+    op.execute(
+        """
+        do $$
+        begin
+            if exists (
+                select 1
+                from information_schema.columns
+                where table_schema = 'public'
+                  and table_name = 'agent_artifacts'
+                  and column_name = 'artifact_type'
+            ) then
+                update agent_artifacts
+                set type = artifact_type
+                where type is null and artifact_type is not null;
+
+                alter table agent_artifacts alter column artifact_type drop not null;
+            end if;
+        end $$;
+        """
+    )
     op.execute("alter table agent_artifacts alter column type set not null")
     op.execute("alter table agent_artifacts add column if not exists preview_path text")
 
-    op.execute("alter table agent_artifacts alter column artifact_type drop not null")
-    op.execute("alter table agent_artifacts alter column storage_path drop not null")
+    op.execute(
+        """
+        do $$
+        begin
+            if exists (
+                select 1
+                from information_schema.columns
+                where table_schema = 'public'
+                  and table_name = 'agent_artifacts'
+                  and column_name = 'storage_path'
+            ) then
+                alter table agent_artifacts alter column storage_path drop not null;
+            end if;
+        end $$;
+        """
+    )
 
     op.execute(
         "create index if not exists idx_agent_runs_conversation_created "

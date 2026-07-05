@@ -67,15 +67,29 @@ class AgentCatalog:
     ) -> str | None:
         if chat_mode != "agent":
             return None
+        normalized = AgentCatalog.normalize_to_agent_type(requested_agent_type)
+        if normalized is not None:
+            return normalized
+        if AgentCatalog.has_data_workspace_files(file_refs):
+            return DATA_WORKSPACE_AGENT_DESCRIPTOR.agent_type
+        return WEB_AGENT_DESCRIPTOR.agent_type
+
+    @staticmethod
+    def normalize_to_agent_type(identifier: str | None) -> str | None:
+        """把 skill_type 或 agent_type 归一到 agent_type，未知标识返回 None。"""
+        if not identifier:
+            return None
         known_agent_types = {
             WEB_AGENT_DESCRIPTOR.agent_type,
             DATA_WORKSPACE_AGENT_DESCRIPTOR.agent_type,
         }
-        if requested_agent_type in known_agent_types:
-            return requested_agent_type
-        if AgentCatalog.has_data_workspace_files(file_refs):
-            return DATA_WORKSPACE_AGENT_DESCRIPTOR.agent_type
-        return WEB_AGENT_DESCRIPTOR.agent_type
+        if identifier in known_agent_types:
+            return identifier
+        skill_type_to_agent_type = {
+            WEB_AGENT_DESCRIPTOR.skill_type: WEB_AGENT_DESCRIPTOR.agent_type,
+            DATA_WORKSPACE_AGENT_DESCRIPTOR.skill_type: DATA_WORKSPACE_AGENT_DESCRIPTOR.agent_type,
+        }
+        return skill_type_to_agent_type.get(identifier)
 
     @staticmethod
     def has_data_workspace_files(file_refs: list[dict]) -> bool:

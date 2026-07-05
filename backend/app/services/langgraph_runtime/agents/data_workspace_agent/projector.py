@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 from app.services.langgraph_runtime.core.agent_events import AgentEventEmitter
@@ -13,13 +12,16 @@ from app.services.langgraph_runtime.artifacts.manifest import ArtifactManifest
 
 @dataclass
 class DataWorkspaceProjector:
-    """收集状态、日志和产物事件，并收口为统一 AgentExecutionResult。"""
+    """收集状态、日志和产物事件，并收口为统一 AgentExecutionResult。
 
-    on_event: Callable[[dict[str, Any]], None]
-    _events: AgentEventEmitter = field(init=False)
+    events 由 Harness 组装进 AgentRuntimeServices 后注入，projector 不再自建 emitter。
+    """
 
-    def __post_init__(self) -> None:
-        self._events = AgentEventEmitter(on_event=self.on_event)
+    events: AgentEventEmitter
+
+    @property
+    def _events(self) -> AgentEventEmitter:
+        return self.events
 
     def merge_token_usage(self, usage: dict[str, Any]) -> None:
         self._events.merge_token_usage(usage)

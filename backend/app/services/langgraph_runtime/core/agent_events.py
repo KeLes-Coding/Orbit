@@ -157,32 +157,7 @@ class AgentEventEmitter:
 
     def compact_events(self) -> list[dict[str, Any]]:
         """Compact adjacent non-tool thought events for durable storage."""
-        compacted: list[dict[str, Any]] = []
-        for raw in self._events:
-            event = dict(raw)
-            if not compacted:
-                compacted.append(event)
-                continue
-
-            previous = compacted[-1]
-            same_type = previous.get("type") == event.get("type")
-            same_phase = previous.get("phase") == event.get("phase")
-            if not (same_type and same_phase):
-                compacted.append(event)
-                continue
-
-            if event.get("type") == "thought.tool":
-                compacted.append(event)
-                continue
-            if event.get("type") == "thought.summary":
-                if (previous.get("meta") or {}).get("round") != (event.get("meta") or {}).get("round"):
-                    compacted.append(event)
-                    continue
-
-            previous["text"] = f"{previous.get('text', '')}{event.get('text', '')}"
-            if event.get("meta"):
-                previous["meta"] = event["meta"]
-        return compacted
+        return compact_events(self._events)
 
     @staticmethod
     def _base_agent_event(
@@ -217,3 +192,44 @@ class AgentEventEmitter:
         if error is not None:
             event["error"] = error
         return event
+
+
+def compact_events(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Compact adjacent non-tool thought events for durable storage.
+
+    统一压缩策略，由 Harness 在收口阶段调用。合并规则：
+      - 仅同 type + 同 phase 的相邻事件才可能合并；
+      - 携带 step_id 的 timeline 事件（tool 调用 / sandbox step / artifact 等）
+        永远保留为独立事件，避免时间线被折叠；
+      - thought.tool 始终独立；
+      - thought.summary 仅当 round 相同才合并。
+    """
+    compacted: list[dict[str, Any]] = []
+    for raw in events:
+        event = dict(raw)
+        if not compacted:
+            compacted.append(event)
+            continue
+
+        previous = compacted[-1]
+        same_type = previous.get("type") == event.get("type")
+        same_phase = previous.get("phase") == event.get("phase")
+        if not (same_type and same_phase):
+            compacted.append(event)
+            continue
+
+        if event.get("step_id") is not None:
+            compacted.append(event)
+            continue
+        if event.get("type") == "thought.tool":
+            compacted.append(event)
+            continue
+        if event.get("type") == "thought.summary":
+            if (previous.get("meta") or {}).get("round") != (event.get("meta") or {}).get("round"):
+                compacted.append(event)
+                continue
+
+        previous["text"] = f"{previous.get('text', '')}{event.get('text', '')}"
+        if event.get("meta"):
+            previous["meta"] = event["meta"]
+    return compacted
