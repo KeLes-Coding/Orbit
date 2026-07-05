@@ -65,3 +65,4 @@ config_text.txt
 backend/orbit_backend.egg-info
 backend/uploads
 .agentfrontend/tsconfig.tsbuildinfo
+frontend/tsconfig.tsbuildinfo
