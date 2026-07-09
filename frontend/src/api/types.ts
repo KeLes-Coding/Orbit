@@ -72,6 +72,84 @@ export interface Message {
   token_count?: number
   created_at: string
   updated_at?: string
+  /** Phase 2: structured thought events for agentic_chat mode */
+  thought_events?: ThoughtEventData[]
+  agent_artifacts?: AgentArtifact[]
+}
+
+export interface ThoughtEventData {
+  message_id: string
+  type:
+    | 'thought.planning'
+    | 'thought.tool'
+    | 'thought.summary'
+    | 'thought.reason'
+    | 'agent.run.status'
+    | 'agent.run.log'
+    | 'agent.run.artifact'
+    | 'agent.step.started'
+    | 'agent.step.delta'
+    | 'agent.step.completed'
+    | 'agent.step.failed'
+  phase: 'planning' | 'loop' | 'reason' | 'workspace' | 'codegen' | 'execute' | 'artifact'
+  text: string
+  meta?: Record<string, unknown>
+  step_id?: string
+  step_kind?: string
+  status?: 'running' | 'completed' | 'failed' | string
+  input?: unknown
+  output?: unknown
+  error?: string
+}
+
+export interface AgentArtifactPreview {
+  kind?: 'json' | 'text'
+  data?: unknown
+  text?: string
+  truncated?: boolean
+}
+
+export interface AgentArtifact {
+  id?: string
+  run_id?: string
+  type: 'table' | 'chart' | 'code' | 'text' | 'report' | 'json' | string
+  name: string
+  path: string
+  preview_path?: string | null
+  metadata?: Record<string, unknown>
+  preview?: AgentArtifactPreview
+  created_at?: string
+}
+
+export interface AgentBudgetDescriptor {
+  max_rounds: number
+  max_tool_calls: number
+  max_search_calls_per_round: number
+  timeout_seconds: number
+}
+
+export interface AgentDescriptor {
+  agent_type: string
+  display_name: string
+  description: string
+  capabilities: string[]
+  default_budget: AgentBudgetDescriptor
+}
+
+export interface ToolCallDelta {
+  id?: string | null
+  name?: string | null
+  args?: unknown
+  index?: number | null
+  type?: string | null
+}
+
+export interface ToolResultDelta {
+  tool_call_id?: string | null
+  name: string
+  args?: unknown
+  output: string
+  is_error?: boolean
 }
 
 export interface LlmConfig {
@@ -128,6 +206,7 @@ export interface CreateConversationMessagePayload {
   llm_config_id?: string | null
   model?: string | null
   chat_mode?: string
+  agent_type?: string | null
   metadata?: Record<string, unknown>
   idempotency_key?: string | null
   file_ids?: string[]
@@ -146,6 +225,8 @@ export interface SendMessagePayload {
   parent_message_id?: string | null
   idempotency_key?: string | null
   model?: string | null
+  chat_mode?: string | null
+  agent_type?: string | null
   file_ids?: string[]
 }
 
@@ -233,6 +314,24 @@ export type StreamMessageEvent =
         message_id: string
         delta: string
       }
+    }
+  | {
+      event: 'message.tool_call_delta'
+      data: StreamEnvelope & {
+        message_id: string
+        tool_calls: ToolCallDelta[]
+      }
+    }
+  | {
+      event: 'message.tool_result'
+      data: StreamEnvelope & {
+        message_id: string
+        tool_results: ToolResultDelta[]
+      }
+    }
+  | {
+      event: 'message.thought'
+      data: StreamEnvelope & ThoughtEventData
     }
   | {
       event: 'message.completed' | 'message.failed' | 'message.cancelled'

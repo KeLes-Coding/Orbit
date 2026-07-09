@@ -43,6 +43,7 @@ class Message(Base):
     llm_config_id: Mapped[UUID | None] = mapped_column(ForeignKey("llm_configs.id", ondelete="SET NULL"))
     provider: Mapped[str | None] = mapped_column(String(50))
     model: Mapped[str | None] = mapped_column(String(120))
+    chat_mode: Mapped[str | None] = mapped_column(String(32), nullable=True)
     token_usage: Mapped[dict] = mapped_column(JSONB, nullable=False, server_default=text("'{}'::jsonb"))
     response_metadata: Mapped[dict] = mapped_column(JSONB, nullable=False, server_default=text("'{}'::jsonb"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())

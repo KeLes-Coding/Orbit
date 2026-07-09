@@ -1,4 +1,5 @@
-import { useMemo, useCallback, useEffect } from "react"
+import { useCallback, useEffect, useMemo } from "react"
+import { useQuery } from "@tanstack/react-query"
 import { useLocation, useNavigate, useParams } from "react-router-dom"
 import { toast } from "sonner"
 import {
@@ -11,14 +12,56 @@ import {
 import { useAuth } from "@/hooks/useAuth"
 import { useConversations } from "@/hooks/useConversations"
 import { useLlmConfigs } from "@/hooks/useLlmConfigs"
+import { useFileUpload } from "@/hooks/useFileUpload"
 import { useTheme } from "@/hooks/useTheme"
 import { useOrbitStore } from "@/stores/useOrbitStore"
+import { agentApi } from "@/api/agents"
+import type { AgentDescriptor } from "@/api/types"
 import { Button } from "@/components/ui/button"
 import { MessageList } from "@/components/chat/MessageList"
 import { ChatComposer } from "@/components/chat/ChatComposer"
+import type { SlashItem } from "@/components/chat/SlashMenu"
 import { EmptyChatState } from "@/components/chat/EmptyChatState"
 import { ModelSelector } from "@/components/chat/ModelSelector"
 import "./ChatShell.css"
+
+const FALLBACK_AGENT_DESCRIPTORS: AgentDescriptor[] = [
+  {
+    agent_type: "web_agent",
+    display_name: "Web Agent",
+    description: "Search/tool agent",
+    capabilities: ["web_search"],
+    default_budget: {
+      max_rounds: 3,
+      max_tool_calls: 6,
+      max_search_calls_per_round: 2,
+      timeout_seconds: 120,
+    },
+  },
+  {
+    agent_type: "data_workspace_agent",
+    display_name: "Data Workspace",
+    description: "CSV/JSON/XLSX artifact agent",
+    capabilities: ["file_analysis"],
+    default_budget: {
+      max_rounds: 4,
+      max_tool_calls: 12,
+      max_search_calls_per_round: 0,
+      timeout_seconds: 120,
+    },
+  },
+]
+
+function isDataWorkspaceFile(file: File): boolean {
+  const name = file.name.toLowerCase()
+  const type = file.type.toLowerCase()
+  return (
+    [".csv", ".tsv", ".json", ".xlsx"].some((ext) => name.endsWith(ext)) ||
+    ["csv", "json", "spreadsheet", "excel", "tab-separated-values"].some((fragment) =>
+      type.includes(fragment),
+    )
+  )
+}
 
 export function ChatShell() {
   const { conversationId: routeConversationId } = useParams<{ conversationId?: string }>()
@@ -29,6 +72,8 @@ export function ChatShell() {
     activeConversationId,
     pendingConversationLlmConfigId,
     pendingConversationLlmModel,
+    chatMode,
+    agentType,
     isLoadingMessages,
     isSending,
     selectConversation,
@@ -41,15 +86,52 @@ export function ChatShell() {
     stopGeneration,
     switchConversationLlm,
     selectPendingConversationLlm,
+    setChatMode,
+    setAgentType,
+  } = useConversations(hasUser)
+
+  const {
     pendingFiles,
     isUploadingFiles,
     addFiles,
     removeFile,
-  } = useConversations(hasUser)
+    uploadPendingFiles,
+    clearPendingFiles,
+  } = useFileUpload()
 
   const { configs } = useLlmConfigs(hasUser)
+  const { data: agentDescriptors = FALLBACK_AGENT_DESCRIPTORS } = useQuery({
+    queryKey: ["agent-descriptors"],
+    queryFn: agentApi.descriptors,
+    staleTime: 5 * 60 * 1000,
+  })
   const navigate = useNavigate()
   const location = useLocation()
+
+  const slashItems = useMemo(() => {
+    const items: SlashItem[] = [
+      { id: "chat", label: "Chat", detail: "Chat mode", group: "mode" },
+    ]
+    for (const descriptor of agentDescriptors) {
+      items.push({
+        id: descriptor.agent_type,
+        label: descriptor.display_name,
+        detail: descriptor.description,
+        group: "mode",
+      })
+    }
+    for (const config of configs) {
+      for (const model of config.models) {
+        items.push({
+          id: `${config.id}:${model}`,
+          label: model,
+          detail: config.name,
+          group: "model",
+        })
+      }
+    }
+    return items
+  }, [agentDescriptors, configs])
 
   const draft = useOrbitStore((s) => s.draft)
   const setDraft = useOrbitStore((s) => s.setDraft)
@@ -60,19 +142,20 @@ export function ChatShell() {
 
   const { isDark, toggleTheme } = useTheme()
 
+  // Keep URL and store in sync bidirectionally:
+  // - URL → store: when navigating directly to /conversations/:id
+  // - store → URL: when creating/selecting a conversation from the sidebar
   useEffect(() => {
     if (routeConversationId && routeConversationId !== activeConversationId) {
       selectConversation(routeConversationId)
+      return
     }
-  }, [activeConversationId, routeConversationId, selectConversation])
-
-  useEffect(() => {
     if (activeConversationId && !routeConversationId && location.pathname === "/") {
       navigate(`/conversations/${activeConversationId}`, { replace: true })
     }
-  }, [activeConversationId, location.pathname, navigate, routeConversationId])
+  }, [activeConversationId, routeConversationId, location.pathname, navigate, selectConversation])
 
-  const currentLlmConfigId = useMemo(() => {
+  const currentLlmConfigId = (() => {
     const pendingConfig = configs.find((c) => c.id === pendingConversationLlmConfigId)
     if (pendingConfig) return pendingConfig.id
     const latestAssistantConfigId = [...messages]
@@ -91,9 +174,9 @@ export function ChatShell() {
     const defaultConfig = configs.find((c) => c.is_default)
     if (defaultConfig) return defaultConfig.id
     return null
-  }, [activeConversation, configs, messages, pendingConversationLlmConfigId])
+  })()
 
-  const currentModel = useMemo(() => {
+  const currentModel = (() => {
     if (pendingConversationLlmModel) return pendingConversationLlmModel
     const latestAssistantModel = [...messages]
       .reverse()
@@ -106,14 +189,14 @@ export function ChatShell() {
     if (latestAssistantModel) return latestAssistantModel
     const activeConfig = configs.find((c) => c.id === currentLlmConfigId)
     return activeConfig?.models[0] || null
-  }, [configs, currentLlmConfigId, messages, pendingConversationLlmModel])
+  })()
 
-  const showVisionHint = useMemo(() => {
+  const showVisionHint = (() => {
     const hasImage = pendingFiles.some((pf) => pf.file.type.startsWith("image/"))
     if (!hasImage) return false
     const activeConfig = configs.find((c) => c.id === currentLlmConfigId)
     return activeConfig ? !activeConfig.supports_vision : false
-  }, [pendingFiles, configs, currentLlmConfigId])
+  })()
 
   const selectModel = useCallback(
     async (configId: string, model: string) => {
@@ -135,6 +218,19 @@ export function ChatShell() {
     [activeConversationId, configs, selectPendingConversationLlm, switchConversationLlm],
   )
 
+  const handleSlashSelect = useCallback(
+    (item: SlashItem) => {
+      if (item.group === "mode") {
+        if (item.id === "chat") setChatMode("chat")
+        if (item.id !== "chat") setAgentType(item.id)
+      } else {
+        const [configId, model] = item.id.split(":")
+        selectModel(configId, model)
+      }
+    },
+    [setChatMode, setAgentType, selectModel],
+  )
+
   const goToConfigs = useCallback(() => {
     setActiveView("model_configs")
     navigate("/model-configs")
@@ -145,8 +241,9 @@ export function ChatShell() {
       openAuth()
       return
     }
+    clearPendingFiles()
     createNewThread()
-  }, [createNewThread, openAuth, user])
+  }, [createNewThread, openAuth, user, clearPendingFiles])
 
   const handleSendMessage = useCallback(() => {
     if (!user) {
@@ -159,31 +256,45 @@ export function ChatShell() {
       navigate("/model-configs")
       return
     }
-    sendMessage(currentLlmConfigId, currentModel)
+    const doSend = async () => {
+      const hasDataWorkspaceFile = pendingFiles.some((pending) => isDataWorkspaceFile(pending.file))
+      const outgoingChatMode = hasDataWorkspaceFile
+        ? "agent"
+        : chatMode
+      const outgoingAgentType = hasDataWorkspaceFile ? "data_workspace_agent" : agentType
+      const fileIds = await uploadPendingFiles(activeConversationId)
+      sendMessage(currentLlmConfigId, currentModel, outgoingChatMode, outgoingAgentType, fileIds)
+    }
+    void doSend().then(() => clearPendingFiles())
   }, [
+    activeConversationId,
     configs.length,
     currentLlmConfigId,
     currentModel,
+    chatMode,
+    agentType,
     navigate,
     openAuth,
     sendMessage,
     setActiveView,
     setErrorMessage,
     user,
+    uploadPendingFiles,
+    clearPendingFiles,
   ])
 
   const handleEditMessage = useCallback(
     (messageId: string, newContent: string) => {
-      void editUserMessage(messageId, newContent, currentLlmConfigId, currentModel)
+      void editUserMessage(messageId, newContent, currentLlmConfigId, currentModel, chatMode, agentType)
     },
-    [currentLlmConfigId, currentModel, editUserMessage],
+    [currentLlmConfigId, currentModel, chatMode, agentType, editUserMessage],
   )
 
   const handleRegenerateAssistant = useCallback(
     (messageId: string) => {
-      void regenerateAssistant(messageId, currentLlmConfigId, currentModel)
+      void regenerateAssistant(messageId, currentLlmConfigId, currentModel, chatMode, agentType)
     },
-    [currentLlmConfigId, currentModel, regenerateAssistant],
+    [currentLlmConfigId, currentModel, chatMode, agentType, regenerateAssistant],
   )
 
   const handleForkMessage = useCallback(
@@ -282,6 +393,13 @@ export function ChatShell() {
         onRemoveFile={removeFile}
         isUploading={isUploadingFiles}
         showVisionHint={showVisionHint}
+        chatMode={chatMode}
+        agentType={agentType}
+        agentDescriptors={agentDescriptors}
+        onChatModeChange={setChatMode}
+        onAgentTypeChange={setAgentType}
+        slashItems={slashItems}
+        onSlashSelect={handleSlashSelect}
       />
     </main>
   )

@@ -52,6 +52,8 @@ class MessageCreate(BaseModel):
     parent_message_id: UUID | None = None
     idempotency_key: str | None = Field(default=None, min_length=1, max_length=120)
     model: str | None = Field(default=None, min_length=1, max_length=120)
+    chat_mode: Literal["chat", "rag", "agent", "tool"] | None = None
+    agent_type: Literal["web_agent", "data_workspace_agent"] | None = None
 
     @model_validator(mode="after")
     def check_content_or_files(self) -> "MessageCreate":
@@ -67,6 +69,8 @@ class MessageEdit(BaseModel):
     file_ids: list[UUID] = Field(default_factory=list)
     idempotency_key: str | None = Field(default=None, min_length=1, max_length=120)
     model: str | None = Field(default=None, min_length=1, max_length=120)
+    chat_mode: Literal["chat", "rag", "agent", "tool"] | None = None
+    agent_type: Literal["web_agent", "data_workspace_agent"] | None = None
 
     @model_validator(mode="after")
     def check_content_or_files(self) -> "MessageEdit":
@@ -80,6 +84,8 @@ class MessageRegenerate(BaseModel):
     llm_config_id: UUID | None = None
     idempotency_key: str | None = Field(default=None, min_length=1, max_length=120)
     model: str | None = Field(default=None, min_length=1, max_length=120)
+    chat_mode: Literal["chat", "rag", "agent", "tool"] | None = None
+    agent_type: Literal["web_agent", "data_workspace_agent"] | None = None
 
 
 class ConversationForkCreate(BaseModel):
@@ -116,8 +122,11 @@ class MessageRead(BaseModel):
     llm_config_id: UUID | None
     provider: str | None
     model: str | None
+    chat_mode: str | None = None
     token_usage: dict
     response_metadata: dict
+    thought_events: list[dict] = Field(default_factory=list)
+    agent_artifacts: list[dict] = Field(default_factory=list)
     created_at: datetime
     sibling_index: int = 1
     sibling_count: int = 1

@@ -261,6 +261,9 @@ export function ConfigFormDialog({
                 {selectedProvider.supports_custom_base_url
                   ? "Custom base URL supported."
                   : "Custom base URL not supported."}
+                {selectedProvider.id === "anthropic"
+                  ? " You can also point this to Anthropic-compatible endpoints such as https://api.deepseek.com/anthropic. Some third-party endpoints may not support model discovery, so manual model entry is supported."
+                  : ""}
               </p>
             )}
           </div>

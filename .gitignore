@@ -64,4 +64,5 @@ doc/
 config_text.txt
 backend/orbit_backend.egg-info
 backend/uploads
-.agent
+.agentfrontend/tsconfig.tsbuildinfo
+frontend/tsconfig.tsbuildinfo

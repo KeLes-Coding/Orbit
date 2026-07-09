@@ -1,0 +1,13 @@
+{
+  "venvPath": "..",
+  "venv": "Orbit",
+  "include": [
+    "app",
+    "tests"
+  ],
+  "extraPaths": [
+    "app"
+  ],
+  "pythonVersion": "3.12",
+  "typeCheckingMode": "basic"
+}

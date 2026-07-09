@@ -12,6 +12,11 @@ from app.services.conversations.base import (
     ConversationBaseService,
     ConversationStreamEvent,
 )
+from app.services.langgraph_runtime.agent_catalog import AgentCatalog
+from app.services.langgraph_runtime.chat_runtime import LangGraphChatRuntime
+from app.services.langgraph_runtime.core.runtime_context import OrbitRuntimeContext, OrbitRuntimeRequest
+from app.services.langgraph_runtime.core.state import ChatState
+from app.services.langgraph_runtime.core.stream_adapter import StreamAdapter
 from app.services.llm_client import LLMClientError
 from app.services.streaming import StreamEventRecord, conversation_stream_store
 
@@ -29,13 +34,13 @@ class ConversationStreamRunService(ConversationBaseService):
             user_id=user_id,
             conversation_id=conversation_id,
         )
-        # 这个入口给“刚创建完流的当前请求”使用，直接按 stream_id 订阅可避开竞争窗口。
+        # 这个入口给"刚创建完流的当前请求"使用，直接按 stream_id 订阅可避开竞争窗口。
         stream = await conversation_stream_store.get_stream(stream_id)
         if stream is None or stream.conversation_id != conversation_id or stream.user_id != user_id:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="流不存在或已过期")
 
         async for record in conversation_stream_store.subscribe(stream_id):
-            yield self._to_stream_event(record)
+            yield await self._to_stream_event(record)
 
     async def get_message_active_stream(
         self,
@@ -268,6 +273,8 @@ class ConversationStreamRunService(ConversationBaseService):
             return
 
     async def _produce_stream(self, *, stream_id: str, conversation_id: UUID) -> None:
+        # Phase 1：将执行内核从直接调用 LLMClient 切换到 LangGraphChatRuntime。
+        # 验证 LangGraph 是否适合作为 Orbit 的 Chat 执行容器。
         stream = await conversation_stream_store.get_stream(stream_id)
         if stream is None:
             return
@@ -306,8 +313,428 @@ class ConversationStreamRunService(ConversationBaseService):
             message_id=assistant_message.parent_message_id,
         )
 
+        # 判断执行模式：tool 走旧路径，agent 走 LangGraph agentic_chat，chat 走 LangGraph normal_chat
+        effective_chat_mode = (
+            getattr(assistant_message, "chat_mode", None) or conversation.chat_mode
+        )
+        if effective_chat_mode == "tool":
+            await self._produce_stream_legacy(
+                stream_id=stream_id,
+                conversation=conversation,
+                assistant_message=assistant_message,
+                llm_config=llm_config,
+                history_messages=history_messages,
+                enable_tools=True,
+            )
+            return
+
+        file_refs = self._extract_runtime_file_refs(history_messages)
+        execution_chat_mode = AgentCatalog.resolve_execution_chat_mode(
+            chat_mode=effective_chat_mode,
+            file_refs=file_refs,
+        )
+        agent_type = AgentCatalog.resolve_agent_type(
+            chat_mode=execution_chat_mode,
+            file_refs=file_refs,
+            requested_agent_type=self._extract_requested_agent_type(assistant_message),
+        )
+
+        # 构建 LangGraph ChatState。敏感配置不进入 state，其余上下文字段保留给 graph 使用。
+        initial_state = self._build_langgraph_state(
+            conversation=conversation,
+            assistant_message=assistant_message,
+            llm_config=llm_config,
+            history_messages=history_messages,
+            chat_mode=execution_chat_mode,
+        )
+
+        # 创建流事件适配器，负责将 LangGraph 自定义事件写入 stream_store
+        stream_adapter = StreamAdapter(
+            stream_id=stream_id,
+            message_id=assistant_message.id,
+        )
+
+        # 创建 LangGraph runtime 并执行
+        # 提前捕获 model/config，避免类型检查器认为在闭包中可能为 None
+        _model = assistant_message.model
+        _llm_config = llm_config
+        _llm_client = self.llm_client
+
+        # agentic_chat 的 LLM 调用闭包：封装 stream_with_messages，
+        # 让 Orbit-defined agent graph 可在多个节点中复用同一套 LLM/tool 调用能力。
+        async def _agent_llm_invoke(
+            messages,
+            system_prompt,
+            enable_tools,
+            tools,
+            tool_runtime,
+            max_tool_rounds,
+        ):
+            async for chunk in _llm_client.stream_with_messages(
+                config=_llm_config,
+                messages=messages,
+                model=_model,
+                enable_tools=enable_tools,
+                system_prompt=system_prompt,
+                tools=tools,
+                tool_runtime=tool_runtime,
+                max_tool_rounds=max_tool_rounds,
+            ):
+                yield chunk
+
+        runtime_request = OrbitRuntimeRequest(
+            conversation_id=str(conversation_id),
+            assistant_message_id=str(assistant_message.id),
+            stream_id=stream_id,
+            thread_id=conversation.thread_id,
+            chat_mode=execution_chat_mode,
+            agent_type=agent_type,
+            # 这里显式复制一份输入消息列表，避免后续 state / runtime 在不同层被意外共享修改。
+            input_messages=list(initial_state.get("input_messages", [])),
+            llm_config=llm_config,
+            model=_model,
+            file_refs=file_refs,
+        )
+        runtime_context = OrbitRuntimeContext(
+            request=runtime_request,
+            tool_runtime=self.llm_client.tool_runtime,
+            stream_writer=None,
+        )
+
+        runtime_kwargs = {
+            # normal_chat 路径仍复用现有 LLMClient.stream()，保证普通 chat 的行为尽量不变。
+            "stream_factory": lambda: self.llm_client.stream(
+                config=llm_config,
+                messages=history_messages,
+                summary=conversation.summary,
+                model=_model,
+                enable_tools=False,
+            ),
+            # agentic_chat 路径则改走 BaseMessage + runtime_context 模式，
+            # 便于后续继续把 agent 执行器与宿主链路解耦。
+            "llm_invoke": _agent_llm_invoke,
+            "tool_runtime": self.llm_client.tool_runtime,
+            "runtime_context": runtime_context,
+        }
+        runtime = LangGraphChatRuntime(**runtime_kwargs)
+        final_state = initial_state.copy()
+
+        try:
+            # 记录真实 producer task，后续 cancel 才能准确打断模型流
+            await conversation_stream_store.attach_producer_task(stream_id)
+
+            # 启动前检查是否已被取消
+            if await conversation_stream_store.is_cancelled(stream_id):
+                cancelled_message = await self._cancel_streaming_message(
+                    conversation_id=conversation_id,
+                    assistant_message=assistant_message,
+                    content="",
+                    token_usage={},
+                    response_metadata={
+                        "provider": llm_config.provider,
+                        "model": _model or "",
+                    },
+                )
+                await self._finalize_stream_conversation_state(
+                    conversation=conversation,
+                    stream_id=stream_id,
+                )
+                await conversation_stream_store.append_event(
+                    stream_id,
+                    event="message.cancelled",
+                    data={
+                        "message": (await self._message_read(cancelled_message)).model_dump(
+                            mode="json"
+                        )
+                    },
+                )
+                return
+
+            # 通过 LangGraph runtime 执行 Chat
+            final_state = await runtime.run_stream(
+                state=initial_state,
+                stream_adapter=stream_adapter,
+            )
+
+        except asyncio.CancelledError:
+            # 外部取消（task.cancel()）
+            cancelled_message = await self._cancel_streaming_message(
+                conversation_id=conversation_id,
+                assistant_message=assistant_message,
+                content=stream_adapter.get_accumulated_state().get("response_text", ""),
+                reasoning_content=stream_adapter.get_accumulated_state().get("reasoning_text", ""),
+                token_usage=stream_adapter.get_accumulated_state().get("token_usage", {}),
+                response_metadata=stream_adapter.get_accumulated_state().get("response_metadata", {}),
+            )
+            await self._finalize_stream_conversation_state(
+                conversation=conversation,
+                stream_id=stream_id,
+            )
+            await conversation_stream_store.append_event(
+                stream_id,
+                event="message.cancelled",
+                data={
+                    "message": (await self._message_read(cancelled_message)).model_dump(mode="json")
+                },
+            )
+            return
+        except LLMClientError as exc:
+            # 模型调用层面的已知异常
+            accumulated = stream_adapter.get_accumulated_state()
+            failed_message = await self._fail_or_partial_streaming_message(
+                conversation_id=conversation_id,
+                assistant_message=assistant_message,
+                content=accumulated.get("response_text", ""),
+                reasoning_content=accumulated.get("reasoning_text", ""),
+                error=str(exc),
+                token_usage=accumulated.get("token_usage", {}),
+                response_metadata=accumulated.get("response_metadata", {}),
+            )
+            await self._finalize_stream_conversation_state(
+                conversation=conversation,
+                stream_id=stream_id,
+            )
+            await conversation_stream_store.append_event(
+                stream_id,
+                event="message.failed",
+                data={
+                    "message": (await self._message_read(failed_message)).model_dump(mode="json")
+                },
+            )
+            return
+        except Exception:
+            # 非预期异常通过 _handle_unexpected_stream_failure 收口
+            raise
+        else:
+            # 处理 LangGraph 执行结果
+            error = final_state.get("error")
+            accumulated = stream_adapter.get_accumulated_state()
+            persisted_output = self._merge_langgraph_persisted_output(
+                accumulated=accumulated,
+                final_state=final_state,
+            )
+
+            if error == "cancelled":
+                # call_model 节点检测到 cancel 信号
+                cancelled_message = await self._cancel_streaming_message(
+                    conversation_id=conversation_id,
+                    assistant_message=assistant_message,
+                    content=persisted_output["response_text"],
+                    reasoning_content=persisted_output["reasoning_text"],
+                    token_usage=persisted_output["token_usage"],
+                    response_metadata=persisted_output["response_metadata"],
+                )
+                await self._finalize_stream_conversation_state(
+                    conversation=conversation,
+                    stream_id=stream_id,
+                )
+                await conversation_stream_store.append_event(
+                    stream_id,
+                    event="message.cancelled",
+                    data={
+                        "message": (await self._message_read(cancelled_message)).model_dump(
+                            mode="json"
+                        )
+                    },
+                )
+                return
+
+            if error:
+                # graph 执行过程中出现异常
+                failed_message = await self._fail_or_partial_streaming_message(
+                    conversation_id=conversation_id,
+                    assistant_message=assistant_message,
+                    content=persisted_output["response_text"],
+                    reasoning_content=persisted_output["reasoning_text"],
+                    error=error,
+                    token_usage=persisted_output["token_usage"],
+                    response_metadata=persisted_output["response_metadata"],
+                )
+                await self.agent_artifacts.persist_message_artifacts(
+                    message=failed_message,
+                    response_metadata=persisted_output["response_metadata"],
+                    status="failed",
+                    error=error,
+                )
+                await self._finalize_stream_conversation_state(
+                    conversation=conversation,
+                    stream_id=stream_id,
+                )
+                await conversation_stream_store.append_event(
+                    stream_id,
+                    event="message.failed",
+                    data={
+                        "message": (await self._message_read(failed_message)).model_dump(mode="json")
+                    },
+                )
+                return
+
+            # 正常完成：持久化 assistant message
+            assistant_message = await self.messages.complete_assistant_message(
+                message=assistant_message,
+                content=persisted_output["response_text"],
+                reasoning_content=persisted_output["reasoning_text"],
+                token_usage=persisted_output["token_usage"],
+                response_metadata=persisted_output["response_metadata"],
+            )
+            await self.agent_artifacts.persist_message_artifacts(
+                message=assistant_message,
+                response_metadata=persisted_output["response_metadata"],
+                status="completed",
+            )
+            await self._finalize_stream_conversation_state(
+                conversation=conversation,
+                stream_id=stream_id,
+            )
+            await conversation_stream_store.append_event(
+                stream_id,
+                event="message.completed",
+                data={
+                    "message": (await self._message_read(assistant_message)).model_dump(mode="json")
+                },
+            )
+            # 正常完成时也 return，让 finally 块清理 stream
+            return
+
+        finally:
+            # 运行结束后保留一个短暂 replay 窗口，给刚断线的客户端补齐尾流
+            await conversation_stream_store.complete_stream(
+                stream_id,
+                retention_seconds=self.STREAM_RETENTION_SECONDS,
+            )
+
+    @staticmethod
+    def _convert_messages_to_langchain(
+        messages: list,
+        summary: str | None = None,
+        llm_config=None,
+    ) -> list:
+        """将 DB Message ORM 对象转为 LangChain BaseMessage 列表。
+
+        提取为独立函数，方便测试 mock 和 Phase 2 复用。
+        """
+        from app.services.llm_client import LLMClient
+
+        client = LLMClient()
+        return client._build_langchain_messages(
+            messages=messages,
+            summary=summary,
+            config=llm_config,
+        )
+
+    def _build_langgraph_state(
+        self,
+        *,
+        conversation,
+        assistant_message,
+        llm_config,
+        history_messages: list,
+        chat_mode: str = "chat",
+    ) -> ChatState:
+        """根据当前请求上下文构建 LangGraph ChatState。
+
+        不把 API Key 等敏感配置放进 state，避免 checkpoint 中出现明文密钥。
+        """
+        resolved_model = assistant_message.model or (
+            llm_config.models[0] if llm_config.models else ""
+        )
+
+        # 将 DB 中的 Message ORM 对象转为 LangChain BaseMessage 列表
+        input_messages = self._convert_messages_to_langchain(
+            messages=history_messages,
+            summary=conversation.summary,
+            llm_config=llm_config,
+        )
+
+        return ChatState(
+            input_messages=input_messages,
+            # Phase 2 新增
+            chat_mode=chat_mode,
+            execution_mode="",
+            thought_events=[],
+            workspace_files=[],
+            # 输出
+            response_text="",
+            reasoning_text="",
+            token_usage={},
+            response_metadata={
+                "provider": llm_config.provider,
+                "model": resolved_model,
+            },
+            error=None,
+        )
+
+    @staticmethod
+    def _extract_runtime_file_refs(history_messages: list) -> list[dict[str, Any]]:
+        """从本轮上下文中提取可供 runtime 使用的文件引用。"""
+        for message in reversed(history_messages):
+            if getattr(message, "role", None) != "user":
+                continue
+            refs: list[dict[str, Any]] = []
+            for part in getattr(message, "content_parts", []) or []:
+                if not isinstance(part, dict) or part.get("type") != "file":
+                    continue
+                refs.append(
+                    {
+                        "file_id": part.get("file_id"),
+                        "name": part.get("name"),
+                        "mime_type": part.get("mime_type"),
+                        "file_size": part.get("file_size"),
+                        "storage_path": part.get("storage_path"),
+                    }
+                )
+            return refs
+        return []
+
+    @staticmethod
+    def _extract_requested_agent_type(assistant_message) -> str | None:
+        metadata = getattr(assistant_message, "response_metadata", None) or {}
+        if not isinstance(metadata, dict):
+            return None
+        value = metadata.get("requested_agent_type")
+        return value if isinstance(value, str) else None
+
+    @staticmethod
+    def _merge_langgraph_persisted_output(
+        *,
+        accumulated: dict[str, Any],
+        final_state: ChatState,
+    ) -> dict[str, Any]:
+        """合并流式累积态和 graph 最终态，避免只依赖 SSE delta 导致落库为空。"""
+        response_metadata = dict(final_state.get("response_metadata") or {})
+        response_metadata.update(accumulated.get("response_metadata", {}) or {})
+        # 落库时优先使用 graph 最终态中的 thought_events：
+        # 这里通常已经过 projector 压缩，适合持久化与刷新恢复。
+        # accumulated 中保留的是流式阶段逐条事件，主要用于实时 SSE，不应反向覆盖最终结果。
+        thought_events = final_state.get("thought_events") or accumulated.get("thought_events", [])
+        if thought_events:
+            response_metadata["thought_events"] = thought_events
+        return {
+            "response_text": accumulated.get("response_text") or final_state.get("response_text", ""),
+            "reasoning_text": accumulated.get("reasoning_text") or final_state.get("reasoning_text", ""),
+            "token_usage": accumulated.get("token_usage") or final_state.get("token_usage", {}),
+            "response_metadata": response_metadata,
+        }
+
+    async def _produce_stream_legacy(
+        self,
+        *,
+        stream_id: str,
+        conversation,
+        assistant_message,
+        llm_config,
+        history_messages: list,
+        enable_tools: bool,
+    ) -> None:
+        """旧执行路径：使用 LLMClient.stream() 直接调用，保留 tool/agent 模式支持。
+
+        Phase 2 将移除此方法，统一到 LangGraph 内部处理 agent loop。
+        """
+        conversation_id = conversation.id
         full_content_parts: list[str] = []
         full_reasoning_parts: list[str] = []
+        normalized_tool_calls: list[dict[str, Any]] = []
+        normalized_tool_results: list[dict[str, Any]] = []
         token_usage: dict[str, Any] = {}
         response_metadata: dict[str, Any] = {
             "provider": llm_config.provider,
@@ -316,7 +743,6 @@ class ConversationStreamRunService(ConversationBaseService):
         finish_reason: str | None = None
 
         try:
-            # 先记录真实 producer task，后续 cancel 才能准确打断模型流。
             await conversation_stream_store.attach_producer_task(stream_id)
             if await conversation_stream_store.is_cancelled(stream_id):
                 cancelled_message = await self._cancel_streaming_message(
@@ -346,6 +772,7 @@ class ConversationStreamRunService(ConversationBaseService):
                 messages=history_messages,
                 summary=conversation.summary,
                 model=assistant_message.model,
+                enable_tools=enable_tools,
             ):
                 if await conversation_stream_store.is_cancelled(stream_id):
                     cancelled_message = await self._cancel_streaming_message(
@@ -378,9 +805,37 @@ class ConversationStreamRunService(ConversationBaseService):
                 if chunk.finish_reason:
                     finish_reason = chunk.finish_reason
 
+                chunk_tool_calls = getattr(chunk, "tool_calls", None) or []
+                if chunk_tool_calls:
+                    normalized_tool_calls = self._merge_tool_call_chunks(
+                        existing=normalized_tool_calls,
+                        incoming=chunk_tool_calls,
+                    )
+                    response_metadata["normalized_tool_calls"] = normalized_tool_calls
+                    await conversation_stream_store.append_event(
+                        stream_id,
+                        event="message.tool_call_delta",
+                        data={
+                            "message_id": str(assistant_message.id),
+                            "tool_calls": chunk_tool_calls,
+                        },
+                    )
+
+                chunk_tool_results = getattr(chunk, "tool_results", None) or []
+                if chunk_tool_results:
+                    normalized_tool_results.extend(chunk_tool_results)
+                    response_metadata["normalized_tool_results"] = normalized_tool_results
+                    await conversation_stream_store.append_event(
+                        stream_id,
+                        event="message.tool_result",
+                        data={
+                            "message_id": str(assistant_message.id),
+                            "tool_results": chunk_tool_results,
+                        },
+                    )
+
                 if chunk.reasoning_delta:
                     full_reasoning_parts.append(chunk.reasoning_delta)
-                    # reasoning 和正文分成两类事件，方便前端分别渲染 thinking 与正文。
                     await conversation_stream_store.append_event(
                         stream_id,
                         event="message.reasoning_delta",
@@ -406,6 +861,10 @@ class ConversationStreamRunService(ConversationBaseService):
             if not full_content:
                 raise LLMClientError("模型服务没有返回 assistant 内容")
 
+            if normalized_tool_calls:
+                response_metadata["normalized_tool_calls"] = normalized_tool_calls
+            if normalized_tool_results:
+                response_metadata["normalized_tool_results"] = normalized_tool_results
             if finish_reason:
                 response_metadata["finish_reason"] = finish_reason
             assistant_message = await self.messages.complete_assistant_message(
@@ -415,7 +874,6 @@ class ConversationStreamRunService(ConversationBaseService):
                 token_usage=token_usage,
                 response_metadata=response_metadata,
             )
-            # completed/failed/cancelled 之前更新会话运行态摘要。
             await self._finalize_stream_conversation_state(
                 conversation=conversation,
                 stream_id=stream_id,
@@ -469,8 +927,8 @@ class ConversationStreamRunService(ConversationBaseService):
                     "message": (await self._message_read(failed_message)).model_dump(mode="json")
                 },
             )
+            return
         finally:
-            # 运行结束后保留一个短暂 replay 窗口，给刚断线的客户端补齐尾流。
             await conversation_stream_store.complete_stream(
                 stream_id,
                 retention_seconds=self.STREAM_RETENTION_SECONDS,
@@ -564,7 +1022,7 @@ class ConversationStreamRunService(ConversationBaseService):
             has_active_run=has_active_run,
         )
 
-    def _to_stream_event(self, record: StreamEventRecord) -> ConversationStreamEvent:
+    async def _to_stream_event(self, record: StreamEventRecord) -> ConversationStreamEvent:
         # 对外统一补齐 stream_id / seq / event_id；seq 仅用于调试和未来事件日志后端。
         payload = {
             "stream_id": record.stream_id,
@@ -572,11 +1030,40 @@ class ConversationStreamRunService(ConversationBaseService):
             "event_id": record.event_id,
             **record.data,
         }
+        if record.event == "message.created":
+            payload = await self._refresh_created_event_payload(payload)
         return ConversationStreamEvent(
             event=record.event,
             data=payload,
             event_id=record.event_id,
         )
+
+    async def _refresh_created_event_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
+        # message.created 会被 replay 给后来恢复的客户端；其中 sibling 导航等字段是派生态，
+        # 不能长期信任创建当时序列化出来的快照，需要在发送前按数据库当前状态刷新。
+        refreshed = dict(payload)
+        for field in ("user_message", "assistant_message"):
+            raw_message = refreshed.get(field)
+            if not isinstance(raw_message, dict):
+                continue
+
+            raw_id = raw_message.get("id")
+            if not isinstance(raw_id, str):
+                continue
+
+            try:
+                message_id = UUID(raw_id)
+            except ValueError:
+                continue
+
+            message = await self.messages.get_by_id(
+                conversation_id=UUID(str(raw_message["conversation_id"])),
+                message_id=message_id,
+            )
+            if message is None:
+                continue
+            refreshed[field] = (await self._message_read(message)).model_dump(mode="json")
+        return refreshed
 
     async def _cancel_streaming_message(
         self,
@@ -600,6 +1087,52 @@ class ConversationStreamRunService(ConversationBaseService):
         await self.conversations.touch(conversation_id)
         await self.session.commit()
         return assistant_message
+
+    def _merge_tool_call_chunks(
+        self,
+        *,
+        existing: list[dict[str, Any]],
+        incoming: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        # tool call 的参数常按 chunk 逐步追加，这里在 runtime 内维护一个可序列化的聚合版本。
+        merged: list[dict[str, Any]] = [dict(item) for item in existing]
+        for item in incoming:
+            if not isinstance(item, dict):
+                continue
+            key = self._tool_call_key(item)
+            matched = next((current for current in merged if self._tool_call_key(current) == key), None)
+            if matched is None:
+                merged.append(dict(item))
+                continue
+
+            if item.get("name"):
+                matched["name"] = item["name"]
+            if item.get("type"):
+                matched["type"] = item["type"]
+            if item.get("id"):
+                matched["id"] = item["id"]
+            if item.get("index") is not None:
+                matched["index"] = item["index"]
+
+            incoming_args = item.get("args")
+            if isinstance(incoming_args, str) and incoming_args:
+                previous_args = matched.get("args")
+                if isinstance(previous_args, str):
+                    matched["args"] = f"{previous_args}{incoming_args}"
+                elif previous_args is None:
+                    matched["args"] = incoming_args
+                else:
+                    matched["args"] = incoming_args
+            elif incoming_args is not None:
+                matched["args"] = incoming_args
+        return merged
+
+    def _tool_call_key(self, item: dict[str, Any]) -> str:
+        # 优先用 provider 给的稳定 id；缺失时退回到 name/index 组合键。
+        tool_call_id = item.get("id")
+        if tool_call_id:
+            return str(tool_call_id)
+        return f"{item.get('name') or ''}:{item.get('index') if item.get('index') is not None else ''}"
 
     async def _fail_or_partial_streaming_message(
         self,
